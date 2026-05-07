@@ -6967,7 +6967,6 @@ function shouldUseAuthorityGraphStore(settings = getSettings(), capability = aut
     normalizedSettings.sqlPrimary &&
     normalizedSettings.storageMode !== "local-primary" &&
     normalizedSettings.storageMode !== "off" &&
-    normalizedCapability.serverPrimaryReady &&
     normalizedCapability.storagePrimaryReady
   );
 }
@@ -14394,7 +14393,7 @@ function buildBatchPersistenceRecordFromPersistResult(persistResult = null) {
 
   if (
     accepted &&
-    ["indexeddb", "opfs", "luker-chat-state"].includes(
+    ["indexeddb", "opfs", "authority-sql", "luker-chat-state"].includes(
       String(persistResult?.storageTier || ""),
     )
   ) {
@@ -14449,6 +14448,7 @@ async function persistGraphToConfiguredDurableTier(
 
   if (
     persistenceEnvironment.hostProfile === "luker" &&
+    persistenceEnvironment.primaryStorageTier === "luker-chat-state" &&
     canUseHostGraphChatStatePersistence(context)
   ) {
     const chatStateResult = await persistGraphToHostChatState(context, {
