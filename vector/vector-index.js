@@ -626,6 +626,7 @@ function markAuthorityVectorStateDirty(
   config = {},
   reason = "authority-trivium-failed",
   warning = "Authority Trivium 索引失败，已标记待重建",
+  diagnostics = {},
 ) {
   if (!graph?.vectorIndexState || !isAuthorityVectorConfig(config)) {
     return;
@@ -655,6 +656,39 @@ function markAuthorityVectorStateDirty(
     pending: total > 0 ? Math.max(1, Number(state.lastStats?.pending || 0)) : 0,
   };
   state.lastWarning = String(warning || "Authority Trivium 索引失败，已标记待重建");
+  const errorCategory = String(diagnostics.errorCategory || diagnostics.authorityErrorCategory || "").trim();
+  const errorDomain = String(diagnostics.errorDomain || diagnostics.authorityErrorDomain || "").trim();
+  if (errorCategory) state.lastErrorCategory = errorCategory;
+  if (errorDomain) state.lastErrorDomain = errorDomain;
+}
+
+function getErrorCategory(error = null) {
+  return String(error?.category || error?.errorCategory || "").trim();
+}
+
+function getErrorDomain(error = null, fallback = "") {
+  if (!error) return "";
+  if (error?.errorDomain) return String(error.errorDomain).trim();
+  if (getErrorCategory(error)) return fallback || "authority";
+  return fallback;
+}
+
+function getAuthorityDiagnosticsErrorPatch(error = null) {
+  const errorCategory = getErrorCategory(error);
+  const errorDomain = getErrorDomain(error, errorCategory ? "authority" : "");
+  return {
+    ...(errorCategory ? { errorCategory, authorityErrorCategory: errorCategory } : {}),
+    ...(errorDomain ? { errorDomain, authorityErrorDomain: errorDomain } : {}),
+    ...(Number(error?.status || 0) > 0 ? { status: Number(error.status) } : {}),
+  };
+}
+
+function createEmbeddingProviderError(failures = 0) {
+  const count = Math.max(0, Math.floor(Number(failures) || 0));
+  const error = new Error(`Embedding provider failed for ${count} item(s)`);
+  error.errorCategory = "embedding-provider";
+  error.errorDomain = "embedding";
+  return error;
 }
 
 async function ensureEntryEmbeddings(graph, entries = [], config = {}, signal = undefined) {
@@ -802,7 +836,7 @@ export async function syncGraphVectorIndex(
         embeddingsRequested += embeddingResult.requested;
         embedBatchMs += embeddingResult.elapsedMs;
         if (embeddingResult.failures > 0) {
-          throw new Error(`Authority Trivium embedding failed for ${embeddingResult.failures} item(s)`);
+          throw createEmbeddingProviderError(embeddingResult.failures);
         }
         const purgeStartedAt = nowMs();
         const purgeResult = await purgeAuthorityTriviumNamespace(config, authorityOptions);
@@ -866,7 +900,7 @@ export async function syncGraphVectorIndex(
         embeddingsRequested += embeddingResult.requested;
         embedBatchMs += embeddingResult.elapsedMs;
         if (embeddingResult.failures > 0) {
-          throw new Error(`Authority Trivium embedding failed for ${embeddingResult.failures} item(s)`);
+          throw createEmbeddingProviderError(embeddingResult.failures);
         }
         deletedNodeCount = nodeIdsToDelete.length;
         const deleteStartedAt = nowMs();
@@ -909,17 +943,29 @@ export async function syncGraphVectorIndex(
     } catch (error) {
       if (isAbortError(error)) throw error;
       const message = error?.message || String(error) || "Authority Trivium 同步失败";
+      const errorCategory = getErrorCategory(error);
+      const errorDomain = getErrorDomain(error, errorCategory ? "authority" : "");
+      const dirtyReason = errorDomain === "embedding"
+        ? "embedding-provider-sync-failed"
+        : "authority-trivium-sync-failed";
+      const warningPrefix = errorDomain === "embedding"
+        ? "Embedding provider 同步失败"
+        : "Authority Trivium 同步失败";
       markAuthorityVectorStateDirty(
         graph,
         config,
-        "authority-trivium-sync-failed",
-        `Authority Trivium 同步失败（${message}），已标记待重建`,
+        dirtyReason,
+        `${warningPrefix}（${message}），已标记待重建`,
+        { errorCategory, errorDomain },
       );
       state.lastSyncAt = Date.now();
       state.lastTimings = {
         mode: syncMode,
         success: false,
         error: message,
+        ...(errorCategory ? { errorCategory } : {}),
+        ...(errorDomain ? { errorDomain } : {}),
+        ...(errorCategory && errorDomain === "authority" ? { authorityErrorCategory: errorCategory, authorityErrorDomain: errorDomain } : {}),
         desiredEntries: Number(desiredBuildDiagnostics.entryCount || desiredEntries.length),
         desiredBuildMs: roundMs(desiredBuildMs),
         authorityPurgeMs: roundMs(authorityPurgeMs),
@@ -940,6 +986,8 @@ export async function syncGraphVectorIndex(
         stats: state.lastStats,
         timings: state.lastTimings,
         error: message,
+        ...(errorCategory ? { errorCategory } : {}),
+        ...(errorDomain ? { errorDomain } : {}),
       };
       if (config.failOpen === false) {
         throw error;
@@ -1291,17 +1339,20 @@ export async function findSimilarNodesByText(
         throw error;
       }
       const message = error?.message || String(error) || "Authority Trivium 查询失败";
+      const errorPatch = getAuthorityDiagnosticsErrorPatch(error);
       markAuthorityVectorStateDirty(
         graph,
         config,
         "authority-trivium-query-failed",
         `Authority Trivium 查询失败（${message}），已标记待重建`,
+        errorPatch,
       );
       recordSearchTimings({
         success: false,
         reason: "authority-trivium-query-failed",
         requestMs: roundMs(nowMs() - requestStartedAt),
         error: message,
+        ...errorPatch,
         resultCount: 0,
       });
       if (config.failOpen === false) {

@@ -2,6 +2,7 @@ import { normalizeAuthorityBaseUrl } from "../runtime/authority-capabilities.js"
 import {
   AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
   AuthorityHttpClient,
+  AuthorityHttpError,
 } from "../runtime/authority-http-client.js";
 import { embedText } from "./embedding.js";
 
@@ -87,6 +88,25 @@ function isPlainObject(value = null) {
 
 function hasPlainKeys(value = null) {
   return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
+function getAuthorityErrorCategory(error = null) {
+  return String(error?.category || error?.errorCategory || "").trim();
+}
+
+function getAuthorityErrorDomain(error = null) {
+  if (!error) return "";
+  return error instanceof AuthorityHttpError || getAuthorityErrorCategory(error) ? "authority" : "";
+}
+
+function buildAuthorityErrorDiagnostics(error = null) {
+  const category = getAuthorityErrorCategory(error);
+  const domain = getAuthorityErrorDomain(error);
+  return {
+    ...(category ? { errorCategory: category, authorityErrorCategory: category } : {}),
+    ...(domain ? { errorDomain: domain, authorityErrorDomain: domain } : {}),
+    ...(Number(error?.status || 0) > 0 ? { status: Number(error.status) } : {}),
+  };
 }
 
 function normalizeOpenAICompatibleBaseUrl(value) {
@@ -816,6 +836,7 @@ export async function upsertAuthorityTriviumEntries(graph, config = {}, entries 
         durationMs: roundMs(nowMs() - chunkStartedAt),
         ok: false,
         error: error?.message || String(error),
+        ...buildAuthorityErrorDiagnostics(error),
       });
       error.authorityDiagnostics = {
         operation: "bulkUpsert",
@@ -824,6 +845,7 @@ export async function upsertAuthorityTriviumEntries(graph, config = {}, entries 
         chunks,
         totalBytes,
         totalMs: roundMs(nowMs() - startedAt),
+        ...buildAuthorityErrorDiagnostics(error),
       };
       throw error;
     }
