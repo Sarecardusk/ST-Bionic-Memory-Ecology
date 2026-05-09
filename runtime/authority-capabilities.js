@@ -162,6 +162,26 @@ function readPayloadMessage(payload = {}, fallback = "") {
   return String(payload.error || payload.message || payload.reason || fallback || "");
 }
 
+function classifyAuthorityProbeStatus(status = 0, payload = null) {
+  const payloadCategory = String(payload?.category || "").trim();
+  if (payloadCategory) return payloadCategory;
+  const numericStatus = Number(status || 0);
+  if (numericStatus === 408) return "timeout";
+  if (numericStatus === 401 || numericStatus === 403) return "permission";
+  if (numericStatus === 413) return "payload-too-large";
+  if (numericStatus === 429) return "rate-limit";
+  if (numericStatus >= 500) return "server";
+  if (numericStatus >= 400) return "validation";
+  return "";
+}
+
+function classifyAuthorityProbeError(error = null) {
+  const category = String(error?.category || error?.errorCategory || "").trim();
+  if (category) return category;
+  if (String(error?.name || "") === "AbortError") return "timeout";
+  return error ? "network" : "";
+}
+
 function buildAuthorityPermissionEvaluateRequests(settings = {}, readiness = {}, options = {}) {
   const requests = [];
   const sqlTarget = String(options.sqlTarget || settings.sqlTarget || "default");
@@ -198,6 +218,8 @@ async function verifyAuthorityDataPlane(baseUrl, fetchImpl, headers, settings = 
       reason: initStatus === 401 || initStatus === 403 ? "session-init-denied" : "session-init-failed",
       lastError: readPayloadMessage(initPayload, `HTTP ${initStatus || "unknown"}`),
       status: initStatus,
+      errorCategory: classifyAuthorityProbeStatus(initStatus, initPayload),
+      errorDomain: "authority",
     };
   }
 
@@ -231,6 +253,8 @@ async function verifyAuthorityDataPlane(baseUrl, fetchImpl, headers, settings = 
       reason: currentStatus === 401 || currentStatus === 403 ? "session-invalid" : "session-current-failed",
       lastError: readPayloadMessage(currentPayload, `HTTP ${currentStatus || "unknown"}`),
       status: currentStatus,
+      errorCategory: classifyAuthorityProbeStatus(currentStatus, currentPayload),
+      errorDomain: "authority",
     };
   }
 
@@ -259,6 +283,8 @@ async function verifyAuthorityDataPlane(baseUrl, fetchImpl, headers, settings = 
       reason: permissionStatus === 401 || permissionStatus === 403 ? "permission-denied" : "permission-evaluate-failed",
       lastError: readPayloadMessage(permissionPayload, `HTTP ${permissionStatus || "unknown"}`),
       status: permissionStatus,
+      errorCategory: classifyAuthorityProbeStatus(permissionStatus, permissionPayload),
+      errorDomain: "authority",
     };
   }
 
@@ -408,6 +434,8 @@ export function createDefaultAuthorityCapabilityState(overrides = {}) {
     missingFeatures: ["sql.query", "sql.mutation", "trivium.search", "jobs", "blob-or-private-files"],
     reason: "not-probed",
     lastError: "",
+    errorCategory: "",
+    errorDomain: "",
     endpoint: "",
     status: 0,
     latencyMs: 0,
@@ -459,6 +487,8 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
     missingFeatures,
     reason: String(source.reason || (healthy ? "ok" : "not-ready")),
     lastError: String(source.lastError || ""),
+    errorCategory: String(source.errorCategory || ""),
+    errorDomain: String(source.errorDomain || ""),
     endpoint: String(source.endpoint || ""),
     status: clampInteger(source.status, 0, 0, 999),
     latencyMs: Math.max(0, Number(source.latencyMs) || 0),
@@ -547,6 +577,7 @@ export async function probeAuthorityCapabilities(options = {}) {
 
   let lastError = "";
   let lastStatus = 0;
+  let lastErrorCategory = "";
   for (const endpoint of buildAuthorityProbeUrls(settings.baseUrl)) {
     const startedAt = readNowMs();
     try {
@@ -555,6 +586,7 @@ export async function probeAuthorityCapabilities(options = {}) {
       const status = Number(response?.status || 0);
       lastStatus = status;
       if (status === 404) continue;
+      const errorPayload = response?.ok ? null : await readResponsePayload(response);
       if (status === 401 || status === 403) {
         return normalizeAuthorityCapabilityState(
           {
@@ -563,7 +595,9 @@ export async function probeAuthorityCapabilities(options = {}) {
             sessionReady: false,
             permissionReady: false,
             reason: "permission-denied",
-            lastError: `HTTP ${status}`,
+            lastError: readPayloadMessage(errorPayload, `HTTP ${status}`),
+            errorCategory: classifyAuthorityProbeStatus(status, errorPayload),
+            errorDomain: "authority",
             endpoint,
             status,
             latencyMs: normalizeLatencyMs(startedAt, finishedAt),
@@ -579,7 +613,9 @@ export async function probeAuthorityCapabilities(options = {}) {
             installed: status > 0,
             healthy: false,
             reason: "http-error",
-            lastError: `HTTP ${status || "unknown"}`,
+            lastError: readPayloadMessage(errorPayload, `HTTP ${status || "unknown"}`),
+            errorCategory: classifyAuthorityProbeStatus(status, errorPayload),
+            errorDomain: "authority",
             endpoint,
             status,
             latencyMs: normalizeLatencyMs(startedAt, finishedAt),
@@ -605,12 +641,16 @@ export async function probeAuthorityCapabilities(options = {}) {
       let reason = missingFeatures.length ? "missing-required-features" : "ok";
       let dataPlaneLastError = "";
       let dataPlaneStatus = status;
+      let dataPlaneErrorCategory = "";
+      let dataPlaneErrorDomain = "";
       if (healthy) {
         const verified = await verifyAuthorityDataPlane(settings.baseUrl, fetchImpl, headers, settings, readiness, options);
         sessionReady = verified.sessionReady;
         permissionReady = verified.permissionReady;
         dataPlaneStatus = Number(verified.status || status || 0);
         dataPlaneLastError = String(verified.lastError || "");
+        dataPlaneErrorCategory = String(verified.errorCategory || "");
+        dataPlaneErrorDomain = String(verified.errorDomain || "");
         if (verified.reason && verified.reason !== "ok") {
           reason = verified.reason;
         }
@@ -627,6 +667,8 @@ export async function probeAuthorityCapabilities(options = {}) {
           missingFeatures,
           reason,
           lastError: dataPlaneLastError,
+          errorCategory: dataPlaneErrorCategory,
+          errorDomain: dataPlaneErrorDomain,
           endpoint,
           status: dataPlaneStatus,
           latencyMs: normalizeLatencyMs(startedAt, finishedAt),
@@ -637,6 +679,8 @@ export async function probeAuthorityCapabilities(options = {}) {
       );
     } catch (error) {
       lastError = error?.message || String(error);
+      lastStatus = Number(error?.status || lastStatus || 0);
+      lastErrorCategory = classifyAuthorityProbeError(error);
     }
   }
 
@@ -646,6 +690,8 @@ export async function probeAuthorityCapabilities(options = {}) {
       healthy: false,
       reason: lastStatus === 404 ? "not-installed" : "probe-failed",
       lastError,
+      errorCategory: lastErrorCategory || classifyAuthorityProbeStatus(lastStatus),
+      errorDomain: lastErrorCategory || lastStatus ? "authority" : "",
       status: lastStatus,
       lastProbeAt: nowMs,
       updatedAt: new Date(nowMs).toISOString(),
