@@ -467,9 +467,15 @@ export function onMessageUpdatedController(runtime, messageId, meta = null) {
 }
 
 export async function onMessageSwipedController(runtime, messageId, meta = null) {
-  runtime.invalidateRecallAfterHistoryMutation("已切换楼层 swipe");
   const parsedFloor = Number(messageId);
   const fromFloor = Number.isFinite(parsedFloor) ? parsedFloor : undefined;
+  const preparedRerollReuse = runtime.prepareRerollRecallReuse?.({
+    fromFloor,
+    meta,
+  });
+  if (!preparedRerollReuse) {
+    runtime.invalidateRecallAfterHistoryMutation("已切换楼层 swipe");
+  }
   let result = {
     success: false,
     rollbackPerformed: false,
@@ -502,6 +508,9 @@ export async function onMessageSwipedController(runtime, messageId, meta = null)
       "[ST-BME] MESSAGE_SWIPED missing onReroll; skip generic history recovery fallback.",
       { messageId, meta },
     );
+  }
+  if (!result?.success) {
+    runtime.clearPendingRerollRecallReuse?.("swipe-reroll-failed");
   }
   runtime.refreshPersistedRecallMessageUi?.();
   return result;

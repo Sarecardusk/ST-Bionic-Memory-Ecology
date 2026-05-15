@@ -508,6 +508,67 @@ assert.equal(
 
 console.log("  ✓ runRecallController reuses persisted record when host reports reroll as normal");
 
+const rerollInputHarness = await createGenerationRecallHarness({ realApplyFinal: true });
+Object.assign(rerollInputHarness.settings, {
+  ...defaultSettings,
+  enabled: true,
+  recallEnabled: true,
+  recallUseAuthoritativeGenerationInput: true,
+});
+rerollInputHarness.chat = [
+  { is_user: true, mes: "重 roll replacement 应复用这一楼" },
+  { is_user: false, mes: "旧 assistant 回复", is_system: false },
+];
+writePersistedRecallToUserMessage(
+  rerollInputHarness.chat,
+  0,
+  buildPersistedRecallRecord({
+    injectionText: "注入:重 roll replacement 应复用这一楼",
+    selectedNodeIds: ["node-reroll-input"],
+    recallInput: "重 roll replacement 应复用这一楼",
+    recallSource: "chat-last-user",
+    hookName: "GENERATION_AFTER_COMMANDS",
+    tokenEstimate: 6,
+    manuallyEdited: false,
+    boundUserFloorText: "重 roll replacement 应复用这一楼",
+  }),
+);
+
+const preparedRerollReuse = rerollInputHarness.result.prepareRerollRecallReuse({
+  fromFloor: 1,
+});
+assert.ok(preparedRerollReuse, "assistant-only reroll should prepare recall reuse marker");
+
+rerollInputHarness.result.recordRecallSendIntent(
+  "错误的主动输入不应覆盖 reroll 用户楼",
+  "send-intent",
+);
+rerollInputHarness.result.freezeHostGenerationInputSnapshot(
+  "错误的宿主快照不应覆盖 reroll 用户楼",
+  "host-generation-lifecycle",
+);
+
+const rerollReplacementInput = rerollInputHarness.result.buildNormalGenerationRecallInput(
+  rerollInputHarness.chat,
+  {
+    frozenInputSnapshot: rerollInputHarness.result.getPendingHostGenerationInputSnapshot(),
+  },
+);
+assert.equal(
+  rerollReplacementInput.overrideUserMessage,
+  "重 roll replacement 应复用这一楼",
+  "reroll replacement should ignore stale live input sources and bind to stable user floor",
+);
+assert.equal(rerollReplacementInput.overrideSource, "chat-last-user");
+assert.equal(rerollReplacementInput.overrideReason, "reroll-user-floor-reuse");
+assert.equal(
+  rerollInputHarness.result.getPendingRerollRecallReuse(),
+  null,
+  "reroll reuse marker should be one-shot after binding recall input",
+);
+
+console.log("  ✓ reroll replacement normal input is forced to stable user-floor recall source");
+
 const legacyUnboundReuseChat = [
   { is_user: true, mes: "旧记录没有绑定楼层" },
   { is_user: false, mes: "上一条回复。", is_system: false },

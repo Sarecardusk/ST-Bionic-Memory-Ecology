@@ -1356,6 +1356,7 @@ const dismissedStageNoticeSignatures = new Map();
 let pendingRecallSendIntent = createRecallInputRecord();
 let lastRecallSentUserMessage = createRecallInputRecord();
 let pendingHostGenerationInputSnapshot = createRecallInputRecord();
+let pendingRerollRecallReuse = null;
 let currentGenerationTrivialSkip = null;
 let coreEventBindingState = {
   registered: false,
@@ -5002,6 +5003,7 @@ function clearRecallInputTracking() {
   clearPendingRecallSendIntent();
   lastRecallSentUserMessage = createRecallInputRecord();
   clearPendingHostGenerationInputSnapshot();
+  clearPendingRerollRecallReuse("recall-input-tracking-cleared");
   if (typeof recordMessageTraceSnapshot === "function") {
     recordMessageTraceSnapshot({
       lastSentUserMessage: null,
@@ -19466,6 +19468,18 @@ function getLatestUserChatMessage(chat) {
   return null;
 }
 
+function findLatestUserChatMessageWithIndex(chat) {
+  if (!Array.isArray(chat)) return null;
+
+  for (let index = chat.length - 1; index >= 0; index--) {
+    const message = chat[index];
+    if (isSystemMessageForExtraction(message, { index, chat })) continue;
+    if (message?.is_user) return { message, index };
+  }
+
+  return null;
+}
+
 function getLastNonSystemChatMessage(chat) {
   if (!Array.isArray(chat)) return null;
 
@@ -19477,6 +19491,124 @@ function getLastNonSystemChatMessage(chat) {
   }
 
   return null;
+}
+
+function getPendingRerollRecallReuse() {
+  return pendingRerollRecallReuse;
+}
+
+function clearPendingRerollRecallReuse(reason = "") {
+  const previous = pendingRerollRecallReuse;
+  pendingRerollRecallReuse = null;
+  return previous;
+}
+
+function prepareRerollRecallReuse({ fromFloor = null, meta = null } = {}) {
+  const context = getContext();
+  const chat = context?.chat;
+  if (!Array.isArray(chat) || chat.length === 0) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const latestUser = findLatestUserChatMessageWithIndex(chat);
+  const targetUserMessageIndex = Number.isFinite(latestUser?.index)
+    ? latestUser.index
+    : null;
+  if (!Number.isFinite(targetUserMessageIndex)) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const userMessage = chat[targetUserMessageIndex];
+  const userText = normalizeRecallInputText(userMessage?.mes || "");
+  if (!userText) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const persistedRecord = readPersistedRecallFromUserMessage(
+    chat,
+    targetUserMessageIndex,
+  );
+  const persistedInjection = normalizeRecallInputText(
+    persistedRecord?.injectionText || "",
+  );
+  if (!persistedRecord || !persistedInjection) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const boundText = normalizeRecallInputText(
+    persistedRecord?.boundUserFloorText || persistedRecord?.recallInput || "",
+  );
+  if (boundText && boundText !== userText) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const chatId = normalizeChatIdCandidate(getCurrentChatId(context));
+  pendingRerollRecallReuse = {
+    chatId,
+    fromFloor: Number.isFinite(Number(fromFloor)) ? Math.floor(Number(fromFloor)) : null,
+    targetUserMessageIndex,
+    userText,
+    userHash: hashRecallInput(userText),
+    createdAt: Date.now(),
+    meta,
+  };
+  return pendingRerollRecallReuse;
+}
+
+function consumePendingRerollRecallReuse(chat = getContext()?.chat) {
+  const reuse = pendingRerollRecallReuse;
+  if (!reuse) return null;
+
+  const activeChatId = normalizeChatIdCandidate(getCurrentChatId());
+  if (reuse.chatId && activeChatId && reuse.chatId !== activeChatId) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+  if (Date.now() - Number(reuse.createdAt || 0) > GENERATION_RECALL_TRANSACTION_TTL_MS) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const latestUser = findLatestUserChatMessageWithIndex(chat);
+  const targetUserMessageIndex = Number.isFinite(latestUser?.index)
+    ? latestUser.index
+    : reuse.targetUserMessageIndex;
+  if (targetUserMessageIndex !== reuse.targetUserMessageIndex) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  const userText = normalizeRecallInputText(chat?.[targetUserMessageIndex]?.mes || "");
+  if (!userText || hashRecallInput(userText) !== reuse.userHash) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  pendingRerollRecallReuse = null;
+  return {
+    overrideUserMessage: userText,
+    generationType: "normal",
+    targetUserMessageIndex,
+    overrideSource: "chat-last-user",
+    overrideSourceLabel: "历史最后用户楼层",
+    overrideReason: "reroll-user-floor-reuse",
+    sourceCandidates: [
+      {
+        text: userText,
+        source: "chat-last-user",
+        sourceLabel: "历史最后用户楼层",
+        reason: "reroll-user-floor-reuse",
+        includeSyntheticUserMessage: false,
+      },
+    ],
+    includeSyntheticUserMessage: false,
+    rerollRecallReuse: true,
+  };
 }
 
 function buildRecallRecentMessages(chat, limit, syntheticUserMessage = "") {
@@ -19574,6 +19706,11 @@ function createTrivialRecallSkipSentinel(reason = "") {
 }
 
 function buildNormalGenerationRecallInput(chat, options = {}) {
+  const rerollReuse = consumePendingRerollRecallReuse(chat);
+  if (rerollReuse) {
+    return rerollReuse;
+  }
+
   const lastNonSystemMessage = getLastNonSystemChatMessage(chat);
   const tailUserText = lastNonSystemMessage?.is_user
     ? normalizeRecallInputText(lastNonSystemMessage?.mes || "")
@@ -22869,6 +23006,8 @@ async function onMessageSwiped(messageId, meta = null) {
     {
       invalidateRecallAfterHistoryMutation,
       onReroll,
+      prepareRerollRecallReuse,
+      clearPendingRerollRecallReuse,
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
       scheduleHistoryMutationRecheck,
     },
