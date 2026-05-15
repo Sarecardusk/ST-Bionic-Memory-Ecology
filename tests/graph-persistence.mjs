@@ -1740,6 +1740,9 @@ result = {
   getAuthoritySnapshotForChat(chatId) {
     return globalThis.__getAuthoritySnapshotForChat(chatId);
   },
+  setAuthoritySnapshotForChat(chatId, snapshot) {
+    return globalThis.__setAuthoritySnapshotForChat(chatId, snapshot);
+  },
   getAuthorityBlobWrites() {
     return Array.from(globalThis.__authorityBlobWrites.entries()).map(([path, payload]) => [
       path,
@@ -4812,6 +4815,19 @@ result = {
   const checkpointGraph = deserializeGraph(checkpointPayload?.serializedGraph || "{}");
   assert.equal(checkpointGraph.nodes[0]?.fields?.title, "事件-luker-authority-sql");
   assert.notEqual(checkpointGraph.nodes[0]?.fields?.title, "事件-runtime-stale-checkpoint");
+
+  harness.api.setAuthoritySnapshotForChat(persistenceChatId, null);
+  const writeCountBeforeFailedCheckpoint = globalThis.__authorityBlobWrites.size;
+  const failedCheckpointResult = await harness.api.writeAuthorityCheckpointFromCurrentGraph({
+    reason: "authority-sql-checkpoint-source-missing-test",
+  });
+  assert.equal(failedCheckpointResult.success, false);
+  assert.equal(failedCheckpointResult.error, "authority-sql-checkpoint-source-empty");
+  assert.equal(
+    globalThis.__authorityBlobWrites.size,
+    writeCountBeforeFailedCheckpoint,
+    "Authority SQL canonical checkpoint must fail instead of writing stale runtime graph",
+  );
 }
 
 {

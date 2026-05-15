@@ -394,6 +394,7 @@ import {
   applyAuthorityCheckpointToStore,
   buildAuthorityConsistencyRepairPlan,
   buildAuthorityConsistencyAudit,
+  isAuthorityReplicaSyncRepairAction,
 } from "./maintenance/authority-consistency.js";
 import {
   createAuthorityBlobAdapter,
@@ -3363,12 +3364,19 @@ async function writeAuthorityCheckpointFromCurrentGraph(options = {}) {
 
   const reason = String(options.reason || "manual-authority-checkpoint");
   const authoritySqlPrimary = shouldUseAuthorityGraphStore(settings, capability);
+  const authoritySqlCanonical =
+    authoritySqlPrimary ||
+    [
+      graphPersistenceState.acceptedBy,
+      graphPersistenceState.acceptedStorageTier,
+      graphPersistenceState.primaryStorageTier,
+    ].some((value) => String(value || "").trim() === "authority-sql");
   let checkpointGraph = null;
   let revision = 0;
   let integrity = "";
   let checkpointSource = "runtime";
 
-  if (authoritySqlPrimary) {
+  if (authoritySqlCanonical) {
     try {
       const sqlSnapshot = await exportAuthoritySqlSnapshotForCheckpoint(chatId, settings);
       const sqlRevision = Number(sqlSnapshot?.meta?.revision || 0);
@@ -3422,7 +3430,7 @@ async function writeAuthorityCheckpointFromCurrentGraph(options = {}) {
     chatId,
     integrity,
     reason,
-    storageTier: authoritySqlPrimary ? "authority-sql-primary" : "runtime-checkpoint",
+    storageTier: authoritySqlCanonical ? "authority-sql-primary" : "runtime-checkpoint",
     persistedAt: updatedAt,
   });
   if (!checkpoint) {
@@ -3668,6 +3676,7 @@ async function runAuthorityConsistencyRepairPlan(options = {}) {
   try {
     const stepResults = [];
     let handoffRequired = false;
+    let nonBlockingFailureCount = 0;
     for (const step of plan.steps) {
       let stepOutcome = null;
       if (step.action === "write-authority-checkpoint") {
@@ -3738,6 +3747,11 @@ async function runAuthorityConsistencyRepairPlan(options = {}) {
 
       const latestStep = stepResults[stepResults.length - 1];
       if (!latestStep?.success) {
+        const canContinueAfterFailure = isAuthorityReplicaSyncRepairAction(latestStep?.action);
+        if (canContinueAfterFailure) {
+          nonBlockingFailureCount += 1;
+          continue;
+        }
         const failedResult = {
           plan,
           steps: stepResults,
@@ -3775,23 +3789,45 @@ async function runAuthorityConsistencyRepairPlan(options = {}) {
           collectionId: options.collectionId,
         }).catch(() => null);
     const finishedAt = new Date().toISOString();
+    const successStepCount = stepResults.filter((step) => step?.success).length;
+    const failedStepCount = stepResults.filter((step) => !step?.success).length;
+    const partialFailure = failedStepCount > 0 && successStepCount > 0;
+    const allFailed = failedStepCount > 0 && successStepCount === 0 && !handoffRequired;
+    const outcome = allFailed
+      ? "error"
+      : handoffRequired
+        ? partialFailure ? "warning" : "running"
+        : partialFailure
+          ? "warning"
+          : "success";
     const repairResult = {
       plan,
       steps: stepResults,
       auditSummary: audit.summary || null,
       handoffRequired,
+      outcome,
+      partialFailure,
+      failedStepCount,
+      nonBlockingFailureCount,
       finalAuditSummary: finalAuditResult?.audit?.summary || null,
       finalAuditDrift: finalAuditResult?.audit?.drift || null,
     };
     updateGraphPersistenceState({
-      authorityRepairState: handoffRequired ? "running" : "success",
+      authorityRepairState: outcome,
       authorityRepairUpdatedAt: finishedAt,
-      authorityRepairError: "",
+      authorityRepairError: allFailed
+        ? stepResults.find((step) => !step?.success)?.error || "Authority 副本同步失败"
+        : partialFailure
+          ? "部分副本同步失败；已继续执行其它可独立同步步骤"
+          : "",
       authorityRepairResult: cloneRuntimeDebugValue(repairResult, null),
     });
     refreshPanelLiveState();
     return {
-      success: true,
+      success: !allFailed,
+      outcome,
+      partialFailure,
+      error: allFailed ? stepResults.find((step) => !step?.success)?.error || "Authority 副本同步失败" : "",
       plan,
       results: stepResults,
       audit: finalAuditResult?.audit || audit,

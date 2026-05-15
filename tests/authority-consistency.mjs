@@ -6,6 +6,7 @@ import {
   buildAuthorityCheckpointImportSnapshot,
   buildAuthorityConsistencyAudit,
   buildAuthorityConsistencyRepairPlan,
+  isAuthorityReplicaSyncRepairAction,
 } from "../maintenance/authority-consistency.js";
 
 const graph = createEmptyGraph();
@@ -268,5 +269,42 @@ const auditRuntimeAheadOfSql = buildAuthorityConsistencyAudit({
 assert.equal(auditRuntimeAheadOfSql.summary.level, "warning");
 assert.equal(auditRuntimeAheadOfSql.summary.dataSafety, "runtime-ahead-of-sql");
 assert.equal(auditRuntimeAheadOfSql.actions.includes("restore-from-authority-blob-checkpoint"), false);
+
+const auditVectorDirtyOnly = buildAuthorityConsistencyAudit({
+  chatId: "chat-a",
+  collectionId: "st-bme::chat-a",
+  runtimeGraph: {
+    meta: { revision: 5 },
+    nodes: [{ id: "node-a" }],
+    edges: [],
+    vectorIndexState: { collectionId: "st-bme::chat-a", dirty: true },
+  },
+  graphPersistenceState: {
+    chatId: "chat-a",
+    revision: 5,
+  },
+  sqlSnapshot: {
+    meta: { revision: 5, nodeCount: 1, edgeCount: 0, tombstoneCount: 0 },
+  },
+  triviumStat: {
+    revision: 5,
+    namespace: "st-bme::chat-a",
+  },
+  blobResult: {
+    ok: true,
+    exists: true,
+    path: "user/files/checkpoint.json",
+    checkpoint: {
+      chatId: "chat-a",
+      revision: 5,
+      serializedGraph: serializeGraph(graph),
+    },
+  },
+});
+assert.equal(auditVectorDirtyOnly.summary.backupRedundancy, "ok");
+assert.equal(auditVectorDirtyOnly.summary.searchQuality, "degraded");
+assert.equal(isAuthorityReplicaSyncRepairAction("write-authority-checkpoint"), true);
+assert.equal(isAuthorityReplicaSyncRepairAction("rebuild-authority-trivium"), true);
+assert.equal(isAuthorityReplicaSyncRepairAction("restore-from-authority-blob-checkpoint"), false);
 
 console.log("authority-consistency tests passed");

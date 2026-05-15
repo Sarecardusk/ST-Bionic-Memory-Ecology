@@ -3157,6 +3157,8 @@ function _refreshTaskPersistence() {
       ? "同步完成"
       : authorityRepairState === "error"
         ? "同步失败"
+        : authorityRepairState === "warning"
+          ? "部分同步失败"
         : authorityRepairState === "running"
           ? authorityRepairResult?.handoffRequired
             ? "等待 Job 交接"
@@ -3529,7 +3531,9 @@ function _refreshTaskPersistence() {
           const result = await _actionHandlers.runAuthorityConsistencyRepairPlan();
           if (result?.success) {
             const stepCount = Number(result?.repairResult?.steps?.length || result?.results?.length || 0);
-            if (result?.handoffRequired || result?.repairResult?.handoffRequired) {
+            if (result?.partialFailure || result?.repairResult?.partialFailure || result?.outcome === "warning" || result?.repairResult?.outcome === "warning") {
+              toastr.warning(`Authority 副本部分同步失败；记忆图谱不受影响${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+            } else if (result?.handoffRequired || result?.repairResult?.handoffRequired) {
               toastr.success(`Authority 副本同步已交接异步 Job${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
             } else {
               toastr.success(`Authority 副本同步已完成${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");

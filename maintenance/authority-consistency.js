@@ -81,6 +81,13 @@ function normalizeRepairAction(value = "") {
   return String(value || "").trim();
 }
 
+export function isAuthorityReplicaSyncRepairAction(action = "") {
+  return [
+    "write-authority-checkpoint",
+    "rebuild-authority-trivium",
+  ].includes(normalizeRepairAction(action));
+}
+
 function collectIssueCodes(audit = null) {
   return new Set(
     (Array.isArray(audit?.issues) ? audit.issues : [])
@@ -577,9 +584,11 @@ export function buildAuthorityConsistencyAudit(input = {}) {
   const detail = issues[0]?.message || (level === "success"
     ? "Authority SQL / Trivium / Blob 已达到当前可观测的一致状态"
     : "尚未运行审计");
-  const replicaLag = issues.some((issue) => [
+  const backupLag = issues.some((issue) => [
     "blob-checkpoint-missing",
     "blob-checkpoint-behind",
+  ].includes(issue.code));
+  const searchLag = issues.some((issue) => [
     "trivium-replica-behind",
     "vector-dirty",
   ].includes(issue.code));
@@ -590,7 +599,7 @@ export function buildAuthorityConsistencyAudit(input = {}) {
   const dataSafety = sql.ok
     ? runtimeAheadOfSql
       ? "runtime-ahead-of-sql"
-      : replicaLag
+      : (backupLag || searchLag)
         ? "saved-replicas-behind"
         : "saved"
     : (sql.available ? "unknown" : "unavailable");
@@ -612,8 +621,8 @@ export function buildAuthorityConsistencyAudit(input = {}) {
       detail,
       issueCount: issues.length,
       dataSafety,
-      backupRedundancy: replicaLag ? "degraded" : (blob.exists ? "ok" : "unknown"),
-      searchQuality: runtime.vectorDirty || drift.sqlNewerThanTrivium ? "degraded" : "ok",
+      backupRedundancy: backupLag ? "degraded" : (blob.exists ? "ok" : "unknown"),
+      searchQuality: searchLag || drift.sqlNewerThanTrivium ? "degraded" : "ok",
     },
   };
 }
