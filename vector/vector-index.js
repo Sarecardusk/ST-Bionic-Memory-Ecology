@@ -651,6 +651,16 @@ function markLocalVectorManifestStale(graph, config, reason = "vector-space-chan
     : "向量模型配置变化，索引已标记为待重建";
 }
 
+function isVectorApplyCompatibilityError(error = null) {
+  const detailCategory = String(error?.payload?.details?.category || error?.details?.category || "").trim();
+  const message = String(error?.message || "").toLowerCase();
+  return detailCategory === "vector-dimension-mismatch" ||
+    detailCategory === "vector-space-mismatch" ||
+    message.includes("dimension mismatch") ||
+    message.includes("vectorspaceid mismatch") ||
+    message.includes("single vector dimension");
+}
+
 function markBackendVectorStateDirty(
   graph,
   config,
@@ -924,6 +934,18 @@ export async function syncGraphVectorIndex(
             );
             authorityUpsertMs += nowMs() - applyStartedAt;
             authorityUpsertDiagnostics = applyResult?.diagnostics || null;
+            const observedDim = Number(applyResult?.manifest?.observedDim || getEmbeddingDimensionFromEntries(graph, desiredEntries) || 0);
+            if (observedDim > 0) {
+              updateVectorManifest(graph, config, {
+                backend: "authority",
+                chatId: effectiveChatId,
+                collectionId,
+                graphRevision: graph?.meta?.revision || graph?.revision || 0,
+                desiredEntries,
+                observedDim,
+                status: "clean",
+              });
+            }
             authorityLinkDiagnostics = {
               operation: "bmeVectorApply:links",
               totalItems: Number(applyResult?.diagnostics?.linkItems || 0),
@@ -934,6 +956,7 @@ export async function syncGraphVectorIndex(
             appliedViaBme = true;
           } catch (applyError) {
             if (isAbortError(applyError)) throw applyError;
+            if (isVectorApplyCompatibilityError(applyError)) throw applyError;
             console.warn("[ST-BME] BME 服务端向量 apply 失败，回退 Authority Trivium 旧路径:", applyError);
           }
         }
@@ -1016,6 +1039,18 @@ export async function syncGraphVectorIndex(
             );
             authorityUpsertMs += nowMs() - applyStartedAt;
             authorityUpsertDiagnostics = applyResult?.diagnostics || null;
+            const observedDim = Number(applyResult?.manifest?.observedDim || getEmbeddingDimensionFromEntries(graph, entriesToUpsert) || 0);
+            if (observedDim > 0) {
+              updateVectorManifest(graph, config, {
+                backend: "authority",
+                chatId: effectiveChatId,
+                collectionId,
+                graphRevision: graph?.meta?.revision || graph?.revision || 0,
+                desiredEntries,
+                observedDim,
+                status: "clean",
+              });
+            }
             authorityLinkDiagnostics = {
               operation: "bmeVectorApply:links",
               totalItems: Number(applyResult?.diagnostics?.linkItems || 0),
@@ -1025,6 +1060,7 @@ export async function syncGraphVectorIndex(
             appliedViaBme = true;
           } catch (applyError) {
             if (isAbortError(applyError)) throw applyError;
+            if (isVectorApplyCompatibilityError(applyError)) throw applyError;
             console.warn("[ST-BME] BME 服务端向量 apply 失败，回退 Authority Trivium 旧路径:", applyError);
           }
         }
@@ -1230,7 +1266,7 @@ export async function syncGraphVectorIndex(
       const hasEmbedding =
         Array.isArray(node?.embedding) && node.embedding.length > 0;
 
-      if (!force && !currentHash && hasEmbedding) {
+      if (!directScopeChanged && !force && !currentHash && hasEmbedding) {
         state.hashToNodeId[entry.hash] = entry.nodeId;
         state.nodeToHash[entry.nodeId] = entry.hash;
         continue;
@@ -1516,6 +1552,24 @@ export async function findSimilarNodesByText(
   }
 
   if (isAuthorityVectorConfig(config)) {
+    const state = graph?.vectorIndexState || {};
+    if (config.bmeVectorApplyReady === true || config.bmeVectorManifestReady === true) {
+      const currentDim = Number(state.currentVectorSpace?.observedDim || state.manifest?.observedDim || 0);
+      const currentVectorSpace = currentDim > 0
+        ? deriveVectorSpace(config, currentDim)
+        : state.currentVectorSpace;
+      if (!isVectorManifestCompatible(state.manifest, currentVectorSpace)) {
+        recordSearchTimings({
+          success: false,
+          reason: "authority-vector-space-mismatch",
+          resultCount: 0,
+        });
+        state.dirty = true;
+        state.dirtyReason = "authority-vector-space-mismatch";
+        state.lastWarning = "Authority 向量空间不匹配，已切换到非向量召回并等待重建";
+        return [];
+      }
+    }
     const requestStartedAt = nowMs();
     try {
       const queryEmbedStartedAt = nowMs();

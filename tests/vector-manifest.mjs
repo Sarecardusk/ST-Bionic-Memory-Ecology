@@ -99,4 +99,17 @@ const baseConfig = {
   assert.equal(graph.vectorIndexState.lastSearchTimings.reason, "query-dimension-mismatch");
 }
 
+{
+  const graph = createVectorGraph();
+  graph.nodes[0].embedding = [0.1, 0.2, 0.3];
+  embeddingDim = 3;
+  const changedModelConfig = { ...baseConfig, model: "text-embedding-3-large" };
+  await syncGraphVectorIndex(graph, changedModelConfig, { chatId: graph.historyState.chatId });
+  assert.equal(graph.vectorIndexState.manifest.status, "clean");
+  assert.equal(graph.vectorIndexState.manifest.model, "text-embedding-3-large");
+  assert.equal(graph.nodes[0].embedding.length, 3);
+  assert.equal(graph.nodes[0].embedding[0], 1);
+  assert.notDeepEqual(graph.nodes[0].embedding, [0.1, 0.2, 0.3]);
+}
+
 console.log("vector-manifest tests passed");
