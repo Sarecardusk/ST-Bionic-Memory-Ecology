@@ -96,6 +96,9 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
     : [];
   const issueCodes = collectIssueCodes(source);
   const steps = [];
+  const sqlRevision = normalizeOptionalInteger(source?.sql?.revision);
+  const blobRevision = normalizeOptionalInteger(source?.blob?.revision);
+  const sqlNewerThanBlob = Number.isFinite(sqlRevision) && Number.isFinite(blobRevision) && sqlRevision > blobRevision;
   const addStep = (action, label, detail, codes = []) => {
     const normalizedAction = normalizeRepairAction(action);
     if (!normalizedAction || !actions.includes(normalizedAction)) {
@@ -120,21 +123,23 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
 
   addStep(
     "write-authority-checkpoint",
-    "写入当前 Checkpoint",
-    "Authority Blob 尚无 checkpoint，先把当前 runtime 图谱写成 checkpoint，再继续后续修复。",
-    ["blob-checkpoint-missing"],
+    "同步备份 Checkpoint",
+    "Authority Blob checkpoint 落后或缺失，应从当前权威图谱源同步一个新的备份 checkpoint。",
+    ["blob-checkpoint-missing", "blob-checkpoint-behind", "blob-runtime-revision-drift"],
   );
-  addStep(
-    "restore-from-authority-blob-checkpoint",
-    "从 Blob Checkpoint 恢复 SQL",
-    "检测到 runtime / SQL / Blob revision 漂移，可用 Blob checkpoint 回灌 Authority SQL。",
-    ["sql-runtime-revision-drift", "blob-runtime-revision-drift"],
-  );
+  if (!sqlNewerThanBlob) {
+    addStep(
+      "restore-from-authority-blob-checkpoint",
+      "灾难恢复：从 Blob Checkpoint 恢复 SQL",
+      "仅在 SQL 缺失、损坏或用户明确需要回滚时，才可用 Blob checkpoint 回灌 Authority SQL。",
+      ["sql-runtime-revision-drift", "blob-newer-than-sql", "blob-chat-mismatch"],
+    );
+  }
   addStep(
     "rebuild-authority-trivium",
-    "重建 Authority Trivium",
-    "Trivium 与 SQL revision 不一致，或当前向量索引仍为 dirty，需要重建 Trivium。",
-    ["trivium-sql-revision-drift", "trivium-collection-mismatch", "vector-dirty"],
+    "同步向量/Trivium 副本",
+    "Trivium 向量副本落后、collection 不匹配，或当前向量索引为 dirty，需要从权威图谱源重建/同步。",
+    ["trivium-sql-revision-drift", "trivium-replica-behind", "trivium-collection-mismatch", "vector-dirty"],
   );
 
   const blockedIssueCodes = (Array.isArray(source.issues) ? source.issues : [])
@@ -145,7 +150,7 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
     (action) => action !== "run-authority-consistency-audit" && !steps.some((step) => step.action === action),
   );
   const detail = steps.length
-    ? `建议顺序：${steps.map((step) => step.label).join(" → ")}`
+    ? `建议同步：${steps.map((step) => step.label).join(" → ")}`
     : String(source?.summary?.detail || "当前审计未发现需要自动编排的修复步骤");
 
   return {
@@ -157,7 +162,7 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
     unsupportedActions,
     summary: {
       level: steps.length > 0 ? "warning" : String(source?.summary?.level || "idle"),
-      label: steps.length > 0 ? `建议修复 ${steps.length} 步` : "当前无需编排修复",
+      label: steps.length > 0 ? `建议同步副本 ${steps.length} 步` : "当前无需编排修复",
       detail,
     },
   };
@@ -436,10 +441,23 @@ export function buildAuthorityConsistencyAudit(input = {}) {
     runtimeVsBlobRevision: buildRevisionDelta(runtime.revision, blob.revision),
     sqlVsBlobRevision: buildRevisionDelta(sql.revision, blob.revision),
     triviumVsSqlRevision: buildRevisionDelta(trivium.revision, sql.revision),
+    sqlNewerThanBlob:
+      Number.isFinite(sql.revision) && Number.isFinite(blob.revision) && sql.revision > blob.revision,
+    blobNewerThanSql:
+      Number.isFinite(sql.revision) && Number.isFinite(blob.revision) && blob.revision > sql.revision,
+    sqlNewerThanTrivium:
+      Number.isFinite(sql.revision) && Number.isFinite(trivium.revision) && sql.revision > trivium.revision,
     collectionMatchesRuntime:
       !trivium.namespace || !runtime.collectionId || trivium.namespace === runtime.collectionId,
     checkpointRestorable:
-      blob.exists && blob.hasSerializedGraph && (!blob.chatId || !chatId || blob.chatId === chatId),
+      blob.exists &&
+      blob.hasSerializedGraph &&
+      (!blob.chatId || !chatId || blob.chatId === chatId) &&
+      !(
+        Number.isFinite(sql.revision) &&
+        Number.isFinite(blob.revision) &&
+        sql.revision > blob.revision
+      ),
   };
 
   const issues = [];
@@ -473,11 +491,16 @@ export function buildAuthorityConsistencyAudit(input = {}) {
     Number.isFinite(runtime.revision) &&
     blob.revision !== runtime.revision
   ) {
+    const code = Number.isFinite(sql.revision) && blob.revision < sql.revision
+      ? "blob-checkpoint-behind"
+      : "blob-runtime-revision-drift";
     issues.push(
       normalizeIssue(
         "warning",
-        "blob-runtime-revision-drift",
-        `Blob checkpoint revision 与 runtime 不一致：${blob.revision} ≠ ${runtime.revision}`,
+        code,
+        code === "blob-checkpoint-behind"
+          ? `Blob checkpoint 落后于 Authority SQL：${blob.revision} < ${sql.revision}`
+          : `Blob checkpoint revision 与 runtime 不一致：${blob.revision} ≠ ${runtime.revision}`,
       ),
     );
   }
@@ -486,11 +509,16 @@ export function buildAuthorityConsistencyAudit(input = {}) {
     Number.isFinite(sql.revision) &&
     trivium.revision !== sql.revision
   ) {
+    const code = trivium.revision < sql.revision
+      ? "trivium-replica-behind"
+      : "trivium-sql-revision-drift";
     issues.push(
       normalizeIssue(
         "warning",
-        "trivium-sql-revision-drift",
-        `Trivium revision 与 SQL 不一致：${trivium.revision} ≠ ${sql.revision}`,
+        code,
+        code === "trivium-replica-behind"
+          ? `Trivium 向量副本落后于 Authority SQL：${trivium.revision} < ${sql.revision}`
+          : `Trivium revision 与 SQL 不一致：${trivium.revision} ≠ ${sql.revision}`,
       ),
     );
   }
@@ -511,11 +539,18 @@ export function buildAuthorityConsistencyAudit(input = {}) {
   }
 
   const actions = [];
-  if (drift.checkpointRestorable) actions.push("restore-from-authority-blob-checkpoint");
+  const restoreRelevant =
+    drift.checkpointRestorable &&
+    (
+      sql.ok !== true ||
+      drift.blobNewerThanSql ||
+      issues.some((issue) => issue.code === "sql-probe-error")
+    );
+  if (restoreRelevant) actions.push("restore-from-authority-blob-checkpoint");
   if (runtime.vectorDirty || (Number.isFinite(drift.triviumVsSqlRevision) && drift.triviumVsSqlRevision < 0)) {
     actions.push("rebuild-authority-trivium");
   }
-  if (!blob.exists && source.capability?.blobReady) {
+  if ((!blob.exists || drift.sqlNewerThanBlob) && source.capability?.blobReady) {
     actions.push("write-authority-checkpoint");
   }
   if (issues.some((issue) => issue.code === "sql-runtime-revision-drift" || issue.code === "blob-runtime-revision-drift")) {
@@ -533,13 +568,32 @@ export function buildAuthorityConsistencyAudit(input = {}) {
     level === "error"
       ? "存在阻塞性不一致"
       : level === "warning"
-        ? "存在待处理漂移"
+        ? sql.ok
+          ? "副本待同步"
+          : "存在待处理漂移"
         : level === "success"
           ? "Authority 工件已对齐"
           : "等待审计";
   const detail = issues[0]?.message || (level === "success"
     ? "Authority SQL / Trivium / Blob 已达到当前可观测的一致状态"
     : "尚未运行审计");
+  const replicaLag = issues.some((issue) => [
+    "blob-checkpoint-missing",
+    "blob-checkpoint-behind",
+    "trivium-replica-behind",
+    "vector-dirty",
+  ].includes(issue.code));
+  const runtimeAheadOfSql =
+    Number.isFinite(runtime.revision) &&
+    Number.isFinite(sql.revision) &&
+    runtime.revision > sql.revision;
+  const dataSafety = sql.ok
+    ? runtimeAheadOfSql
+      ? "runtime-ahead-of-sql"
+      : replicaLag
+        ? "saved-replicas-behind"
+        : "saved"
+    : (sql.available ? "unknown" : "unavailable");
 
   return {
     updatedAt,
@@ -557,6 +611,9 @@ export function buildAuthorityConsistencyAudit(input = {}) {
       label,
       detail,
       issueCount: issues.length,
+      dataSafety,
+      backupRedundancy: replicaLag ? "degraded" : (blob.exists ? "ok" : "unknown"),
+      searchQuality: runtime.vectorDirty || drift.sqlNewerThanTrivium ? "degraded" : "ok",
     },
   };
 }

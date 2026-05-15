@@ -3113,7 +3113,12 @@ function _refreshTaskPersistence() {
     ? authorityAudit.issues.map((issue) => issue.message).filter(Boolean).join(" / ")
     : authorityAuditSummary.detail || "—";
   const authorityAuditActionsLabel = Array.isArray(authorityAudit?.actions) && authorityAudit.actions.length
-    ? authorityAudit.actions.join(" · ")
+    ? authorityAudit.actions.map((action) => ({
+        "write-authority-checkpoint": "同步备份 Checkpoint",
+        "rebuild-authority-trivium": "同步向量/Trivium 副本",
+        "run-authority-consistency-audit": "重新审计",
+        "restore-from-authority-blob-checkpoint": "灾难恢复：从 Checkpoint 覆盖 SQL",
+      }[action] || action)).join(" · ")
     : "—";
   const authorityAuditUpdatedLabel = ps.authorityConsistencyUpdatedAt
     ? _formatTaskProfileTime(ps.authorityConsistencyUpdatedAt)
@@ -3149,20 +3154,20 @@ function _refreshTaskPersistence() {
   ).trim();
   const authorityRepairLabel =
     authorityRepairState === "success"
-      ? "修复完成"
+      ? "同步完成"
       : authorityRepairState === "error"
-        ? "修复失败"
+        ? "同步失败"
         : authorityRepairState === "running"
           ? authorityRepairResult?.handoffRequired
             ? "等待 Job 交接"
-            : "修复中"
+            : "同步中"
           : "未执行";
   const authorityRepairUpdatedLabel = ps.authorityRepairUpdatedAt
     ? _formatTaskProfileTime(ps.authorityRepairUpdatedAt)
     : "—";
   const authorityRepairPlanLabel = authorityRepairPlan.ok
     ? authorityRepairPlan.steps.map((step) => step.label).join(" → ")
-    : authorityRepairPlan.summary.label || "当前无需编排修复";
+    : authorityRepairPlan.summary.label || "当前无需编排同步";
   const authorityRepairResultLabel = authorityRepairResult?.steps?.length
     ? `${Number(authorityRepairResult.steps.length || 0)} 步${
         authorityRepairResult?.handoffRequired
@@ -3340,9 +3345,9 @@ function _refreshTaskPersistence() {
     ["Blob rev", authorityAuditBlobRevision],
     ["Blob path", authorityAuditBlobPath],
     ["建议动作", authorityAuditActionsLabel],
-    ["建议修复", authorityRepairPlanLabel],
-    ["修复状态", authorityRepairLabel],
-    ["修复结果", authorityRepairResultLabel],
+    ["建议同步", authorityRepairPlanLabel],
+    ["同步状态", authorityRepairLabel],
+    ["同步结果", authorityRepairResultLabel],
     ["最近审计", authorityAuditUpdatedLabel],
     ["最近修复", authorityRepairUpdatedLabel],
     ["恢复状态", authorityRestoreLabel],
@@ -3381,21 +3386,30 @@ function _refreshTaskPersistence() {
     (!ps.authorityBlobCheckpointPath && ps.authorityBlobReady);
   const showAuthorityTriviumRebuildAction =
     authorityAuditActions.includes("rebuild-authority-trivium");
+  const showAuthorityRestoreAction = Boolean(
+    authorityAudit?.drift?.checkpointRestorable &&
+    (
+      authorityAudit?.sql?.ok !== true ||
+      authorityAudit?.drift?.blobNewerThanSql ||
+      authorityAuditActions.includes("restore-from-authority-blob-checkpoint") ||
+      authorityRestoreState !== "idle"
+    ),
+  );
   const authorityActionButtons = [
     typeof _actionHandlers.runAuthorityConsistencyAudit === "function"
       ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="audit">执行 Authority 审计</button>`
       : "",
     showAuthorityRepairAction && typeof _actionHandlers.runAuthorityConsistencyRepairPlan === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="repair-plan">执行建议修复</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="repair-plan">执行副本同步</button>`
       : "",
     showAuthorityCheckpointWriteAction && typeof _actionHandlers.writeAuthorityCheckpoint === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="checkpoint">写入当前 Checkpoint</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="checkpoint">同步 Checkpoint</button>`
       : "",
-    typeof _actionHandlers.restoreAuthorityCheckpoint === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="restore">从 Checkpoint 恢复</button>`
+    showAuthorityRestoreAction && typeof _actionHandlers.restoreAuthorityCheckpoint === "function"
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="restore">灾难恢复：Checkpoint 覆盖 SQL</button>`
       : "",
     showAuthorityTriviumRebuildAction && typeof _actionHandlers.rebuildVectorIndex === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="rebuild-trivium">重建 Authority Trivium</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="rebuild-trivium">同步 Authority Trivium</button>`
       : "",
     typeof _actionHandlers.captureAuthorityPerformanceBaseline === "function"
       ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="baseline">捕获 Perf Baseline</button>`
@@ -3470,9 +3484,9 @@ function _refreshTaskPersistence() {
       </div>
     </div>
     <div class="bme-persist-kv" style="margin-top:12px">
-      <div style="font-size:12px;font-weight:700;color:var(--bme-on-surface);margin-bottom:10px"><i class="fa-solid fa-shield-halved" style="margin-right:6px;color:var(--bme-primary)"></i>Authority 一致性 / Checkpoint</div>
+      <div style="font-size:12px;font-weight:700;color:var(--bme-on-surface);margin-bottom:10px"><i class="fa-solid fa-shield-halved" style="margin-right:6px;color:var(--bme-primary)"></i>Authority 副本健康 / 备份与向量同步</div>
       <div class="bme-config-help" style="margin-bottom:12px">
-        审计当前 chat 的 Authority SQL / Trivium / Blob checkpoint 是否同 revision 前进；restore 会把 Blob checkpoint 回灌到 Authority SQL，并在 Authority 主存储启用时触发当前聊天重载。
+        审计当前 chat 的 Authority SQL、Blob checkpoint 备份和 Trivium/vector 搜索副本。SQL 是主存储；Blob/Trivium 落后时优先同步副本，只有 SQL 缺失或需要回滚时才从 checkpoint 恢复。
       </div>
       ${authorityActionButtons ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${authorityActionButtons}</div>` : ""}
       ${renderRowsTwoColumn(authorityRows)}
@@ -3507,21 +3521,21 @@ function _refreshTaskPersistence() {
           if (typeof _actionHandlers.runAuthorityConsistencyRepairPlan !== "function") return;
           if (authorityRepairPlan.requiresConfirmation) {
             const confirmed = globalThis.confirm?.(
-              `建议修复将按以下顺序执行：\n${authorityRepairPlan.steps.map((step, index) => `${index + 1}. ${step.label}`).join("\n")}\n\n其中包含从 Blob Checkpoint 恢复 SQL，确定继续？`,
+              `副本同步计划将按以下顺序执行：\n${authorityRepairPlan.steps.map((step, index) => `${index + 1}. ${step.label}`).join("\n")}\n\n其中包含从 Blob Checkpoint 恢复 SQL。此操作只适合 SQL 缺失、损坏或需要回滚时使用，确定继续？`,
             );
             if (!confirmed) return;
           }
-          toastr.info("Authority 建议修复执行中…", "ST-BME", { timeOut: 2000 });
+          toastr.info("Authority 副本同步执行中…", "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.runAuthorityConsistencyRepairPlan();
           if (result?.success) {
             const stepCount = Number(result?.repairResult?.steps?.length || result?.results?.length || 0);
             if (result?.handoffRequired || result?.repairResult?.handoffRequired) {
-              toastr.success(`Authority 建议修复已交接异步 Job${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.success(`Authority 副本同步已交接异步 Job${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
             } else {
-              toastr.success(`Authority 建议修复已完成${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.success(`Authority 副本同步已完成${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
             }
           } else {
-            toastr.warning(`Authority 建议修复失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(`Authority 副本同步失败：${result?.error || "unknown"}`, "ST-BME");
           }
         } else if (action === "checkpoint") {
           if (typeof _actionHandlers.writeAuthorityCheckpoint !== "function") return;
@@ -3534,6 +3548,10 @@ function _refreshTaskPersistence() {
           }
         } else if (action === "restore") {
           if (typeof _actionHandlers.restoreAuthorityCheckpoint !== "function") return;
+          const confirmed = globalThis.confirm?.(
+            `灾难恢复会用 Blob Checkpoint 覆盖 Authority SQL。\n\nSQL rev: ${authorityAuditSqlRevision}\nCheckpoint rev: ${authorityAuditBlobRevision}\n\n只有 SQL 缺失、损坏或明确需要回滚时才继续。确定执行？`,
+          );
+          if (!confirmed) return;
           toastr.info("Authority Checkpoint 恢复中…", "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.restoreAuthorityCheckpoint();
           if (result?.success) {
@@ -3573,7 +3591,7 @@ function _refreshTaskPersistence() {
           action === "restore"
             ? `Authority Checkpoint 恢复失败: ${error?.message || error}`
             : action === "repair-plan"
-              ? `Authority 建议修复失败: ${error?.message || error}`
+              ? `Authority 副本同步失败: ${error?.message || error}`
             : action === "checkpoint"
               ? `Authority Checkpoint 写入失败: ${error?.message || error}`
             : action === "rebuild-trivium"

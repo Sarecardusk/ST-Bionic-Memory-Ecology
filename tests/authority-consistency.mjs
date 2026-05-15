@@ -108,7 +108,8 @@ const auditAligned = buildAuthorityConsistencyAudit({
 assert.equal(auditAligned.summary.level, "success");
 assert.equal(auditAligned.issues.length, 0);
 assert.equal(auditAligned.drift.checkpointRestorable, true);
-assert.ok(auditAligned.actions.includes("restore-from-authority-blob-checkpoint"));
+assert.equal(auditAligned.actions.includes("restore-from-authority-blob-checkpoint"), false);
+assert.equal(auditAligned.summary.dataSafety, "saved");
 const alignedRepairPlan = buildAuthorityConsistencyRepairPlan(auditAligned);
 assert.equal(alignedRepairPlan.ok, false);
 assert.equal(alignedRepairPlan.stepCount, 0);
@@ -161,6 +162,67 @@ assert.deepEqual(
   ],
 );
 
+const auditSqlAheadReplicasBehind = buildAuthorityConsistencyAudit({
+  chatId: "chat-a",
+  collectionId: "st-bme::chat-a",
+  capability: {
+    blobReady: true,
+  },
+  runtimeGraph: {
+    meta: { revision: 2 },
+    nodes: [{ id: "node-a" }],
+    edges: [],
+    vectorIndexState: {
+      collectionId: "st-bme::chat-a",
+      dirty: false,
+    },
+  },
+  graphPersistenceState: {
+    chatId: "chat-a",
+    revision: 2,
+    authorityBlobCheckpointPath: "user/files/checkpoint.json",
+    authorityBlobCheckpointRevision: 0,
+  },
+  sqlSnapshot: {
+    meta: { revision: 2, nodeCount: 1, edgeCount: 0, tombstoneCount: 0 },
+  },
+  triviumStat: {
+    revision: 0,
+    namespace: "st-bme::chat-a",
+  },
+  blobResult: {
+    ok: true,
+    exists: true,
+    path: "user/files/checkpoint.json",
+    checkpoint: {
+      chatId: "chat-a",
+      revision: 0,
+      serializedGraph: serializeGraph(createEmptyGraph()),
+    },
+  },
+});
+assert.equal(auditSqlAheadReplicasBehind.summary.level, "warning");
+assert.equal(auditSqlAheadReplicasBehind.summary.label, "副本待同步");
+assert.equal(auditSqlAheadReplicasBehind.summary.dataSafety, "saved-replicas-behind");
+assert.equal(auditSqlAheadReplicasBehind.summary.backupRedundancy, "degraded");
+assert.equal(auditSqlAheadReplicasBehind.summary.searchQuality, "degraded");
+assert.ok(auditSqlAheadReplicasBehind.issues.some((issue) => issue.code === "blob-checkpoint-behind"));
+assert.ok(auditSqlAheadReplicasBehind.issues.some((issue) => issue.code === "trivium-replica-behind"));
+assert.ok(auditSqlAheadReplicasBehind.actions.includes("write-authority-checkpoint"));
+assert.ok(auditSqlAheadReplicasBehind.actions.includes("rebuild-authority-trivium"));
+assert.equal(auditSqlAheadReplicasBehind.actions.includes("restore-from-authority-blob-checkpoint"), false);
+assert.equal(auditSqlAheadReplicasBehind.drift.checkpointRestorable, false);
+const sqlAheadRepairPlan = buildAuthorityConsistencyRepairPlan(auditSqlAheadReplicasBehind);
+assert.equal(sqlAheadRepairPlan.ok, true);
+assert.equal(sqlAheadRepairPlan.requiresConfirmation, false);
+assert.deepEqual(
+  sqlAheadRepairPlan.steps.map((step) => step.action),
+  [
+    "write-authority-checkpoint",
+    "rebuild-authority-trivium",
+  ],
+);
+
 const restoreRepairPlan = buildAuthorityConsistencyRepairPlan({
   issues: [
     {
@@ -181,5 +243,30 @@ assert.deepEqual(
   restoreRepairPlan.steps.map((step) => step.action),
   ["restore-from-authority-blob-checkpoint"],
 );
+
+const auditRuntimeAheadOfSql = buildAuthorityConsistencyAudit({
+  chatId: "chat-a",
+  collectionId: "st-bme::chat-a",
+  runtimeGraph: {
+    meta: { revision: 4 },
+    nodes: [{ id: "node-a" }],
+    edges: [],
+    vectorIndexState: { collectionId: "st-bme::chat-a", dirty: false },
+  },
+  graphPersistenceState: {
+    chatId: "chat-a",
+    revision: 4,
+  },
+  sqlSnapshot: {
+    meta: { revision: 3, nodeCount: 1, edgeCount: 0, tombstoneCount: 0 },
+  },
+  triviumStat: {
+    revision: 3,
+    namespace: "st-bme::chat-a",
+  },
+});
+assert.equal(auditRuntimeAheadOfSql.summary.level, "warning");
+assert.equal(auditRuntimeAheadOfSql.summary.dataSafety, "runtime-ahead-of-sql");
+assert.equal(auditRuntimeAheadOfSql.actions.includes("restore-from-authority-blob-checkpoint"), false);
 
 console.log("authority-consistency tests passed");
