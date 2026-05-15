@@ -1291,6 +1291,7 @@ let lastExtractionWarningAt = 0;
 const LOCAL_VECTOR_TIMEOUT_MS = 300000;
 const EXTRACTION_VECTOR_SYNC_TIMEOUT_MS = 300000;
 const STATUS_TOAST_THROTTLE_MS = 1500;
+const STAGE_NOTICE_USER_DISMISS_COOLDOWN_MS = 5 * 60 * 1000;
 const RECALL_INPUT_RECORD_TTL_MS = 60000;
 const TRIVIAL_GENERATION_SKIP_TTL_MS = 60000;
 const HISTORY_RECOVERY_SETTLE_MS = 80;
@@ -1351,6 +1352,7 @@ const backgroundVectorSyncCoalescer =
         },
       };
 const lastStatusToastAt = {};
+const dismissedStageNoticeSignatures = new Map();
 let pendingRecallSendIntent = createRecallInputRecord();
 let lastRecallSentUserMessage = createRecallInputRecord();
 let pendingHostGenerationInputSnapshot = createRecallInputRecord();
@@ -4802,6 +4804,36 @@ function refreshVisibleStageNotices() {
   }
 }
 
+function buildStageNoticeSignature(stage, input = {}) {
+  return [
+    String(stage || ""),
+    String(input?.title || ""),
+    String(input?.level || ""),
+    String(input?.message || ""),
+    String(input?.action?.label || ""),
+  ].join("\u001f");
+}
+
+function isStageNoticeDismissedByUser(stage, signature) {
+  if (!stage || !signature) return false;
+  const record = dismissedStageNoticeSignatures.get(stage);
+  if (!record || record.signature !== signature) return false;
+  const dismissedAt = Number(record.dismissedAt || 0);
+  if (Date.now() - dismissedAt <= STAGE_NOTICE_USER_DISMISS_COOLDOWN_MS) {
+    return true;
+  }
+  dismissedStageNoticeSignatures.delete(stage);
+  return false;
+}
+
+function rememberStageNoticeUserDismiss(stage, signature) {
+  if (!stage || !signature) return;
+  dismissedStageNoticeSignatures.set(stage, {
+    signature,
+    dismissedAt: Date.now(),
+  });
+}
+
 function updateStageNotice(
   stage,
   text,
@@ -4832,9 +4864,20 @@ function updateStageNotice(
             : undefined
         : options.action,
   };
+  let signature = "";
+  input.onDismiss = ({ reason } = {}) => {
+    if (reason === "user") {
+      rememberStageNoticeUserDismiss(stage, signature);
+    }
+    if (stageNoticeHandles[stage]?.isClosed?.()) {
+      stageNoticeHandles[stage] = null;
+    }
+  };
+  signature = buildStageNoticeSignature(stage, input);
 
   const currentHandle = stageNoticeHandles[stage];
   if (!currentHandle || currentHandle.isClosed?.()) {
+    if (isStageNoticeDismissedByUser(stage, signature)) return;
     stageNoticeHandles[stage] = showManagedBmeNotice(input);
     return;
   }

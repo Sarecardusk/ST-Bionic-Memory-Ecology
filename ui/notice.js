@@ -501,10 +501,15 @@ export function showManagedBmeNotice(input) {
     closeTimer = null;
   };
 
-  const close = () => {
+  const close = (reason = "programmatic") => {
     if (closed) return;
     clearCloseTimer();
     closed = true;
+    try {
+      currentInput.onDismiss?.({ reason });
+    } catch (error) {
+      console.debug?.("[ST-BME] notice dismiss callback failed", error);
+    }
     item.classList.add("st-bme-notice--out");
     setTimeout(() => {
       item.remove();
@@ -518,7 +523,7 @@ export function showManagedBmeNotice(input) {
     clearCloseTimer();
     if (nextInput.persist) return;
     const duration = Math.max(1400, nextInput.duration_ms || 3200);
-    closeTimer = setTimeout(close, duration);
+    closeTimer = setTimeout(() => close("auto"), duration);
   };
 
   const update = (nextInput) => {
@@ -539,7 +544,7 @@ export function showManagedBmeNotice(input) {
   closeButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    close();
+    close("user");
   });
 
   content.addEventListener("click", (event) => {
@@ -565,7 +570,7 @@ export function showManagedBmeNotice(input) {
       if (nextLayout === "normal" && !currentInput.persist) {
         clearCloseTimer();
         const duration = Math.max(1400, currentInput.duration_ms || 3200);
-        closeTimer = setTimeout(close, duration);
+        closeTimer = setTimeout(() => close("auto"), duration);
         const progressEl = item.querySelector(".st-bme-notice__progress");
         if (progressEl) {
           progressEl.style.display = "";
