@@ -27,6 +27,36 @@ function assert(condition, message) {
   }
 }
 
+function normalizeNodeId(id) {
+  const numeric = Number(id);
+  return Number.isFinite(numeric) ? numeric : id;
+}
+
+function idSet(values = []) {
+  return new Set(Array.from(values || [], normalizeNodeId));
+}
+
+function hasMethod(db, name) {
+  return typeof db?.[name] === "function";
+}
+
+function findByPayload(db, condition = {}) {
+  if (hasMethod(db, "filterWhere")) {
+    return db.filterWhere(condition);
+  }
+  if (hasMethod(db, "tql")) {
+    const query = `FIND ${JSON.stringify(condition)} RETURN *`;
+    return db.tql(query).map((row) => row?._).filter(Boolean);
+  }
+  throw new Error("TriviumDB has neither filterWhere nor tql FIND support");
+}
+
+function maybeClose(db) {
+  if (hasMethod(db, "close")) {
+    db.close();
+  }
+}
+
 function vecFrom(seed, dim = DIM) {
   const out = [];
   for (let i = 0; i < dim; i += 1) {
@@ -204,6 +234,9 @@ async function main() {
     loadModule: false,
     crud: false,
     search: false,
+    tql: false,
+    textHybrid: false,
+    migration: false,
     flushReopen: false,
     walRecovery: false,
     dimensionMismatch: false,
@@ -312,7 +345,7 @@ async function main() {
     const neighborsAfterUnlink = db.neighbors(id1, 1);
     assert(!neighborsAfterUnlink.includes(id3), "unlink should remove edge id1->id3");
 
-    const floorMatched = db.filterWhere({ sourceFloor: 1 });
+    const floorMatched = findByPayload(db, { sourceFloor: 1 });
     assert(floorMatched.length >= 1, "filterWhere(sourceFloor=1) should return at least one node");
     assert(
       floorMatched.every((item) => item.payload?.sourceFloor === 1),
@@ -324,7 +357,50 @@ async function main() {
     assert(got3 === null, "deleted node should not be retrievable");
 
     db.flush();
+    maybeClose(db);
     keyStatus.crud = true;
+  });
+
+  await runCase("tql-find-match-search", async () => {
+    const dbPath = path.join(TMP_ROOT, "tql.tdb");
+    const db = new TriviumDB(dbPath, DIM, "f32", "normal");
+    if (!hasMethod(db, "tql")) {
+      report.notes.push("TQL API unavailable; skipping v0.7 query coverage");
+      maybeClose(db);
+      keyStatus.tql = true;
+      return;
+    }
+
+    const base = vecFrom(33);
+    const idA = db.insert(base, {
+      chatId: "chat-tql",
+      type: "event",
+      sourceFloor: 31,
+      label: "tql-a",
+      text: "Alice opens the archive door",
+    });
+    const idB = db.insert(near(base, 0.003), {
+      chatId: "chat-tql",
+      type: "event",
+      sourceFloor: 32,
+      label: "tql-b",
+      text: "Bob carries the archive key",
+    });
+    db.link(idA, idB, "related", 0.82);
+
+    const found = db.tql('FIND {chatId: "chat-tql", sourceFloor: {$gte: 31}} RETURN * LIMIT 5');
+    const foundIds = idSet(found.map((row) => row?._?.id));
+    assert(foundIds.has(idA) && foundIds.has(idB), "TQL FIND should return both inserted nodes");
+
+    const matched = db.tql(`MATCH (a {id: ${idA}})-[:related]->(b) RETURN b`);
+    const matchedIds = idSet(matched.map((row) => row?.b?.id));
+    assert(matchedIds.has(idB), "TQL MATCH should traverse related edge");
+
+    const searched = db.tql(`SEARCH VECTOR ${JSON.stringify(near(base, 0.001))} TOP 2 RETURN *`);
+    assert(Array.isArray(searched) && searched.length >= 1, "TQL SEARCH should return vector hits");
+
+    maybeClose(db);
+    keyStatus.tql = true;
   });
 
   await runCase("search-expandDepth", async () => {
@@ -356,13 +432,55 @@ async function main() {
     const query = near(clusterBase, 0.002);
     const depth0 = db.search(query, 2, 0, -1);
     assert(Array.isArray(depth0) && depth0.length >= 1, "search depth0 should return hits");
-    const depth0Ids = new Set(depth0.map((h) => h.id));
+    const depth0Ids = idSet(depth0.map((h) => h.id));
     assert(depth0Ids.has(idAnchor) || depth0Ids.has(idNear), "depth0 should include anchor cluster");
 
     const depth1 = db.search(query, 2, 1, -1);
     assert(Array.isArray(depth1) && depth1.length >= depth0.length, "depth1 should not shrink result size");
 
     keyStatus.search = true;
+  });
+
+  await runCase("search-advanced-text-hybrid", async () => {
+    const dbPath = path.join(TMP_ROOT, "hybrid.tdb");
+    const db = new TriviumDB(dbPath, DIM, "f32", "normal");
+    const base = vecFrom(44);
+    const idA = db.insert(base, {
+      chatId: "chat-hybrid",
+      label: "hybrid-a",
+      text: "scarlet archive door memory",
+    });
+    const idB = db.insert(near(base, 0.004), {
+      chatId: "chat-hybrid",
+      label: "hybrid-b",
+      text: "scarlet archive key memory",
+    });
+    db.link(idA, idB, "related", 0.8);
+
+    if (hasMethod(db, "indexText") && hasMethod(db, "buildTextIndex")) {
+      db.indexText(idA, "scarlet archive door memory");
+      db.indexText(idB, "scarlet archive key memory");
+      db.buildTextIndex();
+    }
+
+    if (hasMethod(db, "searchAdvanced")) {
+      const advancedHits = db.searchAdvanced(near(base, 0.001), {
+        topK: 5,
+        expandDepth: 1,
+        minScore: -1,
+        enableTextHybridSearch: true,
+        customQueryText: "scarlet archive",
+      });
+      assert(Array.isArray(advancedHits) && advancedHits.length >= 1, "searchAdvanced should return hits");
+    }
+
+    if (hasMethod(db, "searchHybrid")) {
+      const hybridHits = db.searchHybrid(near(base, 0.001), "scarlet archive", 5, 1, -1, 0.7);
+      assert(Array.isArray(hybridHits) && hybridHits.length >= 1, "searchHybrid should return hits");
+    }
+
+    maybeClose(db);
+    keyStatus.textHybrid = true;
   });
 
   await runCase("flush-reopen-consistency", async () => {
@@ -485,6 +603,37 @@ async function main() {
     keyStatus.dimensionMismatch = true;
   });
 
+  await runCase("dimension-migrate-zero-vector", async () => {
+    const dbPath = path.join(TMP_ROOT, "migrate-source.tdb");
+    const newPath = path.join(TMP_ROOT, "migrate-target.tdb");
+    const db = new TriviumDB(dbPath, DIM, "f32", "normal");
+    if (!hasMethod(db, "migrate")) {
+      report.notes.push("migrate API unavailable; skipping v0.7 dimension migration coverage");
+      maybeClose(db);
+      keyStatus.migration = true;
+      return;
+    }
+
+    const idA = db.insert(vecFrom(61), { chatId: "chat-migrate", label: "migrate-a" });
+    const idB = db.insert(near(vecFrom(61), 0.01), { chatId: "chat-migrate", label: "migrate-b" });
+    db.link(idA, idB, "related", 0.77);
+    db.flush();
+    const migratedIds = db.migrate(newPath, DIM + 2);
+    assert(idSet(migratedIds).has(idA) && idSet(migratedIds).has(idB), "migrate should return migrated ids");
+    maybeClose(db);
+
+    const migrated = new TriviumDB(newPath, DIM + 2, "f32", "normal");
+    assert(typeof migrated.dim === "function" ? migrated.dim() === DIM + 2 : true, "migrated db dim should match target dim");
+    const gotA = migrated.get(idA);
+    assert(gotA?.payload?.label === "migrate-a", "migrate should preserve payload");
+    assert(Array.isArray(gotA?.vector) && gotA.vector.length === DIM + 2, "migrate should create target-dim vectors");
+    assert(gotA.vector.every((value) => Number(value) === 0), "migrated vectors should be zero-filled for re-embedding");
+    const nearA = migrated.neighbors(idA, 1);
+    assert(idSet(nearA).has(idB), "migrate should preserve graph edges");
+    maybeClose(migrated);
+    keyStatus.migration = true;
+  });
+
   await runCase("benchmark-100plus-nodes", async () => {
     const dbPath = path.join(TMP_ROOT, "benchmark.tdb");
     const db = new TriviumDB(dbPath, DIM, "f32", "normal");
@@ -563,6 +712,7 @@ async function main() {
       assert(openedByChild.code !== 0, "second process open should fail while parent instance is active");
     }
 
+    maybeClose(db);
     keyStatus.concurrentSafety = true;
   });
 
@@ -570,6 +720,9 @@ async function main() {
     keyStatus.loadModule,
     keyStatus.crud,
     keyStatus.search,
+    keyStatus.tql,
+    keyStatus.textHybrid,
+    keyStatus.migration,
     keyStatus.flushReopen,
     keyStatus.walRecovery,
     keyStatus.dimensionMismatch,

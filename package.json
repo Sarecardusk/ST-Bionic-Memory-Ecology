@@ -3,6 +3,7 @@
     "version:bump-manifest": "node scripts/bump-manifest-version.mjs",
     "build:native:wasm": "node scripts/build-native-wasm.mjs",
     "test:p0": "node tests/p0-regressions.mjs",
+    "test:triviumdb-poc": "node tests/triviumdb-poc.mjs",
     "test:runtime-history": "node tests/runtime-history.mjs",
     "test:graph-persistence": "node tests/graph-persistence.mjs",
     "test:hide-engine": "node tests/hide-engine.mjs",
@@ -31,7 +32,7 @@
     "check": "node scripts/check-syntax.mjs"
   },
   "dependencies": {
-    "triviumdb": "^0.4.41"
+    "triviumdb": "0.7.1"
   },
   "devDependencies": {
     "dexie": "4.0.8",
