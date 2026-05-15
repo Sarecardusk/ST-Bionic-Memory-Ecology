@@ -64,6 +64,8 @@ function getConfiguredTimeoutMs(config = {}) {
       })();
 }
 
+const VECTOR_CONNECTION_PROBE_TEXTS = ["test connection", "runtime batch probe"];
+
 const BACKEND_STATUS_MODEL_SOURCES = {
   openai: "openai",
   cohere: "cohere",
@@ -1457,15 +1459,69 @@ export async function testVectorConnection(config, chatId = "connection-test") {
     return { success: false, dimensions: 0, error: validation.error };
   }
 
-  if (isDirectVectorConfig(config)) {
+  if (isDirectVectorConfig(config) || isBackendVectorConfig(config)) {
     try {
-      const vec = await embedText("test connection", config);
-      if (vec) {
-        return { success: true, dimensions: vec.length, error: "" };
+      const vectors = await embedBatch(VECTOR_CONNECTION_PROBE_TEXTS, config, {
+        isQuery: true,
+      });
+      const firstVector = vectors.find((vector) => vector && vector.length > 0);
+      if (firstVector) {
+        if (isBackendVectorConfig(config)) {
+          const response = await fetchWithTimeout(
+            "/api/vector/query",
+            {
+              method: "POST",
+              headers: getRequestHeaders(),
+              body: JSON.stringify({
+                collectionId: buildVectorCollectionId(chatId),
+                searchText: VECTOR_CONNECTION_PROBE_TEXTS[0],
+                topK: 1,
+                threshold: 0,
+                ...buildBackendSourceRequest(config),
+              }),
+            },
+            getConfiguredTimeoutMs(config),
+          );
+          const payload = await response.text().catch(() => "");
+          if (!response.ok) {
+            return {
+              success: false,
+              dimensions: firstVector.length,
+              error: payload || response.statusText,
+              batchCapable: true,
+              vectorStoreCapable: false,
+              mode: config.mode,
+              source: config.source || "backend",
+            };
+          }
+        }
+        return {
+          success: true,
+          dimensions: firstVector.length,
+          error: "",
+          batchCapable: true,
+          vectorStoreCapable: isBackendVectorConfig(config) ? true : undefined,
+          mode: config.mode,
+          source: config.source || "direct",
+        };
       }
-      return { success: false, dimensions: 0, error: "API 返回空结果" };
+      return {
+        success: false,
+        dimensions: 0,
+        error: "批量 Embedding API 返回空结果",
+        batchCapable: false,
+        mode: config.mode,
+        source: config.source || "direct",
+      };
     } catch (error) {
-      return { success: false, dimensions: 0, error: String(error) };
+      return {
+        success: false,
+        dimensions: 0,
+        error: String(error),
+        batchCapable: false,
+        mode: config.mode,
+        source: config.source || "direct",
+      };
     }
   }
 
@@ -1480,38 +1536,8 @@ export async function testVectorConnection(config, chatId = "connection-test") {
     }
   }
 
-  try {
-    const response = await fetchWithTimeout(
-      "/api/vector/query",
-      {
-        method: "POST",
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-          collectionId: buildVectorCollectionId(chatId),
-          searchText: "test connection",
-          topK: 1,
-          threshold: 0,
-          ...buildBackendSourceRequest(config),
-        }),
-      },
-      getConfiguredTimeoutMs(config),
-    );
-
-    const payload = await response.text().catch(() => "");
-    if (!response.ok) {
-      return {
-        success: false,
-        dimensions: 0,
-        error: payload || response.statusText,
-      };
-    }
-
-    return { success: true, dimensions: 0, error: "" };
-  } catch (error) {
-    return { success: false, dimensions: 0, error: String(error) };
-  }
+  return { success: false, dimensions: 0, error: "未知向量配置" };
 }
-
 export function getVectorIndexStats(graph) {
   const state = graph?.vectorIndexState;
   if (!state) {

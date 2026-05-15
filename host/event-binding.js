@@ -239,6 +239,7 @@ export function onChatChangedController(runtime) {
   runtime.setPendingHistoryRecoveryTimer(null);
   runtime.setPendingHistoryRecoveryTrigger("");
   runtime.clearPendingAutoExtraction?.();
+  runtime.clearPendingBackgroundVectorSync?.();
   runtime.clearPendingGraphLoadRetry();
   runtime.setSkipBeforeCombineRecallUntil(0);
   runtime.setLastPreGenerationRecallKey("");
