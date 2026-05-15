@@ -31,6 +31,7 @@ const plain = (vectors) => vectors.map((vector) => (vector ? Array.from(vector) 
     assert.deepEqual(plain(vectors), [[5, 0], [4, 1], [5, 0]]);
   });
   assert.deepEqual(calls.map((call) => call.input), [["alpha", "beta"], ["gamma"]]);
+  assert.deepEqual(calls.map((call) => call.encoding_format), ["float", "float"]);
 }
 
 {
@@ -75,6 +76,26 @@ const plain = (vectors) => vectors.map((vector) => (vector ? Array.from(vector) 
     assert.deepEqual(plain(vectors), [[1, 1], [8, 7]]);
   });
   assert.deepEqual(calls.map((call) => call.input), [["kept", "fallback"], "fallback"]);
+}
+
+{
+  const result = await withFetch(async () => jsonResponse({ data: [{ index: 0, embedding: [] }] }), async () => {
+    await assert.rejects(
+      () => embedBatch(["empty"], { mode: "direct", apiUrl: "https://example.com/v1", model: "test-embedding", throwOnEmptyBatch: true }),
+      /Embedding API 批量返回空结果/,
+    );
+    return true;
+  });
+  assert.equal(result, true);
+}
+
+{
+  await withFetch(async () => new Response(JSON.stringify({ code: 20012, message: "Model does not exist", data: null }), { status: 400 }), async () => {
+    await assert.rejects(
+      () => embedBatch(["bad model"], { mode: "direct", apiUrl: "https://example.com/v1", model: "missing", throwOnEmptyBatch: true }),
+      /Embedding API 错误 \(400\): Model does not exist/,
+    );
+  });
 }
 
 console.log("embedding-batch tests passed");

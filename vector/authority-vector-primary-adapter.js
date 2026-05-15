@@ -1049,7 +1049,10 @@ export async function searchAuthorityTriviumNodes(graph, text, config = {}, opti
 }
 
 export async function testAuthorityTriviumConnection(config = {}, options = {}) {
-  const probeVectors = await embedBatch(AUTHORITY_CONNECTION_PROBE_TEXTS, config, {
+  const probeVectors = await embedBatch(AUTHORITY_CONNECTION_PROBE_TEXTS, {
+    ...config,
+    throwOnEmptyBatch: true,
+  }, {
     isQuery: true,
   });
   const probeVector = probeVectors.find((vector) => vector && vector.length > 0);

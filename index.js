@@ -23490,6 +23490,7 @@ async function onTestEmbedding() {
   return await onTestEmbeddingController({
     getCurrentChatId,
     getEmbeddingConfig,
+    getSettings,
     testVectorConnection,
     toastr,
     validateVectorConfig,

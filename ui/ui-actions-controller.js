@@ -178,14 +178,20 @@ export async function onViewGraphController(runtime) {
 }
 
 export async function onTestEmbeddingController(runtime) {
-  const config = runtime.getEmbeddingConfig();
+  const settings = runtime.getSettings?.() || {};
+  const selectedMode = settings.embeddingTransportMode === "backend" ? "backend" : "direct";
+  const config = runtime.getEmbeddingConfig(selectedMode);
   const validation = runtime.validateVectorConfig(config);
   if (!validation.valid) {
     runtime.toastr.warning(validation.error);
     return;
   }
 
-  runtime.toastr.info("正在测试 Embedding API 连通性...");
+  runtime.toastr.info(
+    selectedMode === "backend"
+      ? "正在测试后端 Embedding API 连通性..."
+      : "正在测试直连 Embedding API 连通性...",
+  );
   const result = await runtime.testVectorConnection(config, runtime.getCurrentChatId());
 
   if (result.success) {

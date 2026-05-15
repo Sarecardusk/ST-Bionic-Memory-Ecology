@@ -55,6 +55,46 @@ function normalizeVector(value) {
   return vector.length ? new Float64Array(vector) : null;
 }
 
+function summarizePayload(value, maxLength = 360) {
+  let text = "";
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    text = String(value ?? "");
+  }
+  text = String(text || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function readPayloadMessage(value, fallback = "") {
+  if (value && typeof value === "object") {
+    const message = value?.error?.message || value?.message || value?.error || value?.detail;
+    if (message) return String(message);
+  }
+  return summarizePayload(value) || fallback;
+}
+
+function parseJsonText(value = "") {
+  try {
+    return JSON.parse(String(value || ""));
+  } catch {
+    return value;
+  }
+}
+
+function buildDirectEmbeddingBody(config = {}, input) {
+  const body = {
+    model: config.model,
+    input,
+    encoding_format: String(config.encodingFormat || config.encoding_format || "float"),
+  };
+  const dimensions = Number(config.dimensions ?? config.embeddingDimensions);
+  if (Number.isFinite(dimensions) && dimensions > 0) {
+    body.dimensions = Math.floor(dimensions);
+  }
+  return body;
+}
+
 function readEmbeddingMode(config = {}) {
   return String(config?.embeddingMode || config?.mode || "direct").trim().toLowerCase();
 }
@@ -102,14 +142,20 @@ async function requestBackendEmbeddings(config = {}, payload = {}, { signal } = 
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => response.statusText);
-    console.error(
-      `[ST-BME] Backend Embedding API 错误 (${response.status}):`,
-      errorText,
-    );
-    return null;
+    const payload = parseJsonText(errorText);
+    const message = `Backend Embedding API 错误 (${response.status}): ${readPayloadMessage(payload, response.statusText)}`;
+    console.error(`[ST-BME] ${message}`, payload);
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
-  return await response.json().catch(() => ({}));
+  return await response.json().catch((error) => {
+    throw new Error(
+      `Backend Embedding API JSON 解析失败: ${error?.message || error}`,
+    );
+  });
 }
 
 function getEmbeddingBatchSize(config = {}) {
@@ -139,25 +185,26 @@ async function requestDirectEmbeddingBatch(texts, config = {}, { signal } = {}) 
         ...(config.apiKey ? { Authorization: "Bearer " + config.apiKey } : {}),
       },
       signal,
-      body: JSON.stringify({
-        model: config.model,
-        input: texts,
-      }),
+      body: JSON.stringify(buildDirectEmbeddingBody(config, texts)),
     },
     getConfiguredTimeoutMs(config),
   );
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => response.statusText);
-    const error = new Error(errorText || response.statusText || "HTTP " + response.status);
+    const payload = parseJsonText(errorText);
+    const error = new Error(
+      `Embedding API 错误 (${response.status}): ${readPayloadMessage(payload, response.statusText)}`,
+    );
     error.status = response.status;
+    error.payload = payload;
     throw error;
   }
 
   const data = await response.json().catch(() => ({}));
   const embeddings = Array.isArray(data?.data) ? data.data : null;
   if (!embeddings) {
-    throw new Error("Embedding API 返回格式异常");
+    throw new Error(`Embedding API 返回格式异常: ${summarizePayload(data)}`);
   }
 
   const results = new Array(texts.length).fill(null);
@@ -179,19 +226,26 @@ async function requestBackendEmbeddingBatch(texts, config = {}, { signal, isQuer
   );
   const vectors = Array.isArray(payload?.vectors) ? payload.vectors : null;
   if (!vectors) {
-    throw new Error("Backend Embedding API 返回格式异常");
+    throw new Error(`Backend Embedding API 返回格式异常: ${summarizePayload(payload)}`);
   }
   return texts.map((_, index) => normalizeVector(vectors[index]));
 }
 
-async function fallbackEmbedChunkTexts(texts, config = {}, { signal, isQuery = false } = {}) {
+async function fallbackEmbedChunkTexts(
+  texts,
+  config = {},
+  { signal, isQuery = false, collectErrors = null, throwOnFailure = false } = {},
+) {
   const vectors = [];
   for (const text of texts) {
     try {
-      vectors.push(await embedText(text, config, { signal, isQuery }));
+      vectors.push(await embedText(text, { ...config, throwOnFailure }, { signal, isQuery }));
     } catch (error) {
       if (isAbortError(error)) {
         throw error;
+      }
+      if (Array.isArray(collectErrors)) {
+        collectErrors.push(error?.message || String(error));
       }
       console.error("[ST-BME] Embedding 单条回退失败:", error);
       vectors.push(null);
@@ -288,6 +342,9 @@ export async function embedText(text, config, { signal, isQuery = false } = {}) 
       if (isAbortError(e)) {
         throw e;
       }
+      if (config?.throwOnFailure) {
+        throw e;
+      }
       console.error("[ST-BME] Backend Embedding 调用失败:", e);
       return null;
     }
@@ -311,34 +368,42 @@ export async function embedText(text, config, { signal, isQuery = false } = {}) 
             : {}),
         },
         signal,
-        body: JSON.stringify({
-          model: config.model,
-          input: text,
-        }),
+        body: JSON.stringify(buildDirectEmbeddingBody(config, text)),
       },
       getConfiguredTimeoutMs(config),
     );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(
-        `[ST-BME] Embedding API 错误 (${response.status}):`,
-        errorText,
-      );
+      const payload = parseJsonText(errorText);
+      const message = `Embedding API 错误 (${response.status}): ${readPayloadMessage(payload, response.statusText)}`;
+      console.error(`[ST-BME] ${message}`, payload);
+      if (config?.throwOnFailure) throw new Error(message);
       return null;
     }
 
-    const data = await response.json();
+    const data = await response.json().catch((error) => {
+      if (config?.throwOnFailure) {
+        throw new Error(`Embedding API JSON 解析失败: ${error?.message || error}`);
+      }
+      return {};
+    });
     const vector = data?.data?.[0]?.embedding;
 
     if (!vector || !Array.isArray(vector)) {
       console.error("[ST-BME] Embedding API 返回格式异常:", data);
+      if (config?.throwOnFailure) {
+        throw new Error(`Embedding API 返回格式异常: ${summarizePayload(data)}`);
+      }
       return null;
     }
 
     return new Float64Array(vector);
   } catch (e) {
     if (isAbortError(e)) {
+      throw e;
+    }
+    if (config?.throwOnFailure) {
       throw e;
     }
     console.error("[ST-BME] Embedding API 调用失败:", e);
@@ -373,6 +438,7 @@ export async function embedBatch(texts, config, { signal, isQuery = false } = {}
   }
 
   const results = new Array(normalizedTexts.length).fill(null);
+  const diagnostics = [];
   const batchSize = getEmbeddingBatchSize(config);
   for (const chunk of chunkTexts(normalizedTexts, batchSize)) {
     let vectors = null;
@@ -390,12 +456,15 @@ export async function embedBatch(texts, config, { signal, isQuery = false } = {}
           : "[ST-BME] Embedding API 批量调用失败:",
         error,
       );
+      diagnostics.push(error?.message || String(error));
     }
 
     if (!vectors || vectors.length < chunk.texts.length) {
       vectors = await fallbackEmbedChunkTexts(chunk.texts, config, {
         signal,
         isQuery,
+        collectErrors: diagnostics,
+        throwOnFailure: Boolean(config?.throwOnEmptyBatch),
       });
     } else {
       const missingIndexes = [];
@@ -411,6 +480,8 @@ export async function embedBatch(texts, config, { signal, isQuery = false } = {}
           {
             signal,
             isQuery,
+            collectErrors: diagnostics,
+            throwOnFailure: Boolean(config?.throwOnEmptyBatch),
           },
         );
         missingIndexes.forEach((missingIndex, fallbackIndex) => {
@@ -422,6 +493,10 @@ export async function embedBatch(texts, config, { signal, isQuery = false } = {}
     for (let index = 0; index < chunk.texts.length; index++) {
       results[chunk.start + index] = vectors[index] || null;
     }
+  }
+
+  if (config?.throwOnEmptyBatch && !results.some((vector) => vector && vector.length > 0)) {
+    throw new Error(diagnostics.find(Boolean) || "Embedding API 批量返回空结果");
   }
 
   return results;

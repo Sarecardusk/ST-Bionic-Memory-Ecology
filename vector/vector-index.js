@@ -1746,7 +1746,10 @@ export async function testVectorConnection(config, chatId = "connection-test") {
 
   if (isDirectVectorConfig(config) || isBackendVectorConfig(config)) {
     try {
-      const vectors = await embedBatch(VECTOR_CONNECTION_PROBE_TEXTS, config, {
+      const vectors = await embedBatch(VECTOR_CONNECTION_PROBE_TEXTS, {
+        ...config,
+        throwOnEmptyBatch: true,
+      }, {
         isQuery: true,
       });
       const firstVector = vectors.find((vector) => vector && vector.length > 0);

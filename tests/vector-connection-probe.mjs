@@ -24,6 +24,7 @@ async function withFetch(handler, fn) {
     const body = JSON.parse(String(options.body || "{}"));
     calls.push(body);
     assert.equal(Array.isArray(body.input), true);
+    assert.equal(body.encoding_format, "float");
     return jsonResponse({ data: body.input.map((text, index) => ({ index, embedding: [1, index, String(text).length] })) });
   }, async () => await testVectorConnection({ mode: "direct", apiUrl: "https://example.com/v1", apiKey: "sk-test", model: "test-embedding" }));
   assert.equal(result.success, true);
@@ -53,6 +54,26 @@ async function withFetch(handler, fn) {
   assert.deepEqual(calls[0].body.texts, ["test connection", "runtime batch probe"]);
   assert.equal(calls[1].url, "/api/vector/query");
   assert.equal(calls[1].body.searchText, "test connection");
+}
+
+{
+  const result = await withFetch(async () => new Response(
+    JSON.stringify({ code: 20012, message: "Model does not exist. Please check it carefully.", data: null }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  ), async () => await testVectorConnection({ mode: "direct", apiUrl: "https://example.com/v1", apiKey: "sk-test", model: "missing-model" }));
+  assert.equal(result.success, false);
+  assert.match(result.error, /Model does not exist/);
+  assert.equal(result.batchCapable, false);
+}
+
+{
+  const result = await withFetch(async () => new Response(
+    JSON.stringify({ error: { message: "Backend provider refused embedding model" } }),
+    { status: 502, headers: { "Content-Type": "application/json" } },
+  ), async () => await testVectorConnection({ mode: "backend", source: "openai", model: "bad-backend-model" }));
+  assert.equal(result.success, false);
+  assert.match(result.error, /Backend provider refused embedding model/);
+  assert.equal(result.batchCapable, false);
 }
 
 console.log("vector-connection-probe tests passed");
