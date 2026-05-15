@@ -7086,8 +7086,12 @@ async function resolveAuthorityCapabilityForStoreSelection(settings = getSetting
 
 function buildAuthorityGraphStoreOptions(settings = getSettings()) {
   const normalizedSettings = normalizeAuthoritySettings(settings);
+  const capability = normalizeAuthorityCapabilityState(authorityCapabilityState, settings);
   return {
     baseUrl: normalizedSettings.baseUrl,
+    bmeVectorManifestReady: Boolean(capability.bmeVectorManifestReady),
+    bmeVectorApplyReady: Boolean(capability.bmeVectorApplyReady),
+    bmeProtocolVersion: Math.max(0, Number(capability.bmeProtocolVersion) || 0),
     headerProvider:
       typeof getRequestHeaders === "function" ? () => getRequestHeaders() : null,
   };

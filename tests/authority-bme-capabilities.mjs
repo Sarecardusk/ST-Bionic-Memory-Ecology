@@ -15,7 +15,7 @@ const capability = normalizeAuthorityProbeResponse({
     bme: {
       protocolVersion: 1,
       vectorManifest: true,
-      vectorApply: false,
+      vectorApply: true,
       vectorApplyJobs: false,
       serverEmbeddingProbe: false,
       candidateSearch: false,
@@ -25,7 +25,7 @@ const capability = normalizeAuthorityProbeResponse({
 
 assert.equal(capability.bmeProtocolVersion, 1);
 assert.equal(capability.bmeVectorManifestReady, true);
-assert.equal(capability.bmeVectorApplyReady, false);
+assert.equal(capability.bmeVectorApplyReady, true);
 assert.equal(capability.bmeServerEmbeddingProbeReady, false);
 assert.ok(capability.features.includes("bme.vectormanifest"));
 assert.ok(capability.features.includes("bme.protocolversion"));
