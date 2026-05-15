@@ -25,6 +25,9 @@ export function createAuthorityUpgradeState(overrides = {}) {
     storageReady: Boolean(overrides.storageReady),
     vectorReady: Boolean(overrides.vectorReady),
     jobsReady: Boolean(overrides.jobsReady),
+    bmeVectorManifestReady: Boolean(overrides.bmeVectorManifestReady),
+    bmeVectorApplyReady: Boolean(overrides.bmeVectorApplyReady),
+    bmeProtocolVersion: Math.max(0, Number(overrides.bmeProtocolVersion) || 0),
     browserCacheMode: normalizeString(overrides.browserCacheMode, "minimal"),
     updatedAt: normalizeString(overrides.updatedAt, new Date().toISOString()),
   };
@@ -42,6 +45,9 @@ export function deriveAuthorityUpgradeState({
   const vectorReady = Boolean(capability.triviumPrimaryReady);
   const serverPrimaryReady = Boolean(capability.serverPrimaryReady || storageReady);
   const jobsReady = Boolean(capability.jobsReady);
+  const bmeVectorManifestReady = Boolean(capability.bmeVectorManifestReady);
+  const bmeVectorApplyReady = Boolean(capability.bmeVectorApplyReady);
+  const bmeProtocolVersion = Math.max(0, Number(capability.bmeProtocolVersion) || 0);
   const browserCacheMode = normalizeString(browserState.mode, "minimal");
   const reason = normalizeString(capability.reason || capability.lastError, "standalone");
   const updatedAt = new Date(Number.isFinite(Number(now)) ? Number(now) : Date.now()).toISOString();
@@ -93,6 +99,9 @@ export function deriveAuthorityUpgradeState({
       storageReady,
       vectorReady,
       jobsReady,
+      bmeVectorManifestReady,
+      bmeVectorApplyReady,
+      bmeProtocolVersion,
       browserCacheMode,
       updatedAt,
     });
@@ -103,7 +112,9 @@ export function deriveAuthorityUpgradeState({
       mode: AUTHORITY_UPGRADE_MODES.ENHANCED,
       text: "服务端增强已启用",
       meta: jobsReady
-        ? "图谱与向量存储已自动升级到 DOA/Authority 增强路径"
+        ? bmeVectorManifestReady
+          ? "图谱与向量存储已增强，服务端向量清单可用"
+          : "图谱与向量存储已增强，等待 BME 向量清单能力"
         : "图谱与向量存储已增强，服务端后台任务能力暂不可用",
       level: "success",
       ready: true,
@@ -112,6 +123,9 @@ export function deriveAuthorityUpgradeState({
       storageReady,
       vectorReady,
       jobsReady,
+      bmeVectorManifestReady,
+      bmeVectorApplyReady,
+      bmeProtocolVersion,
       browserCacheMode,
       updatedAt,
     });
@@ -130,6 +144,9 @@ export function deriveAuthorityUpgradeState({
       storageReady,
       vectorReady,
       jobsReady,
+      bmeVectorManifestReady,
+      bmeVectorApplyReady,
+      bmeProtocolVersion,
       browserCacheMode,
       updatedAt,
     });

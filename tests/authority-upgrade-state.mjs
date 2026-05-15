@@ -53,12 +53,16 @@ const enhanced = deriveAuthorityUpgradeState({
     storagePrimaryReady: true,
     triviumPrimaryReady: true,
     jobsReady: true,
+    bmeVectorManifestReady: true,
+    bmeProtocolVersion: 1,
   },
   browserState: { mode: "off" },
 });
 assert.equal(enhanced.mode, "authority-enhanced");
 assert.equal(enhanced.ready, true);
 assert.equal(enhanced.text, "服务端增强已启用");
+assert.equal(enhanced.bmeVectorManifestReady, true);
+assert.equal(enhanced.bmeProtocolVersion, 1);
 
 assert.equal(
   formatAuthorityUpgradeMeta("准备就绪", enhanced),
