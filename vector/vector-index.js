@@ -7,6 +7,12 @@ import { describeMemoryScope, normalizeMemoryScope } from "../graph/memory-scope
 import { resolveConfiguredTimeoutMs } from "../runtime/request-timeout.js";
 import { buildVectorCollectionId, stableHashString } from "../runtime/runtime-state.js";
 import {
+  createVectorManifest,
+  deriveVectorSpace,
+  isVectorManifestCompatible,
+  summarizeVectorSpaceChange,
+} from "./vector-space.js";
+import {
   AUTHORITY_VECTOR_MODE,
   AUTHORITY_VECTOR_SOURCE,
   applyAuthorityBmeVectorManifest,
@@ -580,6 +586,81 @@ function resetVectorMappings(graph, config, chatId) {
   graph.vectorIndexState.nodeToHash = {};
 }
 
+function getEmbeddingDimensionFromEntries(graph, entries = []) {
+  const nodesById = new Map((graph?.nodes || []).map((node) => [String(node?.id || ""), node]));
+  let dim = 0;
+  for (const entry of entries || []) {
+    const node = nodesById.get(String(entry?.nodeId || ""));
+    const vector = Array.isArray(node?.embedding) ? node.embedding : [];
+    if (!vector.length) continue;
+    if (!dim) dim = vector.length;
+    if (dim && vector.length !== dim) return -1;
+  }
+  return dim;
+}
+
+function updateVectorManifest(graph, config, {
+  backend = "local",
+  chatId = "",
+  collectionId = "",
+  graphRevision = 0,
+  desiredEntries = [],
+  observedDim = 0,
+  status = "clean",
+  failedNodeCount = 0,
+  lastError = "",
+} = {}) {
+  if (!graph?.vectorIndexState) return null;
+  const vectorSpace = observedDim > 0
+    ? deriveVectorSpace(config, observedDim)
+    : null;
+  const manifest = createVectorManifest({
+    backend,
+    chatId: chatId || graph?.historyState?.chatId || "",
+    collectionId: collectionId || graph.vectorIndexState.collectionId || "",
+    graphRevision,
+    vectorSpace,
+    status,
+    nodeCount: desiredEntries.length,
+    embeddedNodeCount: Math.max(0, desiredEntries.length - failedNodeCount),
+    failedNodeCount,
+    lastError,
+  });
+  graph.vectorIndexState.currentVectorSpace = vectorSpace;
+  graph.vectorIndexState.manifest = manifest;
+  return manifest;
+}
+
+function markLocalVectorManifestStale(graph, config, reason = "vector-space-changed") {
+  if (!graph?.vectorIndexState) return;
+  const state = graph.vectorIndexState;
+  const previousManifest = state.manifest && typeof state.manifest === "object"
+    ? state.manifest
+    : null;
+  state.manifest = {
+    ...(previousManifest || createVectorManifest({ backend: "local", status: "stale" })),
+    backend: previousManifest?.backend || "local",
+    status: "stale",
+    lastError: reason,
+    completedAt: 0,
+  };
+  state.dirty = true;
+  state.dirtyReason = reason;
+  state.lastWarning = reason === "dimension-changed"
+    ? "向量模型维度变化，索引已标记为待重建"
+    : "向量模型配置变化，索引已标记为待重建";
+}
+
+function isVectorApplyCompatibilityError(error = null) {
+  const detailCategory = String(error?.payload?.details?.category || error?.details?.category || "").trim();
+  const message = String(error?.message || "").toLowerCase();
+  return detailCategory === "vector-dimension-mismatch" ||
+    detailCategory === "vector-space-mismatch" ||
+    message.includes("dimension mismatch") ||
+    message.includes("vectorspaceid mismatch") ||
+    message.includes("single vector dimension");
+}
+
 function markBackendVectorStateDirty(
   graph,
   config,
@@ -853,6 +934,18 @@ export async function syncGraphVectorIndex(
             );
             authorityUpsertMs += nowMs() - applyStartedAt;
             authorityUpsertDiagnostics = applyResult?.diagnostics || null;
+            const observedDim = Number(applyResult?.manifest?.observedDim || getEmbeddingDimensionFromEntries(graph, desiredEntries) || 0);
+            if (observedDim > 0) {
+              updateVectorManifest(graph, config, {
+                backend: "authority",
+                chatId: effectiveChatId,
+                collectionId,
+                graphRevision: graph?.meta?.revision || graph?.revision || 0,
+                desiredEntries,
+                observedDim,
+                status: "clean",
+              });
+            }
             authorityLinkDiagnostics = {
               operation: "bmeVectorApply:links",
               totalItems: Number(applyResult?.diagnostics?.linkItems || 0),
@@ -863,6 +956,7 @@ export async function syncGraphVectorIndex(
             appliedViaBme = true;
           } catch (applyError) {
             if (isAbortError(applyError)) throw applyError;
+            if (isVectorApplyCompatibilityError(applyError)) throw applyError;
             console.warn("[ST-BME] BME 服务端向量 apply 失败，回退 Authority Trivium 旧路径:", applyError);
           }
         }
@@ -945,6 +1039,18 @@ export async function syncGraphVectorIndex(
             );
             authorityUpsertMs += nowMs() - applyStartedAt;
             authorityUpsertDiagnostics = applyResult?.diagnostics || null;
+            const observedDim = Number(applyResult?.manifest?.observedDim || getEmbeddingDimensionFromEntries(graph, entriesToUpsert) || 0);
+            if (observedDim > 0) {
+              updateVectorManifest(graph, config, {
+                backend: "authority",
+                chatId: effectiveChatId,
+                collectionId,
+                graphRevision: graph?.meta?.revision || graph?.revision || 0,
+                desiredEntries,
+                observedDim,
+                status: "clean",
+              });
+            }
             authorityLinkDiagnostics = {
               operation: "bmeVectorApply:links",
               totalItems: Number(applyResult?.diagnostics?.linkItems || 0),
@@ -954,6 +1060,7 @@ export async function syncGraphVectorIndex(
             appliedViaBme = true;
           } catch (applyError) {
             if (isAbortError(applyError)) throw applyError;
+            if (isVectorApplyCompatibilityError(applyError)) throw applyError;
             console.warn("[ST-BME] BME 服务端向量 apply 失败，回退 Authority Trivium 旧路径:", applyError);
           }
         }
@@ -1129,6 +1236,24 @@ export async function syncGraphVectorIndex(
       }
     }
   } else {
+    const directScopeChanged =
+      state.mode !== "direct" ||
+      state.modelScope !== getVectorModelScope(config) ||
+      state.collectionId !== collectionId;
+    if (directScopeChanged && state.manifest?.vectorSpaceId) {
+      const previous = state.currentVectorSpace || {
+        vectorSpaceId: state.manifest.vectorSpaceId,
+        observedDim: state.manifest.observedDim,
+        model: state.manifest.model,
+        normalizedApiUrl: state.manifest.normalizedApiUrl,
+      };
+      const current = deriveVectorSpace(config, Number(state.manifest.observedDim || 0));
+      markLocalVectorManifestStale(
+        graph,
+        config,
+        summarizeVectorSpaceChange(previous, current),
+      );
+    }
     const entriesToEmbed = [];
     const hashByNodeId = {};
 
@@ -1141,7 +1266,7 @@ export async function syncGraphVectorIndex(
       const hasEmbedding =
         Array.isArray(node?.embedding) && node.embedding.length > 0;
 
-      if (!force && !currentHash && hasEmbedding) {
+      if (!directScopeChanged && !force && !currentHash && hasEmbedding) {
         state.hashToNodeId[entry.hash] = entry.nodeId;
         state.nodeToHash[entry.nodeId] = entry.hash;
         continue;
@@ -1152,7 +1277,7 @@ export async function syncGraphVectorIndex(
       }
     }
 
-    if (purge || state.mode !== "direct") {
+    if (purge || directScopeChanged) {
       resetVectorMappings(graph, config, chatId);
     } else {
       for (const [nodeId, hash] of Object.entries(state.nodeToHash || {})) {
@@ -1201,9 +1326,51 @@ export async function syncGraphVectorIndex(
     state.modelScope = getVectorModelScope(config);
     state.collectionId = collectionId;
     state.dirty = directSyncHadFailures;
+    state.dirtyReason = directSyncHadFailures ? "partial-embedding-failure" : "";
     state.lastWarning = directSyncHadFailures
       ? "部分节点 embedding 生成失败，向量索引仍待修复"
       : "";
+    const observedDim = getEmbeddingDimensionFromEntries(graph, desiredEntries);
+    if (observedDim < 0) {
+      updateVectorManifest(graph, config, {
+        backend: "local",
+        chatId,
+        collectionId,
+        graphRevision: graph?.meta?.revision || graph?.revision || 0,
+        desiredEntries,
+        observedDim: 0,
+        status: "failed",
+        failedNodeCount: desiredEntries.length,
+        lastError: "mixed-dimensions",
+      });
+      state.dirty = true;
+      state.dirtyReason = "mixed-vector-dimensions";
+      state.lastWarning = "检测到混合向量维度，索引已标记为待重建";
+    } else if (observedDim > 0) {
+      updateVectorManifest(graph, config, {
+        backend: "local",
+        chatId,
+        collectionId,
+        graphRevision: graph?.meta?.revision || graph?.revision || 0,
+        desiredEntries,
+        observedDim,
+        status: directSyncHadFailures ? "dirty" : "clean",
+        failedNodeCount: directSyncHadFailures ? Math.max(1, desiredEntries.length - insertedHashes.length) : 0,
+        lastError: directSyncHadFailures ? "partial-embedding-failure" : "",
+      });
+    } else {
+      updateVectorManifest(graph, config, {
+        backend: "local",
+        chatId,
+        collectionId,
+        graphRevision: graph?.meta?.revision || graph?.revision || 0,
+        desiredEntries,
+        observedDim: 0,
+        status: "missing",
+        failedNodeCount: desiredEntries.length,
+        lastError: "no-vectors",
+      });
+    }
   }
 
   if (state.mode !== "direct") {
@@ -1302,6 +1469,24 @@ export async function findSimilarNodesByText(
   }
 
   if (isDirectVectorConfig(config)) {
+    const state = graph?.vectorIndexState || {};
+    const currentDim = Number(state.currentVectorSpace?.observedDim || state.manifest?.observedDim || 0);
+    const currentVectorSpace = currentDim > 0
+      ? deriveVectorSpace(config, currentDim)
+      : state.currentVectorSpace;
+    if (!isVectorManifestCompatible(state.manifest, currentVectorSpace)) {
+      recordSearchTimings({
+        success: false,
+        reason: "vector-space-mismatch",
+        resultCount: 0,
+      });
+      if (state) {
+        state.dirty = true;
+        state.dirtyReason = "vector-space-mismatch";
+        state.lastWarning = "向量空间不匹配，已切换到非向量召回并等待重建";
+      }
+      return [];
+    }
     const queryEmbedStartedAt = nowMs();
     const queryVec = await embedText(text, config, { signal, isQuery: true });
     const queryEmbedMs = nowMs() - queryEmbedStartedAt;
@@ -1312,6 +1497,23 @@ export async function findSimilarNodesByText(
         queryEmbedMs: roundMs(queryEmbedMs),
         resultCount: 0,
       });
+      return [];
+    }
+    if (currentDim > 0 && queryVec.length !== currentDim) {
+      recordSearchTimings({
+        success: false,
+        reason: "query-dimension-mismatch",
+        queryDim: queryVec.length,
+        expectedDim: currentDim,
+        queryEmbedMs: roundMs(queryEmbedMs),
+        resultCount: 0,
+      });
+      state.dirty = true;
+      state.dirtyReason = "query-dimension-mismatch";
+      state.lastWarning = `查询向量维度 ${queryVec.length} 与索引维度 ${currentDim} 不一致，已切换到非向量召回`;
+      if (state.manifest) {
+        state.manifest = { ...state.manifest, status: "stale", lastError: "query-dimension-mismatch" };
+      }
       return [];
     }
 
@@ -1350,6 +1552,24 @@ export async function findSimilarNodesByText(
   }
 
   if (isAuthorityVectorConfig(config)) {
+    const state = graph?.vectorIndexState || {};
+    if (config.bmeVectorApplyReady === true || config.bmeVectorManifestReady === true) {
+      const currentDim = Number(state.currentVectorSpace?.observedDim || state.manifest?.observedDim || 0);
+      const currentVectorSpace = currentDim > 0
+        ? deriveVectorSpace(config, currentDim)
+        : state.currentVectorSpace;
+      if (!isVectorManifestCompatible(state.manifest, currentVectorSpace)) {
+        recordSearchTimings({
+          success: false,
+          reason: "authority-vector-space-mismatch",
+          resultCount: 0,
+        });
+        state.dirty = true;
+        state.dirtyReason = "authority-vector-space-mismatch";
+        state.lastWarning = "Authority 向量空间不匹配，已切换到非向量召回并等待重建";
+        return [];
+      }
+    }
     const requestStartedAt = nowMs();
     try {
       const queryEmbedStartedAt = nowMs();

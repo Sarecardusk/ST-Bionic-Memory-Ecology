@@ -5,6 +5,7 @@ import {
   AuthorityHttpError,
 } from "../runtime/authority-http-client.js";
 import { embedBatch } from "./embedding.js";
+import { deriveVectorSpace } from "./vector-space.js";
 
 export const AUTHORITY_VECTOR_MODE = "authority";
 export const AUTHORITY_VECTOR_SOURCE = "authority-trivium";
@@ -872,7 +873,7 @@ export async function upsertAuthorityTriviumEntries(graph, config = {}, entries 
 }
 
 export async function applyAuthorityBmeVectorManifest(graph, config = {}, entries = [], options = {}) {
-  const items = buildAuthorityVectorItems(graph, entries, options);
+  let items = buildAuthorityVectorItems(graph, entries, options);
   const links = buildAuthorityLinkItems(graph, options).map((link) => ({
     src: buildNodeReference(link.fromId, options.namespace),
     dst: buildNodeReference(link.toId, options.namespace),
@@ -882,6 +883,29 @@ export async function applyAuthorityBmeVectorManifest(graph, config = {}, entrie
   const missingVector = items.find((item) => !normalizeVector(item?.vector || item?.embedding).length);
   if (missingVector) {
     throw new Error("BME vector apply requires vector for every item");
+  }
+  const observedDim = items.reduce((dim, item) => {
+    const vectorDim = normalizeVector(item?.vector || item?.embedding).length;
+    if (!vectorDim) return dim;
+    if (!dim) return vectorDim;
+    return dim === vectorDim ? dim : -1;
+  }, 0);
+  if (observedDim < 0) {
+    const error = new Error("BME vector apply requires a single vector dimension per batch");
+    error.errorCategory = "vector-dimension-mismatch";
+    error.errorDomain = "embedding";
+    throw error;
+  }
+  const vectorSpace = observedDim > 0 ? deriveVectorSpace(config, observedDim) : null;
+  if (vectorSpace?.vectorSpaceId) {
+    items = items.map((item) => ({
+      ...item,
+      payload: {
+        ...(item.payload || {}),
+        vectorSpaceId: vectorSpace.vectorSpaceId,
+        observedDim: vectorSpace.observedDim,
+      },
+    }));
   }
   throwIfAborted(options.signal);
   const client = createAuthorityTriviumClient(config, options);
@@ -900,6 +924,8 @@ export async function applyAuthorityBmeVectorManifest(graph, config = {}, entrie
       graphRevision: Math.max(0, Math.floor(Number(options.revision) || 0)),
       modelScope: String(options.modelScope || ""),
       embeddingMode: config.embeddingMode || "client",
+      ...(vectorSpace?.vectorSpaceId ? { vectorSpaceId: vectorSpace.vectorSpaceId } : {}),
+      ...(observedDim > 0 ? { observedDim } : {}),
       items,
       links,
       idempotencyKey: [

@@ -33,6 +33,7 @@ const {
   isAuthorityVectorConfig,
   normalizeAuthorityVectorConfig,
   queryAuthorityTriviumNeighbors,
+  applyAuthorityBmeVectorManifest,
 } = await import("../vector/authority-vector-primary-adapter.js");
 const {
   findSimilarNodesByText: findSimilarNodesByTextFromIndex,
@@ -70,7 +71,12 @@ function createAuthorityVectorGraph() {
   return { graph, first, second };
 }
 
-function createMockTriviumClient({ failBulkUpsert = false, failSearch = false, failBmeVectorApply = false } = {}) {
+function createMockTriviumClient({
+  failBulkUpsert = false,
+  failSearch = false,
+  failBmeVectorApply = false,
+  failBmeVectorApplyCompatibility = false,
+} = {}) {
   const calls = [];
   return {
     calls,
@@ -152,6 +158,14 @@ function createMockTriviumClient({ failBulkUpsert = false, failSearch = false, f
         throw new AuthorityHttpError("bme apply missing", {
           status: 404,
           category: "validation",
+          path: "/bme/vector-apply",
+        });
+      }
+      if (failBmeVectorApplyCompatibility) {
+        throw new AuthorityHttpError("BME vector apply dimension mismatch", {
+          status: 400,
+          category: "validation",
+          payload: { details: { category: "vector-dimension-mismatch" } },
           path: "/bme/vector-apply",
         });
       }
@@ -238,14 +252,82 @@ assert.equal(isAuthorityVectorConfig(config), true);
 
   assert.equal(result.stats.indexed, 2);
   assert.equal(graph.vectorIndexState.dirty, false);
+  assert.equal(graph.vectorIndexState.manifest.status, "clean");
+  assert.equal(graph.vectorIndexState.manifest.backend, "authority");
+  assert.equal(graph.vectorIndexState.manifest.observedDim, 2);
   assert.equal(triviumClient.calls.filter(([name]) => name === "bmeVectorApply").length, 1);
   assert.equal(triviumClient.calls.some(([name]) => name === "purge"), false);
   assert.equal(triviumClient.calls.some(([name]) => name === "bulkUpsert"), false);
   const applyCall = triviumClient.calls.find(([name]) => name === "bmeVectorApply")?.[1];
   assert.equal(applyCall.items.length, 2);
   assert.equal(applyCall.links.length, 1);
+  assert.equal(applyCall.observedDim, 2);
+  assert.equal(String(applyCall.vectorSpaceId || "").startsWith("vs_"), true);
+  assert.equal(applyCall.items.every((item) => item.payload?.vectorSpaceId === applyCall.vectorSpaceId), true);
+  assert.equal(applyCall.items.every((item) => item.payload?.observedDim === 2), true);
   assert.equal(applyCall.items.every((item) => Array.isArray(item.vector) && item.vector.length > 0), true);
   assert.equal(result.timings.authorityDiagnostics.upsert.operation, "bmeVectorApply");
+}
+
+{
+  const { graph } = createAuthorityVectorGraph();
+  const triviumClient = createMockTriviumClient();
+  const entries = [
+    { nodeId: "node-a", text: "a", hash: "hash-a", index: 0 },
+    { nodeId: "node-b", text: "b", hash: "hash-b", index: 1 },
+  ];
+  graph.nodes[0].embedding = [1, 0, 0];
+  graph.nodes[1].embedding = [1, 0];
+  await assert.rejects(
+    () => applyAuthorityBmeVectorManifest(graph, { ...config, bmeVectorApplyReady: true }, entries, {
+      namespace: "st-bme::chat-authority-vector",
+      collectionId: "st-bme::chat-authority-vector",
+      chatId: "chat-authority-vector",
+      modelScope: "scope",
+      triviumClient,
+    }),
+    /single vector dimension/,
+  );
+  assert.equal(triviumClient.calls.some(([name]) => name === "bmeVectorApply"), false);
+}
+
+{
+  const { graph } = createAuthorityVectorGraph();
+  const triviumClient = createMockTriviumClient({ failBmeVectorApplyCompatibility: true });
+  const applyConfig = { ...config, bmeVectorApplyReady: true };
+  const result = await syncGraphVectorIndexFromIndex(graph, applyConfig, {
+    chatId: "chat-authority-vector",
+    purge: true,
+    triviumClient,
+  });
+
+  assert.equal(graph.vectorIndexState.dirty, true);
+  assert.equal(result.errorCategory, "validation");
+  assert.equal(triviumClient.calls.filter(([name]) => name === "bmeVectorApply").length, 1);
+  assert.equal(triviumClient.calls.some(([name]) => name === "purge"), false);
+  assert.equal(triviumClient.calls.some(([name]) => name === "bulkUpsert"), false);
+}
+
+{
+  const { graph, first, second } = createAuthorityVectorGraph();
+  const triviumClient = createMockTriviumClient();
+  const applyConfig = { ...config, bmeVectorApplyReady: true };
+  await syncGraphVectorIndexFromIndex(graph, applyConfig, {
+    chatId: "chat-authority-vector",
+    purge: true,
+    triviumClient,
+  });
+  const changedModelConfig = { ...applyConfig, model: "other-embedding-model" };
+  const results = await findSimilarNodesByTextFromIndex(
+    graph,
+    "archive door",
+    changedModelConfig,
+    5,
+    [first, second],
+  );
+  assert.deepEqual(results, []);
+  assert.equal(graph.vectorIndexState.dirtyReason, "authority-vector-space-mismatch");
+  assert.equal(graph.vectorIndexState.lastSearchTimings.reason, "authority-vector-space-mismatch");
 }
 
 {

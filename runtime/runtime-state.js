@@ -78,6 +78,8 @@ export function createDefaultVectorIndexState(chatId = "") {
       stale: 0,
       pending: 0,
     },
+    currentVectorSpace: null,
+    manifest: null,
     lastWarning: "",
     lastIntegrityIssue: null,
   };
@@ -753,6 +755,20 @@ export function normalizeGraphRuntimeState(graph, chatId = "", options = {}) {
     vectorIndexState.lastStats =
       createDefaultVectorIndexState(chatId).lastStats;
   }
+  if (
+    vectorIndexState.currentVectorSpace != null &&
+    (typeof vectorIndexState.currentVectorSpace !== "object" ||
+      Array.isArray(vectorIndexState.currentVectorSpace))
+  ) {
+    vectorIndexState.currentVectorSpace = null;
+  }
+  if (
+    vectorIndexState.manifest != null &&
+    (typeof vectorIndexState.manifest !== "object" ||
+      Array.isArray(vectorIndexState.manifest))
+  ) {
+    vectorIndexState.manifest = null;
+  }
   if (!Array.isArray(vectorIndexState.replayRequiredNodeIds)) {
     vectorIndexState.replayRequiredNodeIds = [];
   } else {
@@ -786,6 +802,8 @@ export function normalizeGraphRuntimeState(graph, chatId = "", options = {}) {
     vectorIndexState.hashToNodeId = {};
     vectorIndexState.nodeToHash = {};
     vectorIndexState.replayRequiredNodeIds = [];
+    vectorIndexState.currentVectorSpace = null;
+    vectorIndexState.manifest = null;
     vectorIndexState.dirty = true;
     vectorIndexState.dirtyReason = "chat-id-changed";
     vectorIndexState.pendingRepairFromFloor = 0;
