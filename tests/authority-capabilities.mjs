@@ -176,6 +176,78 @@ const relativeUnavailable = await probeAuthorityCapabilities({
 assert.equal(relativeUnavailable.reason, "relative-url-unavailable");
 assert.equal(relativeUnavailable.serverPrimaryReady, false);
 
+const permissionDeniedState = await probeAuthorityCapabilities({
+  settings: defaultSettings,
+  allowRelativeUrl: true,
+  nowMs: 3100,
+  fetchImpl: async () => ({
+    ok: false,
+    status: 403,
+    async json() {
+      return { error: "permission denied" };
+    },
+  }),
+});
+assert.equal(permissionDeniedState.reason, "permission-denied");
+assert.equal(permissionDeniedState.errorCategory, "permission");
+assert.equal(permissionDeniedState.errorDomain, "authority");
+
+const rateLimitedState = await probeAuthorityCapabilities({
+  settings: defaultSettings,
+  allowRelativeUrl: true,
+  nowMs: 3200,
+  fetchImpl: async () => ({
+    ok: false,
+    status: 429,
+    async json() {
+      return { error: "slow down" };
+    },
+  }),
+});
+assert.equal(rateLimitedState.reason, "http-error");
+assert.equal(rateLimitedState.errorCategory, "rate-limit");
+assert.equal(rateLimitedState.errorDomain, "authority");
+
+const serverErrorState = await probeAuthorityCapabilities({
+  settings: defaultSettings,
+  allowRelativeUrl: true,
+  nowMs: 3300,
+  fetchImpl: async () => ({
+    ok: false,
+    status: 503,
+    async json() {
+      return { category: "backpressure", code: "job_queue_full" };
+    },
+  }),
+});
+assert.equal(serverErrorState.reason, "http-error");
+assert.equal(serverErrorState.errorCategory, "backpressure");
+assert.equal(serverErrorState.errorDomain, "authority");
+
+const networkFailedState = await probeAuthorityCapabilities({
+  settings: defaultSettings,
+  allowRelativeUrl: true,
+  nowMs: 3400,
+  fetchImpl: async () => {
+    throw new Error("fetch failed");
+  },
+});
+assert.equal(networkFailedState.reason, "probe-failed");
+assert.equal(networkFailedState.errorCategory, "network");
+assert.equal(networkFailedState.errorDomain, "authority");
+
+const timeoutState = await probeAuthorityCapabilities({
+  settings: defaultSettings,
+  allowRelativeUrl: true,
+  nowMs: 3500,
+  fetchImpl: async () => {
+    throw Object.assign(new Error("aborted"), { name: "AbortError" });
+  },
+});
+assert.equal(timeoutState.reason, "probe-failed");
+assert.equal(timeoutState.errorCategory, "timeout");
+assert.equal(timeoutState.errorDomain, "authority");
+
 // Regression: Authority capability normalization records explicit supported job types from probe payloads.
 // When a probe payload provides jobs.supportedTypes, normalizeAuthorityCapabilityState should surface
 // them as supportedJobTypes and set supportedJobTypesKnown = true.

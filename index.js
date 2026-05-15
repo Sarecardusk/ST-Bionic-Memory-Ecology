@@ -257,6 +257,7 @@ import {
   writePersistedRecallToUserMessage,
 } from "./retrieval/recall-persistence.js";
 import { resolveConfiguredTimeoutMs } from "./runtime/request-timeout.js";
+import { createVectorSyncCoalescer as createImportedVectorSyncCoalescer } from "./runtime/vector-sync-coalescer.js";
 import {
   defaultSettings,
   getPersistedSettingsSnapshot,
@@ -1308,6 +1309,45 @@ const backgroundMaintenanceQueue =
   typeof createBackgroundMaintenanceQueue === "function"
     ? createBackgroundMaintenanceQueue()
     : null;
+const backgroundVectorSyncCoalescer =
+  typeof createImportedVectorSyncCoalescer === "function"
+    ? createImportedVectorSyncCoalescer()
+    : {
+        clear() {},
+        getActive() {
+          return null;
+        },
+        getPending() {
+          return null;
+        },
+        enqueue(task = {}) {
+          return {
+            scheduled: true,
+            coalesced: false,
+            task: {
+              ...(task || {}),
+              stale: false,
+            },
+          };
+        },
+        start(task = null) {
+          return Boolean(task && !task.stale);
+        },
+        complete() {
+          return true;
+        },
+        drop(task = null) {
+          if (task) task.stale = true;
+          return Boolean(task);
+        },
+        isStale(task = null, chatId = "") {
+          return Boolean(
+            !task ||
+              task.stale ||
+              (chatId && task.chatId && String(chatId) !== String(task.chatId)),
+          );
+        },
+      };
 const lastStatusToastAt = {};
 let pendingRecallSendIntent = createRecallInputRecord();
 let lastRecallSentUserMessage = createRecallInputRecord();
@@ -6967,7 +7007,6 @@ function shouldUseAuthorityGraphStore(settings = getSettings(), capability = aut
     normalizedSettings.sqlPrimary &&
     normalizedSettings.storageMode !== "local-primary" &&
     normalizedSettings.storageMode !== "off" &&
-    normalizedCapability.serverPrimaryReady &&
     normalizedCapability.storagePrimaryReady
   );
 }
@@ -14394,7 +14433,7 @@ function buildBatchPersistenceRecordFromPersistResult(persistResult = null) {
 
   if (
     accepted &&
-    ["indexeddb", "opfs", "luker-chat-state"].includes(
+    ["indexeddb", "opfs", "authority-sql", "luker-chat-state"].includes(
       String(persistResult?.storageTier || ""),
     )
   ) {
@@ -14449,6 +14488,7 @@ async function persistGraphToConfiguredDurableTier(
 
   if (
     persistenceEnvironment.hostProfile === "luker" &&
+    persistenceEnvironment.primaryStorageTier === "luker-chat-state" &&
     canUseHostGraphChatStatePersistence(context)
   ) {
     const chatStateResult = await persistGraphToHostChatState(context, {
@@ -16777,50 +16817,81 @@ async function syncVectorState({
 function scheduleBackgroundVectorSync(task = null, settings = {}) {
   const normalizedTask =
     task && typeof task === "object" && !Array.isArray(task) ? task : {};
-  const range =
-    normalizedTask.range &&
-    Number.isFinite(Number(normalizedTask.range.start)) &&
-    Number.isFinite(Number(normalizedTask.range.end))
-      ? {
-          start: Math.floor(Number(normalizedTask.range.start)),
-          end: Math.floor(Number(normalizedTask.range.end)),
-        }
-      : null;
-  const reason =
-    String(normalizedTask.reason || "background-vector-sync").trim() ||
-    "background-vector-sync";
+  const config = getEmbeddingConfig();
+  const chatId = normalizeChatIdCandidate(
+    normalizedTask.chatId || getCurrentChatId() || graphPersistenceState.chatId,
+  );
   const mode =
     String(
       normalizedTask.mode ||
         resolveMaintenancePostProcessConcurrency(settings).mode ||
         "balanced",
     ).trim() || "balanced";
-  return enqueueBackgroundMaintenanceTask(
+  const coalesced = backgroundVectorSyncCoalescer.enqueue({
+    ...normalizedTask,
+    chatId,
+    modelScope: getVectorModelScope(config),
+    mode,
+    reason:
+      String(normalizedTask.reason || "background-vector-sync").trim() ||
+      "background-vector-sync",
+  });
+  const scheduledTask = coalesced.task;
+
+  if (!coalesced.scheduled) {
+    return {
+      queued: true,
+      coalesced: true,
+      id: scheduledTask.id,
+      snapshot: updateBackgroundMaintenanceQueueState(
+        typeof backgroundMaintenanceQueue?.getSnapshot === "function"
+          ? backgroundMaintenanceQueue.getSnapshot()
+          : null,
+      ),
+    };
+  }
+
+  const queuedResult = enqueueBackgroundMaintenanceTask(
     "vector-sync",
     async () => {
-      setLastVectorStatus(
-        "后台向量同步中",
-        `${mode} 模式 · 正在同步提取后的向量索引`,
-        "running",
-        { syncRuntime: false },
-      );
-      const result = await syncVectorState({ range });
-      if (result?.aborted) {
-        throw createAbortError(result.error || "后台向量同步已终止");
+      backgroundVectorSyncCoalescer.start(scheduledTask);
+      try {
+        const activeChatId = normalizeChatIdCandidate(getCurrentChatId());
+        if (backgroundVectorSyncCoalescer.isStale(scheduledTask, activeChatId)) {
+          return { skipped: true, reason: "stale-background-vector-sync" };
+        }
+        setLastVectorStatus(
+          "后台向量同步中",
+          `${scheduledTask.mode} 模式 · 正在同步提取后的向量索引`,
+          "running",
+          { syncRuntime: false },
+        );
+        const result = await syncVectorState({ range: scheduledTask.range });
+        if (result?.aborted) {
+          throw createAbortError(result.error || "后台向量同步已终止");
+        }
+        if (result?.error) {
+          throw new Error(result.error);
+        }
+        saveGraphToChat({ reason: scheduledTask.reason });
+        return result;
+      } finally {
+        backgroundVectorSyncCoalescer.complete(scheduledTask);
       }
-      if (result?.error) {
-        throw new Error(result.error);
-      }
-      saveGraphToChat({ reason });
-      return result;
     },
     settings,
     {
-      id: String(normalizedTask.id || ""),
+      id: scheduledTask.id,
     },
   );
+  if (queuedResult?.queued !== true) {
+    backgroundVectorSyncCoalescer.drop?.(
+      scheduledTask,
+      queuedResult?.reason || "background-vector-sync-queue-rejected",
+    );
+  }
+  return queuedResult;
 }
-
 function hasPlanCommitChanges(planCommit = null) {
   if (!planCommit || typeof planCommit !== "object") return false;
   return [
@@ -22349,6 +22420,7 @@ function onChatChanged() {
     clearGenerationRecallTransactionsForChat,
     clearInjectionState,
     clearPendingAutoExtraction,
+    clearPendingBackgroundVectorSync: () => backgroundVectorSyncCoalescer.clear("chat-changed"),
     clearPendingGraphLoadRetry,
     clearPendingHistoryMutationChecks,
     clearCurrentGenerationTrivialSkip,

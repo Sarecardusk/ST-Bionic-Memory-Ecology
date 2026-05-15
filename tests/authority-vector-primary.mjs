@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { addEdge, addNode, createEdge, createEmptyGraph, createNode } from "../graph/graph.js";
+import { AuthorityHttpError } from "../runtime/authority-http-client.js";
 import {
   installResolveHooks,
   toDataModuleUrl,
@@ -33,7 +34,10 @@ const {
   normalizeAuthorityVectorConfig,
   queryAuthorityTriviumNeighbors,
 } = await import("../vector/authority-vector-primary-adapter.js");
-const { findSimilarNodesByText: findSimilarNodesByTextFromIndex, syncGraphVectorIndex: syncGraphVectorIndexFromIndex } = await import("../vector/vector-index.js");
+const {
+  findSimilarNodesByText: findSimilarNodesByTextFromIndex,
+  syncGraphVectorIndex: syncGraphVectorIndexFromIndex,
+} = await import("../vector/vector-index.js");
 
 function createAuthorityVectorGraph() {
   const graph = createEmptyGraph();
@@ -66,7 +70,7 @@ function createAuthorityVectorGraph() {
   return { graph, first, second };
 }
 
-function createMockTriviumClient({ failBulkUpsert = false } = {}) {
+function createMockTriviumClient({ failBulkUpsert = false, failSearch = false } = {}) {
   const calls = [];
   return {
     calls,
@@ -88,7 +92,11 @@ function createMockTriviumClient({ failBulkUpsert = false } = {}) {
     async bulkUpsert(payload) {
       calls.push(["bulkUpsert", payload]);
       if (failBulkUpsert) {
-        throw new Error("trivium-down");
+        throw new AuthorityHttpError("trivium-down", {
+          status: 503,
+          category: "server",
+          path: "/trivium/bulk-upsert",
+        });
       }
       return { ok: true, upserted: payload.items?.length || 0 };
     },
@@ -102,6 +110,13 @@ function createMockTriviumClient({ failBulkUpsert = false } = {}) {
     },
     async search(payload) {
       calls.push(["search", payload]);
+      if (failSearch) {
+        throw new AuthorityHttpError("trivium search denied", {
+          status: 403,
+          category: "permission",
+          path: "/trivium/search",
+        });
+      }
       return {
         results: [
           { nodeId: "node-b", score: 0.91 },
@@ -234,7 +249,75 @@ assert.equal(isAuthorityVectorConfig(config), true);
   assert.equal(graph.vectorIndexState.mode, "authority");
   assert.equal(graph.vectorIndexState.dirty, true);
   assert.equal(graph.vectorIndexState.dirtyReason, "authority-trivium-sync-failed");
+  assert.equal(result.errorCategory, "server");
+  assert.equal(result.errorDomain, "authority");
+  assert.equal(result.timings.errorCategory, "server");
+  assert.equal(result.timings.authorityErrorCategory, "server");
+  assert.equal(graph.vectorIndexState.lastErrorCategory, "server");
+  assert.equal(graph.vectorIndexState.lastErrorDomain, "authority");
+  assert.equal(result.timings.authorityDiagnostics.upsert.errorCategory, "server");
+  assert.equal(result.timings.authorityDiagnostics.upsert.chunks[0].errorCategory, "server");
   assert.match(graph.vectorIndexState.lastWarning, /Authority Trivium 同步失败/);
+}
+
+{
+  const previousOverrides = globalThis.__stBmeTestOverrides;
+  globalThis.__stBmeTestOverrides = {
+    embedding: {
+      async embedBatch(texts = []) {
+        return texts.map(() => null);
+      },
+      async embedText() {
+        return null;
+      },
+    },
+  };
+  try {
+    const { graph } = createAuthorityVectorGraph();
+    graph.nodes.forEach((node) => {
+      node.embedding = null;
+    });
+    const triviumClient = createMockTriviumClient();
+    const result = await syncGraphVectorIndexFromIndex(graph, config, {
+      chatId: "chat-authority-vector",
+      purge: true,
+      triviumClient,
+    });
+    assert.match(result.error, /Embedding provider failed/);
+    assert.doesNotMatch(result.error, /Authority Trivium embedding failed/);
+    assert.equal(result.errorCategory, "embedding-provider");
+    assert.equal(result.errorDomain, "embedding");
+    assert.equal(graph.vectorIndexState.dirtyReason, "embedding-provider-sync-failed");
+    assert.equal(graph.vectorIndexState.lastErrorCategory, "embedding-provider");
+    assert.equal(graph.vectorIndexState.lastErrorDomain, "embedding");
+    assert.match(graph.vectorIndexState.lastWarning, /Embedding provider 同步失败/);
+    assert.equal(triviumClient.calls.some(([name]) => name === "bulkUpsert"), false);
+  } finally {
+    globalThis.__stBmeTestOverrides = previousOverrides;
+  }
+}
+
+{
+  const { graph, first, second } = createAuthorityVectorGraph();
+  const triviumClient = createMockTriviumClient({ failSearch: true });
+  const queryConfig = { ...config, triviumClient };
+  await syncGraphVectorIndexFromIndex(graph, queryConfig, {
+    chatId: "chat-authority-vector",
+    purge: true,
+    triviumClient,
+  });
+  const results = await findSimilarNodesByTextFromIndex(
+    graph,
+    "archive door",
+    queryConfig,
+    5,
+    [first, second],
+  );
+  assert.deepEqual(results, []);
+  assert.equal(graph.vectorIndexState.lastSearchTimings.errorCategory, "permission");
+  assert.equal(graph.vectorIndexState.lastSearchTimings.authorityErrorCategory, "permission");
+  assert.equal(graph.vectorIndexState.lastErrorCategory, "permission");
+  assert.equal(graph.vectorIndexState.lastErrorDomain, "authority");
 }
 
 {

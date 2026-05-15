@@ -168,6 +168,18 @@ class MockAuthoritySqlClient {
   }
 }
 
+function createLimitError() {
+  const error = new Error("length limit exceeded");
+  error.status = 413;
+  error.category = "limit";
+  error.code = "length_limit_exceeded";
+  return error;
+}
+
+function isNodeUpsertStatement(statement = {}) {
+  return String(statement.sql || "").toLowerCase().includes("insert into st_bme_graph_nodes");
+}
+
 async function testOpenSeedsAuthorityMeta() {
   const sqlClient = new MockAuthoritySqlClient();
   const store = new AuthorityGraphStore("authority-chat-a", { sqlClient });
@@ -390,10 +402,104 @@ async function testConvertNamedParamsToPositional() {
   assert.deepEqual(r8.params, [5]);
 }
 
+async function testTransactionBatchingUsesByteBudget() {
+  const sqlClient = new MockAuthoritySqlClient();
+  const batchSizes = [];
+  const originalTransaction = sqlClient.transaction.bind(sqlClient);
+  sqlClient.transaction = async (statements = []) => {
+    if (statements.some(isNodeUpsertStatement)) {
+      batchSizes.push(statements.length);
+    }
+    return await originalTransaction(statements);
+  };
+  const store = new AuthorityGraphStore("authority-chat-byte-budget", {
+    sqlClient,
+    sqlTransactionBatchSize: 150,
+    sqlTransactionMaxBytes: 4096,
+  });
+  const nodes = Array.from({ length: 8 }, (_, index) => ({
+    id: `node-${index}`,
+    type: "event",
+    text: `payload-${index}-${"測試".repeat(260)}`,
+    updatedAt: index + 1,
+  }));
+
+  await store.bulkUpsertNodes(nodes);
+
+  assert.equal((await store.listNodes()).length, nodes.length);
+  assert.ok(batchSizes.length > 1, "expected large payload to split into multiple transactions");
+  assert.ok(batchSizes.every((size) => size < nodes.length), "expected no single node transaction batch to contain all records");
+}
+
+async function testTransaction413SplitsWithoutRepeatingOversizedBatch() {
+  const sqlClient = new MockAuthoritySqlClient();
+  const attemptedBatchSizes = [];
+  const originalTransaction = sqlClient.transaction.bind(sqlClient);
+  sqlClient.transaction = async (statements = []) => {
+    const nodeBatchSize = statements.filter(isNodeUpsertStatement).length;
+    if (nodeBatchSize > 0) {
+      attemptedBatchSizes.push(nodeBatchSize);
+      if (nodeBatchSize > 2) {
+        throw createLimitError();
+      }
+    }
+    return await originalTransaction(statements);
+  };
+  const store = new AuthorityGraphStore("authority-chat-413-split", {
+    sqlClient,
+    sqlTransactionBatchSize: 150,
+    sqlTransactionMaxBytes: 512 * 1024,
+  });
+  const nodes = Array.from({ length: 6 }, (_, index) => ({
+    id: `node-${index}`,
+    type: "event",
+    text: `payload-${index}`,
+    updatedAt: index + 1,
+  }));
+
+  await store.bulkUpsertNodes(nodes);
+
+  assert.equal((await store.listNodes()).length, nodes.length);
+  assert.equal(attemptedBatchSizes[0], 6);
+  assert.ok(attemptedBatchSizes.some((size) => size <= 2), "expected oversized request to be split below the failing size");
+  assert.ok(attemptedBatchSizes.length <= 10, "expected bounded split attempts instead of an endless retry loop");
+}
+
+async function testSingleStatement413IsTerminal() {
+  const sqlClient = new MockAuthoritySqlClient();
+  let oversizedAttempts = 0;
+  sqlClient.transaction = async (statements = []) => {
+    if (statements.some(isNodeUpsertStatement)) {
+      oversizedAttempts += 1;
+      throw createLimitError();
+    }
+    for (const statement of statements) {
+      await sqlClient.execute(statement.sql, statement.params || {});
+    }
+    return { executed: statements.length };
+  };
+  const store = new AuthorityGraphStore("authority-chat-single-413", { sqlClient });
+
+  await assert.rejects(
+    () => store.bulkUpsertNodes([{ id: "too-large", type: "event", text: "x".repeat(1024), updatedAt: 1 }]),
+    (error) => {
+      assert.equal(error.name, "AuthoritySqlPayloadTooLargeError");
+      assert.equal(error.nonRetryable, true);
+      assert.equal(error.terminal, true);
+      return true;
+    },
+  );
+  assert.ok(oversizedAttempts >= 1, "expected the oversized record to be attempted at least once");
+  assert.ok(oversizedAttempts <= 4, "single oversized record must not retry forever");
+}
+
 await testConvertNamedParamsToPositional();
 await testOpenSeedsAuthorityMeta();
 await testImportCommitAndExportSnapshot();
 await testPruneAndClear();
 await testHttpSqlClientBoundary();
+await testTransactionBatchingUsesByteBudget();
+await testTransaction413SplitsWithoutRepeatingOversizedBatch();
+await testSingleStatement413IsTerminal();
 
 console.log(`${PREFIX} all tests passed`);

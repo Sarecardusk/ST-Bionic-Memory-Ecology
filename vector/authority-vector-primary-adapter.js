@@ -2,8 +2,9 @@ import { normalizeAuthorityBaseUrl } from "../runtime/authority-capabilities.js"
 import {
   AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
   AuthorityHttpClient,
+  AuthorityHttpError,
 } from "../runtime/authority-http-client.js";
-import { embedText } from "./embedding.js";
+import { embedBatch } from "./embedding.js";
 
 export const AUTHORITY_VECTOR_MODE = "authority";
 export const AUTHORITY_VECTOR_SOURCE = "authority-trivium";
@@ -14,6 +15,7 @@ const MAX_AUTHORITY_VECTOR_CHUNK_SIZE = 2000;
 const DEFAULT_AUTHORITY_PURGE_PAGE_SIZE = 200;
 const DEFAULT_AUTHORITY_PURGE_MAX_PAGES = 1000;
 const DEFAULT_AUTHORITY_EMBEDDING_BACKEND_SOURCE = "openai";
+const AUTHORITY_CONNECTION_PROBE_TEXTS = ["test connection", "runtime batch probe"];
 
 function clampInteger(value, fallback, min, max) {
   const parsed = Number(value);
@@ -87,6 +89,25 @@ function isPlainObject(value = null) {
 
 function hasPlainKeys(value = null) {
   return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
+function getAuthorityErrorCategory(error = null) {
+  return String(error?.category || error?.errorCategory || "").trim();
+}
+
+function getAuthorityErrorDomain(error = null) {
+  if (!error) return "";
+  return error instanceof AuthorityHttpError || getAuthorityErrorCategory(error) ? "authority" : "";
+}
+
+function buildAuthorityErrorDiagnostics(error = null) {
+  const category = getAuthorityErrorCategory(error);
+  const domain = getAuthorityErrorDomain(error);
+  return {
+    ...(category ? { errorCategory: category, authorityErrorCategory: category } : {}),
+    ...(domain ? { errorDomain: domain, authorityErrorDomain: domain } : {}),
+    ...(Number(error?.status || 0) > 0 ? { status: Number(error.status) } : {}),
+  };
 }
 
 function normalizeOpenAICompatibleBaseUrl(value) {
@@ -816,6 +837,7 @@ export async function upsertAuthorityTriviumEntries(graph, config = {}, entries 
         durationMs: roundMs(nowMs() - chunkStartedAt),
         ok: false,
         error: error?.message || String(error),
+        ...buildAuthorityErrorDiagnostics(error),
       });
       error.authorityDiagnostics = {
         operation: "bulkUpsert",
@@ -824,6 +846,7 @@ export async function upsertAuthorityTriviumEntries(graph, config = {}, entries 
         chunks,
         totalBytes,
         totalMs: roundMs(nowMs() - startedAt),
+        ...buildAuthorityErrorDiagnostics(error),
       };
       throw error;
     }
@@ -920,9 +943,19 @@ export async function searchAuthorityTriviumNodes(graph, text, config = {}, opti
 }
 
 export async function testAuthorityTriviumConnection(config = {}, options = {}) {
-  const probeVector = await embedText("test connection", config, { isQuery: true });
+  const probeVectors = await embedBatch(AUTHORITY_CONNECTION_PROBE_TEXTS, config, {
+    isQuery: true,
+  });
+  const probeVector = probeVectors.find((vector) => vector && vector.length > 0);
   if (!probeVector || probeVector.length === 0) {
-    return { success: false, dimensions: 0, error: "Embedding API 返回空结果" };
+    return {
+      success: false,
+      dimensions: 0,
+      error: "Embedding API 批量返回空结果",
+      batchCapable: false,
+      mode: AUTHORITY_VECTOR_MODE,
+      source: AUTHORITY_VECTOR_SOURCE,
+    };
   }
   const client = createAuthorityTriviumClient(config, options);
   await callClient(client, ["stat"], "stat", {
@@ -930,5 +963,12 @@ export async function testAuthorityTriviumConnection(config = {}, options = {}) 
     collectionId: options.collectionId,
     chatId: options.chatId,
   });
-  return { success: true, dimensions: probeVector.length, error: "" };
+  return {
+    success: true,
+    dimensions: probeVector.length,
+    error: "",
+    batchCapable: true,
+    mode: AUTHORITY_VECTOR_MODE,
+    source: AUTHORITY_VECTOR_SOURCE,
+  };
 }
