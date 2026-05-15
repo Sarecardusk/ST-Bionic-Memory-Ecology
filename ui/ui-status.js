@@ -3,6 +3,7 @@
 // 可被 index.js 及其他模块安全导入。
 import { sanitizePlannerMessageText } from "../runtime/planner-tag-utils.js";
 import { AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT } from "../maintenance/authority-diagnostics-bundle.js";
+import { createAuthorityUpgradeState } from "../runtime/authority-upgrade-state.js";
 
 // ═══════════════════════════════════════════════════════════
 // 常量
@@ -143,6 +144,12 @@ export function createGraphPersistenceState() {
     authorityOfflineQueueBytes: 0,
     authorityOfflineQueueItems: 0,
     authorityDegradedReason: "",
+    authorityUpgradeState: createAuthorityUpgradeState(),
+    authorityUpgradeMode: "standalone",
+    authorityUpgradeText: "纯前端模式",
+    authorityUpgradeMeta: "未检测到可用服务端增强，BME 将继续本地运行",
+    authorityUpgradeLevel: "idle",
+    authorityUpgradeReady: false,
     authorityMigrationState: "idle",
     authorityMigrationSource: "",
     authorityMigrationRevision: 0,

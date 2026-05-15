@@ -257,6 +257,7 @@ import {
   writePersistedRecallToUserMessage,
 } from "./retrieval/recall-persistence.js";
 import { resolveConfiguredTimeoutMs } from "./runtime/request-timeout.js";
+import { deriveAuthorityUpgradeState } from "./runtime/authority-upgrade-state.js";
 import { createVectorSyncCoalescer as createImportedVectorSyncCoalescer } from "./runtime/vector-sync-coalescer.js";
 import {
   defaultSettings,
@@ -1585,6 +1586,36 @@ function getAuthorityRuntimeSnapshot(settings = getSettings()) {
 
 function buildAuthorityPersistenceStatePatch(settings = getSettings()) {
   const { capability, browserState } = getAuthorityRuntimeSnapshot(settings);
+  const upgradeState =
+    typeof deriveAuthorityUpgradeState === "function"
+      ? deriveAuthorityUpgradeState({
+          settings,
+          capability,
+          browserState,
+        })
+      : {
+          mode: capability?.serverPrimaryReady
+            ? "authority-enhanced"
+            : capability?.installed
+              ? "authority-degraded"
+              : "standalone",
+          text: capability?.serverPrimaryReady
+            ? "服务端增强已启用"
+            : capability?.installed
+              ? "已自动回退"
+              : "纯前端模式",
+          meta: capability?.serverPrimaryReady
+            ? "图谱与向量存储已自动升级到 DOA/Authority 增强路径"
+            : capability?.installed
+              ? `服务端增强暂不可用：${String(capability?.reason || capability?.lastError || "unknown")}`
+              : "未检测到 DOA/Authority，已自动使用本地稳定路径",
+          level: capability?.serverPrimaryReady
+            ? "success"
+            : capability?.installed
+              ? "warning"
+              : "idle",
+          ready: Boolean(capability?.serverPrimaryReady),
+        };
   return {
     authority: cloneRuntimeDebugValue(capability, null),
     authorityBrowserState: cloneRuntimeDebugValue(browserState, null),
@@ -1601,6 +1632,12 @@ function buildAuthorityPersistenceStatePatch(settings = getSettings()) {
     authorityDegradedReason: capability.serverPrimaryReady
       ? ""
       : String(capability.reason || capability.lastError || ""),
+    authorityUpgradeState: cloneRuntimeDebugValue(upgradeState, null),
+    authorityUpgradeMode: String(upgradeState.mode || "standalone"),
+    authorityUpgradeText: String(upgradeState.text || "纯前端模式"),
+    authorityUpgradeMeta: String(upgradeState.meta || ""),
+    authorityUpgradeLevel: String(upgradeState.level || "idle"),
+    authorityUpgradeReady: Boolean(upgradeState.ready),
   };
 }
 
