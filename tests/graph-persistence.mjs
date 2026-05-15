@@ -155,6 +155,7 @@ function normalizeAuthorityVectorConfig(settings = {}, overrides = {}) {
 function createAuthorityBlobAdapter() {
   return {
     async writeJson(path = "", payload = null) {
+      globalThis.__authorityBlobWrites?.set(String(path || ""), structuredClone(payload));
       return { path, payload, written: true };
     },
   };
@@ -351,6 +352,8 @@ async function createGraphPersistenceHarness({
   }
 
   const authoritySnapshotMap = new Map();
+  const authorityBlobWrites = new Map();
+  globalThis.__authorityBlobWrites = authorityBlobWrites;
 
   function getAuthoritySnapshotForChat(targetChatId = "") {
     const normalizedChatId = String(targetChatId || "");
@@ -673,6 +676,7 @@ async function createGraphPersistenceHarness({
     ),
     __indexedDbSnapshots: indexedDbSnapshotMap,
     __authoritySnapshots: authoritySnapshotMap,
+    __authorityBlobWrites: authorityBlobWrites,
     __getAuthoritySnapshotForChat: getAuthoritySnapshotForChat,
     __setAuthoritySnapshotForChat: setAuthoritySnapshotForChat,
     sessionStorage: storage,
@@ -1645,6 +1649,7 @@ result = {
   persistExtractionBatchResult,
   shouldUseAuthorityJobs,
   shouldUseAuthorityGraphStore,
+  writeAuthorityCheckpointFromCurrentGraph,
   onRebuildLocalCacheFromLukerSidecar,
   saveGraphToIndexedDb,
   cloneGraphForPersistence,
@@ -1734,6 +1739,12 @@ result = {
   },
   getAuthoritySnapshotForChat(chatId) {
     return globalThis.__getAuthoritySnapshotForChat(chatId);
+  },
+  getAuthorityBlobWrites() {
+    return Array.from(globalThis.__authorityBlobWrites.entries()).map(([path, payload]) => [
+      path,
+      structuredClone(payload),
+    ]);
   },
 };
       `,
@@ -4779,6 +4790,28 @@ result = {
     result.revision,
     "Authority SQL snapshot should receive the accepted persist revision",
   );
+  harness.api.setCurrentGraph(
+    stampPersistedGraph(
+      createMeaningfulGraph(chatId, "runtime-stale-checkpoint"),
+      {
+        revision: 1,
+        integrity: persistenceChatId,
+        chatId,
+        reason: "runtime-stale-checkpoint",
+      },
+    ),
+  );
+  const checkpointResult = await harness.api.writeAuthorityCheckpointFromCurrentGraph({
+    reason: "authority-sql-checkpoint-source-test",
+  });
+  assert.equal(checkpointResult.success, true);
+  assert.equal(checkpointResult.result.source, "authority-sql");
+  assert.equal(checkpointResult.result.checkpointRevision, result.revision);
+  const checkpointPayload = Array.from(globalThis.__authorityBlobWrites.entries()).at(-1)?.[1];
+  assert.equal(checkpointPayload?.revision, result.revision);
+  const checkpointGraph = deserializeGraph(checkpointPayload?.serializedGraph || "{}");
+  assert.equal(checkpointGraph.nodes[0]?.fields?.title, "事件-luker-authority-sql");
+  assert.notEqual(checkpointGraph.nodes[0]?.fields?.title, "事件-runtime-stale-checkpoint");
 }
 
 {

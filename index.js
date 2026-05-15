@@ -3083,6 +3083,21 @@ async function exportAuthoritySqlSnapshotProbe(chatId = "", settings = getSettin
   }
 }
 
+async function exportAuthoritySqlSnapshotForCheckpoint(chatId = "", settings = getSettings()) {
+  const normalizedChatId = normalizeChatIdCandidate(chatId);
+  if (!normalizedChatId) return null;
+  const db = new AuthorityGraphStore(
+    normalizedChatId,
+    buildAuthorityGraphStoreOptions(settings),
+  );
+  try {
+    await db.open();
+    return await db.exportSnapshot({ includeTombstones: false });
+  } finally {
+    await db.close?.().catch(() => null);
+  }
+}
+
 async function readAuthorityTriviumStat({
   chatId = "",
   collectionId = "",
@@ -3346,33 +3361,68 @@ async function writeAuthorityCheckpointFromCurrentGraph(options = {}) {
     };
   }
 
-  ensureCurrentGraphRuntimeState();
-  if (!currentGraph) {
-    return {
-      success: false,
-      error: "Authority runtime graph unavailable",
-    };
+  const reason = String(options.reason || "manual-authority-checkpoint");
+  const authoritySqlPrimary = shouldUseAuthorityGraphStore(settings, capability);
+  let checkpointGraph = null;
+  let revision = 0;
+  let integrity = "";
+  let checkpointSource = "runtime";
+
+  if (authoritySqlPrimary) {
+    try {
+      const sqlSnapshot = await exportAuthoritySqlSnapshotForCheckpoint(chatId, settings);
+      const sqlRevision = Number(sqlSnapshot?.meta?.revision || 0);
+      if (!Number.isFinite(sqlRevision) || sqlRevision <= 0) {
+        return {
+          success: false,
+          error: "authority-sql-checkpoint-source-empty",
+        };
+      }
+      checkpointGraph = buildGraphFromSnapshot(sqlSnapshot, { chatId });
+      revision = sqlRevision;
+      integrity =
+        normalizeChatIdCandidate(options.integrity) ||
+        normalizeChatIdCandidate(sqlSnapshot?.meta?.integrity) ||
+        getChatMetadataIntegrity(getContext()) ||
+        graphPersistenceState.metadataIntegrity;
+      checkpointSource = "authority-sql";
+    } catch (error) {
+      return {
+        success: false,
+        error: error?.message || String(error) || "authority-sql-checkpoint-source-failed",
+      };
+    }
   }
 
-  const revision = Math.max(
-    1,
-    Number(options.revision || 0),
-    Number(currentGraph?.meta?.revision || 0),
-    Number(getGraphPersistedRevision(currentGraph) || 0),
-    Number(graphPersistenceState.revision || 0),
-  );
-  const integrity =
-    normalizeChatIdCandidate(options.integrity) ||
-    normalizeChatIdCandidate(getGraphPersistenceMeta(currentGraph)?.integrity) ||
-    getChatMetadataIntegrity(getContext()) ||
-    graphPersistenceState.metadataIntegrity;
-  const reason = String(options.reason || "manual-authority-checkpoint");
-  const checkpoint = buildLukerGraphCheckpointV2(currentGraph, {
+  if (!checkpointGraph) {
+    ensureCurrentGraphRuntimeState();
+    if (!currentGraph) {
+      return {
+        success: false,
+        error: "Authority runtime graph unavailable",
+      };
+    }
+    checkpointGraph = currentGraph;
+    revision = Math.max(
+      1,
+      Number(options.revision || 0),
+      Number(currentGraph?.meta?.revision || 0),
+      Number(getGraphPersistedRevision(currentGraph) || 0),
+      Number(graphPersistenceState.revision || 0),
+    );
+    integrity =
+      normalizeChatIdCandidate(options.integrity) ||
+      normalizeChatIdCandidate(getGraphPersistenceMeta(currentGraph)?.integrity) ||
+      getChatMetadataIntegrity(getContext()) ||
+      graphPersistenceState.metadataIntegrity;
+  }
+
+  const checkpoint = buildLukerGraphCheckpointV2(checkpointGraph, {
     revision,
     chatId,
     integrity,
     reason,
-    storageTier: "authority-sql-primary",
+    storageTier: authoritySqlPrimary ? "authority-sql-primary" : "runtime-checkpoint",
     persistedAt: updatedAt,
   });
   if (!checkpoint) {
@@ -3410,6 +3460,7 @@ async function writeAuthorityCheckpointFromCurrentGraph(options = {}) {
       path: writeResult.path,
       revision,
       checkpointRevision: Number(checkpoint.revision || revision || 0),
+      source: checkpointSource,
       auditSummary: auditResult?.audit?.summary || null,
       auditActions: auditResult?.audit?.actions || [],
     },
