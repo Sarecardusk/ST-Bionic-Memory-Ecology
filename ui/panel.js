@@ -4408,6 +4408,18 @@ function _refreshDashboard() {
   const vectorStats = getVectorIndexStats(graph);
   const vectorMode = graph?.vectorIndexState?.mode || "—";
   const vectorSource = graph?.vectorIndexState?.source || "—";
+  const vectorManifest = graph?.vectorIndexState?.manifest || null;
+  const vectorManifestMeta = vectorManifest?.status
+    ? [
+        `索引 ${vectorManifest.status}`,
+        Number(vectorManifest.observedDim || 0) > 0
+          ? `${Number(vectorManifest.observedDim)}D`
+          : "",
+        vectorManifest.lastError ? `原因 ${vectorManifest.lastError}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "索引未记录维度";
   const recovery = graph?.historyState?.lastRecoveryResult;
   const extractionStatus = _getLastExtractionStatus?.() || {};
   const lastBatchStatus = _getLatestBatchStatusSnapshot();
@@ -4428,7 +4440,7 @@ function _refreshDashboard() {
   );
   _setText(
     "bme-status-vector",
-    `${vectorMode}/${vectorSource} · total ${vectorStats.total} · indexed ${vectorStats.indexed} · stale ${vectorStats.stale} · pending ${vectorStats.pending}`,
+    `${vectorMode}/${vectorSource} · ${vectorManifestMeta} · total ${vectorStats.total} · indexed ${vectorStats.indexed} · stale ${vectorStats.stale} · pending ${vectorStats.pending}`,
   );
   _setText(
     "bme-status-recovery",
@@ -14554,4 +14566,3 @@ function _getNodeSnippet(node) {
 function _isMobile() {
   return window.innerWidth <= 768;
 }
-
