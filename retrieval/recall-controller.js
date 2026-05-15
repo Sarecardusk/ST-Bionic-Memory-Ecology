@@ -513,26 +513,6 @@ export async function runRecallController(runtime, options = {}) {
       reason: "召回功能未启用",
     });
   }
-  const isReadableForRecall =
-    typeof runtime.isGraphReadableForRecall === "function"
-      ? runtime.isGraphReadableForRecall()
-      : runtime.isGraphReadable();
-  if (!isReadableForRecall) {
-    const reason = runtime.getGraphMutationBlockReason("召回");
-    runtime.setLastRecallStatus("等待图谱加载", reason, "warning", {
-      syncRuntime: true,
-    });
-    return runtime.createRecallRunResult("skipped", {
-      reason,
-    });
-  }
-  if (runtime.isGraphMetadataWriteAllowed()) {
-    if (!(await runtime.recoverHistoryIfNeeded("pre-recall"))) {
-      return runtime.createRecallRunResult("skipped", {
-        reason: "历史恢复未就绪",
-      });
-    }
-  }
 
   const context = runtime.getContext();
   const chat = context.chat;
@@ -688,6 +668,27 @@ export async function runRecallController(runtime, options = {}) {
       stats: reusedResult?.stats || {},
       recallInput: String(earlyPersistedReuse.record.recallInput || ""),
     });
+  }
+
+  const isReadableForRecall =
+    typeof runtime.isGraphReadableForRecall === "function"
+      ? runtime.isGraphReadableForRecall()
+      : runtime.isGraphReadable();
+  if (!isReadableForRecall) {
+    const reason = runtime.getGraphMutationBlockReason("召回");
+    runtime.setLastRecallStatus("等待图谱加载", reason, "warning", {
+      syncRuntime: true,
+    });
+    return runtime.createRecallRunResult("skipped", {
+      reason,
+    });
+  }
+  if (runtime.isGraphMetadataWriteAllowed()) {
+    if (!(await runtime.recoverHistoryIfNeeded("pre-recall"))) {
+      return runtime.createRecallRunResult("skipped", {
+        reason: "历史恢复未就绪",
+      });
+    }
   }
 
   const runId = runtime.nextRecallRunSequence();

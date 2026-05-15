@@ -313,6 +313,7 @@ writePersistedRecallToUserMessage(rerollChat, 0, validRecord);
 
 let retrieveCalled = false;
 let rerollEnsureVectorReadyCalled = false;
+let rerollRecoverHistoryCalled = false;
 const rerollStatusLabels = [];
 const rerollRuntime = {
   getIsRecalling: () => false,
@@ -325,7 +326,10 @@ const rerollRuntime = {
   }),
   isGraphReadableForRecall: () => true,
   isGraphMetadataWriteAllowed: () => true,
-  recoverHistoryIfNeeded: async () => true,
+  recoverHistoryIfNeeded: async () => {
+    rerollRecoverHistoryCalled = true;
+    return true;
+  },
   getContext: () => ({ chat: rerollChat, chatId: "chat-reroll" }),
   nextRecallRunSequence: () => 1,
   beginStageAbortController: () => ({ signal: { aborted: false } }),
@@ -434,6 +438,11 @@ assert.equal(
   rerollEnsureVectorReadyCalled,
   false,
   "persisted reroll reuse should not even prepare vectors before reusing the user-floor record",
+);
+assert.equal(
+  rerollRecoverHistoryCalled,
+  false,
+  "persisted reroll reuse should not trigger pre-recall history recovery",
 );
 assert.equal(
   rerollStatusLabels.includes("召回中"),
@@ -599,6 +608,7 @@ assert.equal(
 
 console.log("  ✓ runRecallController does not reuse unbound record for active input");
 
+rerollRecoverHistoryCalled = false;
 const activeInputBoundChat = [
   { is_user: true, mes: "主动新输入绑定记录也不应复用" },
   { is_user: false, mes: "上一条回复。", is_system: false },
@@ -641,6 +651,11 @@ assert.equal(
   activeInputBoundRetrieveCalled,
   true,
   "active send-intent input should not reuse even a bound target user-floor record",
+);
+assert.equal(
+  rerollRecoverHistoryCalled,
+  true,
+  "active send-intent input should still run normal pre-recall history recovery before fresh recall",
 );
 assert.equal(
   activeInputBoundResult.injectionText,
