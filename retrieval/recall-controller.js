@@ -118,9 +118,12 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
     "planner-handoff",
   ]);
   const isActiveInputSource = activeInputSources.has(recallSource);
+  if (isActiveInputSource) {
+    return null;
+  }
 
   if (!Number.isFinite(targetUserMessageIndex)) {
-    if (!currentRecallInputText || isActiveInputSource || !Array.isArray(chat)) {
+    if (!currentRecallInputText || !Array.isArray(chat)) {
       return null;
     }
     for (let index = chat.length - 1; index >= 0; index--) {
@@ -539,6 +542,154 @@ export async function runRecallController(runtime, options = {}) {
     });
   }
 
+  const recentContextMessageLimit = runtime.clampInt(
+    settings.recallLlmContextMessages,
+    4,
+    0,
+    20,
+  );
+  const recallInput = runtime.resolveRecallInput(
+    chat,
+    recentContextMessageLimit,
+    options,
+  );
+  const userMessage = recallInput.userMessage;
+  const recentMessages = recallInput.recentMessages;
+
+  if (!userMessage) {
+    return runtime.createRecallRunResult("skipped", {
+      reason: "当前没有可用于召回的用户输入",
+    });
+  }
+
+  recallInput.hookName = options.hookName || "";
+  recallInput.deliveryMode =
+    String(options.deliveryMode || "immediate").trim() || "immediate";
+
+  const cachedRecallPayload =
+    options.cachedRecallPayload && typeof options.cachedRecallPayload === "object"
+      ? options.cachedRecallPayload
+      : null;
+
+  if (cachedRecallPayload?.result) {
+    runtime.setPendingRecallSendIntent?.(runtime.createRecallInputRecord());
+    const cachedResult = cachedRecallPayload.result;
+    const cachedRecentMessages = Array.isArray(cachedRecallPayload.recentMessages)
+      ? cachedRecallPayload.recentMessages.map((item) => String(item || ""))
+      : recentMessages;
+    const applied = runtime.applyRecallInjection(
+      settings,
+      recallInput,
+      cachedRecentMessages,
+      cachedResult,
+    );
+    runtime.consumePlannerRecallHandoff?.(cachedRecallPayload.chatId, {
+      handoffId: cachedRecallPayload.handoffId,
+    });
+    return runtime.createRecallRunResult("completed", {
+      reason: cachedRecallPayload.reason || "planner-handoff-reused",
+      selectedNodeIds: cachedResult.selectedNodeIds || [],
+      injectionText: applied?.injectionText || "",
+      retrievalMeta: applied?.retrievalMeta || {},
+      llmMeta: applied?.llmMeta || {},
+      transport: applied?.transport || {
+        applied: false,
+        source: "none",
+        mode: "none",
+      },
+      deliveryMode:
+        applied?.deliveryMode ||
+        String(recallInput?.deliveryMode || "immediate").trim() ||
+        "immediate",
+      source: recallInput?.source || cachedRecallPayload.source || "",
+      sourceLabel: recallInput?.sourceLabel || cachedRecallPayload.sourceLabel || "",
+      authoritativeInputUsed: Boolean(recallInput?.authoritativeInputUsed),
+      boundUserFloorText: String(recallInput?.boundUserFloorText || ""),
+      hookName: recallInput?.hookName || "",
+      sourceCandidates: Array.isArray(recallInput?.sourceCandidates)
+        ? recallInput.sourceCandidates.map((candidate) => ({ ...candidate }))
+        : [],
+      stats: cachedResult?.stats || {},
+    });
+  }
+
+  const earlyPersistedReuse = resolveReusablePersistedRecallRecord(
+    chat,
+    recallInput,
+    runtime,
+  );
+  if (earlyPersistedReuse) {
+    const normalizedBoundUserFloorText =
+      typeof runtime.normalizeRecallInputText === "function"
+        ? runtime.normalizeRecallInputText(
+            earlyPersistedReuse.record.boundUserFloorText ||
+              recallInput.boundUserFloorText ||
+              "",
+          )
+        : String(
+            earlyPersistedReuse.record.boundUserFloorText ||
+              recallInput.boundUserFloorText ||
+              "",
+          )
+            .replace(/\r\n/g, "\n")
+            .trim();
+    const effectiveRecallInput = {
+      ...recallInput,
+      source: "persisted-user-floor",
+      sourceLabel: "复用用户楼层召回",
+      reason: "persisted-user-floor-reuse",
+      authoritativeInputUsed: Boolean(
+        earlyPersistedReuse.record.authoritativeInputUsed ||
+          recallInput.authoritativeInputUsed,
+      ),
+      boundUserFloorText: normalizedBoundUserFloorText,
+    };
+    const reusedResult = buildPersistedRecallReuseResult(earlyPersistedReuse.record);
+    const applied = runtime.applyRecallInjection(
+      settings,
+      effectiveRecallInput,
+      recentMessages,
+      reusedResult,
+    );
+    const bumpedRecord =
+      typeof runtime.bumpPersistedRecallGenerationCount === "function"
+        ? runtime.bumpPersistedRecallGenerationCount(
+            chat,
+            earlyPersistedReuse.targetUserMessageIndex,
+          )
+        : null;
+    if (bumpedRecord) {
+      runtime.triggerChatMetadataSave?.(context, { immediate: false });
+      runtime.schedulePersistedRecallMessageUiRefresh?.();
+    }
+    return runtime.createRecallRunResult("completed", {
+      reason: "persisted-user-floor-reused",
+      selectedNodeIds: reusedResult.selectedNodeIds || [],
+      injectionText: applied?.injectionText || reusedResult.injectionText || "",
+      retrievalMeta: applied?.retrievalMeta || reusedResult.meta?.retrieval || {},
+      llmMeta: applied?.llmMeta || reusedResult.meta?.retrieval?.llm || {},
+      transport: applied?.transport || {
+        applied: false,
+        source: "none",
+        mode: "none",
+      },
+      deliveryMode:
+        applied?.deliveryMode ||
+        String(effectiveRecallInput?.deliveryMode || "immediate").trim() ||
+        "immediate",
+      source: effectiveRecallInput.source || "",
+      sourceLabel: effectiveRecallInput.sourceLabel || "",
+      authoritativeInputUsed: Boolean(effectiveRecallInput.authoritativeInputUsed),
+      boundUserFloorText: String(effectiveRecallInput.boundUserFloorText || ""),
+      hookName: effectiveRecallInput.hookName || "",
+      sourceCandidates: Array.isArray(effectiveRecallInput.sourceCandidates)
+        ? effectiveRecallInput.sourceCandidates.map((candidate) => ({ ...candidate }))
+        : [],
+      stats: reusedResult?.stats || {},
+      recallInput: String(earlyPersistedReuse.record.recallInput || ""),
+    });
+  }
+
   const runId = runtime.nextRecallRunSequence();
   let recallPromise = null;
   recallPromise = (async () => {
@@ -565,29 +716,6 @@ export async function runRecallController(runtime, options = {}) {
 
     try {
       await runtime.ensureVectorReadyIfNeeded("pre-recall", recallSignal);
-      const recentContextMessageLimit = runtime.clampInt(
-        settings.recallLlmContextMessages,
-        4,
-        0,
-        20,
-      );
-      const recallInput = runtime.resolveRecallInput(
-        chat,
-        recentContextMessageLimit,
-        options,
-      );
-      const userMessage = recallInput.userMessage;
-      const recentMessages = recallInput.recentMessages;
-
-      if (!userMessage) {
-        return runtime.createRecallRunResult("skipped", {
-          reason: "当前没有可用于召回的用户输入",
-        });
-      }
-
-      recallInput.hookName = options.hookName || "";
-      recallInput.deliveryMode =
-        String(options.deliveryMode || "immediate").trim() || "immediate";
 
       debugLog("[ST-BME] 开始召回", {
         source: recallInput.source,
@@ -612,143 +740,6 @@ export async function runRecallController(runtime, options = {}) {
       );
       if (recallInput.source === "send-intent") {
         runtime.setPendingRecallSendIntent(runtime.createRecallInputRecord());
-      }
-
-      const cachedRecallPayload =
-        options.cachedRecallPayload &&
-        typeof options.cachedRecallPayload === "object"
-          ? options.cachedRecallPayload
-          : null;
-      if (cachedRecallPayload?.result) {
-        // Cached planner handoff is already the authoritative source for this
-        // generation, so any leftover send-intent snapshot must be cleared to
-        // avoid leaking stale input into a later fallback recall path.
-        runtime.setPendingRecallSendIntent?.(runtime.createRecallInputRecord());
-        const cachedResult = cachedRecallPayload.result;
-        const recentMessages = Array.isArray(cachedRecallPayload.recentMessages)
-          ? cachedRecallPayload.recentMessages.map((item) => String(item || ""))
-          : recallInput.recentMessages;
-        const applied = runtime.applyRecallInjection(
-          settings,
-          recallInput,
-          recentMessages,
-          cachedResult,
-        );
-        runtime.consumePlannerRecallHandoff?.(cachedRecallPayload.chatId, {
-          handoffId: cachedRecallPayload.handoffId,
-        });
-        return runtime.createRecallRunResult("completed", {
-          reason: cachedRecallPayload.reason || "planner-handoff-reused",
-          selectedNodeIds: cachedResult.selectedNodeIds || [],
-          injectionText: applied?.injectionText || "",
-          retrievalMeta: applied?.retrievalMeta || {},
-          llmMeta: applied?.llmMeta || {},
-          transport: applied?.transport || {
-            applied: false,
-            source: "none",
-            mode: "none",
-          },
-          deliveryMode:
-            applied?.deliveryMode ||
-            String(recallInput?.deliveryMode || "immediate").trim() ||
-            "immediate",
-          source: recallInput?.source || cachedRecallPayload.source || "",
-          sourceLabel:
-            recallInput?.sourceLabel || cachedRecallPayload.sourceLabel || "",
-          authoritativeInputUsed: Boolean(recallInput?.authoritativeInputUsed),
-          boundUserFloorText: String(recallInput?.boundUserFloorText || ""),
-          hookName: recallInput?.hookName || "",
-          sourceCandidates: Array.isArray(recallInput?.sourceCandidates)
-            ? recallInput.sourceCandidates.map((candidate) => ({
-                ...candidate,
-              }))
-            : [],
-          stats: cachedResult?.stats || {},
-        });
-      }
-
-      const persistedReuse = resolveReusablePersistedRecallRecord(
-        chat,
-        recallInput,
-        runtime,
-      );
-      if (persistedReuse) {
-        const normalizedBoundUserFloorText =
-          typeof runtime.normalizeRecallInputText === "function"
-            ? runtime.normalizeRecallInputText(
-                persistedReuse.record.boundUserFloorText ||
-                  recallInput.boundUserFloorText ||
-                  "",
-              )
-            : String(
-                persistedReuse.record.boundUserFloorText ||
-                  recallInput.boundUserFloorText ||
-                  "",
-              )
-                .replace(/\r\n/g, "\n")
-                .trim();
-        const effectiveRecallInput = {
-          ...recallInput,
-          source: "persisted-user-floor",
-          sourceLabel: "复用用户楼层召回",
-          reason: "persisted-user-floor-reuse",
-          authoritativeInputUsed: Boolean(
-            persistedReuse.record.authoritativeInputUsed ||
-              recallInput.authoritativeInputUsed,
-          ),
-          boundUserFloorText: normalizedBoundUserFloorText,
-        };
-        const reusedResult = buildPersistedRecallReuseResult(persistedReuse.record);
-        const applied = runtime.applyRecallInjection(
-          settings,
-          effectiveRecallInput,
-          recentMessages,
-          reusedResult,
-        );
-        const bumpedRecord =
-          typeof runtime.bumpPersistedRecallGenerationCount === "function"
-            ? runtime.bumpPersistedRecallGenerationCount(
-                chat,
-                persistedReuse.targetUserMessageIndex,
-              )
-            : null;
-        if (bumpedRecord) {
-          runtime.triggerChatMetadataSave?.(context, { immediate: false });
-          runtime.schedulePersistedRecallMessageUiRefresh?.();
-        }
-        return runtime.createRecallRunResult("completed", {
-          reason: "persisted-user-floor-reused",
-          selectedNodeIds: reusedResult.selectedNodeIds || [],
-          injectionText: applied?.injectionText || reusedResult.injectionText || "",
-          retrievalMeta: applied?.retrievalMeta || reusedResult.meta?.retrieval || {},
-          llmMeta:
-            applied?.llmMeta || reusedResult.meta?.retrieval?.llm || {},
-          transport: applied?.transport || {
-            applied: false,
-            source: "none",
-            mode: "none",
-          },
-          deliveryMode:
-            applied?.deliveryMode ||
-            String(effectiveRecallInput?.deliveryMode || "immediate").trim() ||
-            "immediate",
-          source: effectiveRecallInput.source || "",
-          sourceLabel: effectiveRecallInput.sourceLabel || "",
-          authoritativeInputUsed: Boolean(
-            effectiveRecallInput.authoritativeInputUsed,
-          ),
-          boundUserFloorText: String(
-            effectiveRecallInput.boundUserFloorText || "",
-          ),
-          hookName: effectiveRecallInput.hookName || "",
-          sourceCandidates: Array.isArray(effectiveRecallInput.sourceCandidates)
-            ? effectiveRecallInput.sourceCandidates.map((candidate) => ({
-                ...candidate,
-              }))
-            : [],
-          stats: reusedResult?.stats || {},
-          recallInput: String(persistedReuse.record.recallInput || ""),
-        });
       }
 
       const result = await runtime.retrieve({

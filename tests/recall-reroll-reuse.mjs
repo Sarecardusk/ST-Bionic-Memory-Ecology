@@ -312,6 +312,8 @@ const validRecord = buildPersistedRecallRecord({
 writePersistedRecallToUserMessage(rerollChat, 0, validRecord);
 
 let retrieveCalled = false;
+let rerollEnsureVectorReadyCalled = false;
+const rerollStatusLabels = [];
 const rerollRuntime = {
   getIsRecalling: () => false,
   getCurrentGraph: () => ({ nodes: [], edges: [] }),
@@ -331,7 +333,9 @@ const rerollRuntime = {
   setIsRecalling: () => {},
   setActiveRecallPromise: () => {},
   getActiveRecallPromise: () => null,
-  setLastRecallStatus: () => {},
+  setLastRecallStatus: (label) => {
+    rerollStatusLabels.push(String(label || ""));
+  },
   clampInt: (v, f, mn, mx) => {
     const n = Number(v);
     if (!Number.isFinite(n)) return f;
@@ -355,7 +359,9 @@ const rerollRuntime = {
   triggerChatMetadataSave: () => {},
   schedulePersistedRecallMessageUiRefresh: () => {},
   refreshPanelLiveState: () => {},
-  ensureVectorReadyIfNeeded: async () => {},
+  ensureVectorReadyIfNeeded: async () => {
+    rerollEnsureVectorReadyCalled = true;
+  },
   resolveRecallInput: (chat, limit, override) => {
     // Simulate resolveRecallInputController override path
     const overrideText = normalizeRecallInputText(
@@ -423,6 +429,16 @@ assert.equal(
   retrieveCalled,
   false,
   "retrieve() should NOT be called when persisted record is reused",
+);
+assert.equal(
+  rerollEnsureVectorReadyCalled,
+  false,
+  "persisted reroll reuse should not even prepare vectors before reusing the user-floor record",
+);
+assert.equal(
+  rerollStatusLabels.includes("召回中"),
+  false,
+  "persisted reroll reuse should not enter visible fresh recall state",
 );
 assert.equal(
   rerollResult.injectionText,
@@ -582,6 +598,57 @@ assert.equal(
 );
 
 console.log("  ✓ runRecallController does not reuse unbound record for active input");
+
+const activeInputBoundChat = [
+  { is_user: true, mes: "主动新输入绑定记录也不应复用" },
+  { is_user: false, mes: "上一条回复。", is_system: false },
+];
+const activeInputBoundRecord = buildPersistedRecallRecord({
+  injectionText: "旧注入:主动新输入绑定记录也不应复用",
+  selectedNodeIds: ["node-active-bound-old"],
+  recallInput: "主动新输入绑定记录也不应复用",
+  recallSource: "chat-last-user",
+  hookName: "GENERATION_AFTER_COMMANDS",
+  tokenEstimate: 5,
+  manuallyEdited: false,
+  boundUserFloorText: "主动新输入绑定记录也不应复用",
+});
+writePersistedRecallToUserMessage(activeInputBoundChat, 0, activeInputBoundRecord);
+
+let activeInputBoundRetrieveCalled = false;
+const activeInputBoundRuntime = {
+  ...rerollRuntime,
+  getContext: () => ({ chat: activeInputBoundChat, chatId: "chat-active-input-bound" }),
+  retrieve: async () => {
+    activeInputBoundRetrieveCalled = true;
+    return {
+      injectionText: "新召回:主动新输入绑定记录也不应复用",
+      selectedNodeIds: ["node-active-bound-new"],
+    };
+  },
+};
+
+const activeInputBoundResult = await runRecallController(activeInputBoundRuntime, {
+  overrideUserMessage: "主动新输入绑定记录也不应复用",
+  generationType: "normal",
+  targetUserMessageIndex: 0,
+  overrideSource: "send-intent",
+  hookName: "GENERATION_AFTER_COMMANDS",
+  deliveryMode: "immediate",
+});
+
+assert.equal(
+  activeInputBoundRetrieveCalled,
+  true,
+  "active send-intent input should not reuse even a bound target user-floor record",
+);
+assert.equal(
+  activeInputBoundResult.injectionText,
+  "新召回:主动新输入绑定记录也不应复用",
+  "active send-intent input should force fresh recall for bound records",
+);
+
+console.log("  ✓ runRecallController does not reuse bound record for active input");
 
 const mismatchedBoundChat = [
   { is_user: true, mes: "已经编辑过的新楼层" },
