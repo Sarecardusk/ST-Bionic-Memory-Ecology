@@ -15038,6 +15038,91 @@ function applyAcceptedPendingPersistState(
   refreshPanelLiveState();
 }
 
+function maybeClearAcceptedPendingPersistState(
+  source = "accepted-pending-persist-reconcile",
+) {
+  ensureCurrentGraphRuntimeState();
+  if (graphPersistenceState.pendingPersist !== true) {
+    return false;
+  }
+
+  const batchStatus = currentGraph?.historyState?.lastBatchStatus || null;
+  const persistence = batchStatus?.persistence || null;
+  const persistenceRevision = Number(persistence?.revision || 0);
+  const queuedRevision = Number(graphPersistenceState.queuedPersistRevision || 0);
+  const targetRevision = Math.max(
+    Number.isFinite(persistenceRevision) ? persistenceRevision : 0,
+    Number.isFinite(queuedRevision) ? queuedRevision : 0,
+  );
+  if (!Number.isFinite(targetRevision) || targetRevision <= 0) {
+    return false;
+  }
+
+  const commitMarker = syncCommitMarkerToPersistenceState(getContext());
+  const context = getContext();
+  const activeChatId = normalizeChatIdCandidate(getCurrentChatId(context));
+  const queuedChatId = normalizeChatIdCandidate(
+    graphPersistenceState.queuedPersistChatId ||
+      graphPersistenceState.chatId ||
+      activeChatId,
+  );
+  const currentIdentity = resolveCurrentChatIdentity(context);
+  if (
+    !activeChatId ||
+    !queuedChatId ||
+    (!areChatIdsEquivalentForResolvedIdentity(
+      queuedChatId,
+      activeChatId,
+      currentIdentity,
+    ) &&
+      !areChatIdsEquivalentForResolvedIdentity(
+        activeChatId,
+        queuedChatId,
+        currentIdentity,
+      ))
+  ) {
+    return false;
+  }
+  const markerChatId = normalizeChatIdCandidate(commitMarker?.chatId);
+  const markerAcceptedRevision = getAcceptedCommitMarkerRevision(commitMarker);
+  const markerAcceptedForQueuedChat =
+    markerAcceptedRevision > 0 &&
+    markerChatId &&
+    (areChatIdsEquivalentForResolvedIdentity(markerChatId, queuedChatId, currentIdentity) ||
+      areChatIdsEquivalentForResolvedIdentity(
+        queuedChatId,
+        markerChatId,
+        currentIdentity,
+      ));
+  const acceptedRevision = Math.max(
+    Number(graphPersistenceState.lastAcceptedRevision || 0),
+    markerAcceptedForQueuedChat ? Number(markerAcceptedRevision || 0) : 0,
+  );
+  if (!Number.isFinite(acceptedRevision) || acceptedRevision < targetRevision) {
+    return false;
+  }
+
+  const acceptedStorageTier =
+    String(graphPersistenceState.acceptedStorageTier || "").trim() ||
+    String(commitMarker?.storageTier || "").trim() ||
+    String(persistence?.storageTier || "").trim() ||
+    "none";
+  const acceptedResult = buildGraphPersistResult({
+    saved: true,
+    accepted: true,
+    reason: `${String(source || "accepted-pending-persist-reconcile")}:accepted-revision`,
+    revision: targetRevision,
+    saveMode: "accepted-revision-reconcile",
+    storageTier: acceptedStorageTier,
+    acceptedBy: acceptedStorageTier,
+  });
+  applyAcceptedPendingPersistState(acceptedResult, {
+    lastProcessedAssistantFloor: resolvePendingPersistLastProcessedAssistantFloor(),
+  });
+  clearPendingGraphPersistRetry();
+  return true;
+}
+
 function schedulePendingGraphPersistRetry(
   reason = "pending-graph-persist-retry",
   attempt = 0,
@@ -15311,6 +15396,22 @@ async function retryPendingGraphPersist({
       revision: graphPersistenceState.revision,
       saveMode: graphPersistenceState.lastPersistMode,
       storageTier: "none",
+    });
+  }
+
+  if (maybeClearAcceptedPendingPersistState(reason)) {
+    return buildGraphPersistResult({
+      saved: true,
+      blocked: false,
+      accepted: true,
+      reason: `${String(reason || "pending-graph-persist-retry")}:accepted-revision`,
+      revision: Math.max(
+        Number(graphPersistenceState.lastAcceptedRevision || 0),
+        Number(graphPersistenceState.revision || 0),
+      ),
+      saveMode: "accepted-revision-reconcile",
+      storageTier: String(graphPersistenceState.acceptedStorageTier || "none"),
+      acceptedBy: String(graphPersistenceState.acceptedStorageTier || "none"),
     });
   }
 

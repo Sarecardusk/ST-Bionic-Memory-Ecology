@@ -545,6 +545,21 @@ function isPersistenceRevisionAccepted(runtime, persistence = null) {
   return Number.isFinite(lastAcceptedRevision) && lastAcceptedRevision >= persistenceRevision;
 }
 
+function isPendingPersistenceRevisionAccepted(runtime, persistence = null) {
+  const persistenceState = runtime?.getGraphPersistenceState?.() || {};
+  const persistenceRevision = Number(persistence?.revision || 0);
+  const queuedRevision = Number(persistenceState.queuedPersistRevision || 0);
+  const targetRevision = Math.max(
+    Number.isFinite(persistenceRevision) ? persistenceRevision : 0,
+    Number.isFinite(queuedRevision) ? queuedRevision : 0,
+  );
+  if (!Number.isFinite(targetRevision) || targetRevision <= 0) {
+    return false;
+  }
+  const lastAcceptedRevision = Number(persistenceState.lastAcceptedRevision || 0);
+  return Number.isFinite(lastAcceptedRevision) && lastAcceptedRevision >= targetRevision;
+}
+
 function hasRecoverablePendingPersistence(runtime) {
   const persistenceState = runtime?.getGraphPersistenceState?.() || {};
   if (persistenceState.pendingPersist !== true) {
@@ -572,8 +587,13 @@ function getPendingPersistenceGateInfo(runtime) {
   const batchStatus = graph?.historyState?.lastBatchStatus || null;
   const persistence = batchStatus?.persistence || null;
   const pendingPersist = runtime?.getGraphPersistenceState?.()?.pendingPersist === true;
-  const accepted = isPersistenceRevisionAccepted(runtime, persistence);
+  const accepted = pendingPersist
+    ? isPendingPersistenceRevisionAccepted(runtime, persistence)
+    : isPersistenceRevisionAccepted(runtime, persistence);
   const attempted = hasMeaningfulPersistenceRecord(persistence);
+  if (pendingPersist && attempted && accepted) {
+    return null;
+  }
   if (!pendingPersist && (!attempted || accepted)) {
     return null;
   }

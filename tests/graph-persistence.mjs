@@ -4030,6 +4030,138 @@ result = {
 }
 
 {
+  const harness = await createGraphPersistenceHarness({
+    chatId: "chat-pending-persist-already-accepted",
+    globalChatId: "chat-pending-persist-already-accepted",
+    chatMetadata: {
+      integrity: "meta-pending-persist-already-accepted",
+    },
+    chat: [
+      { is_user: true, mes: "用户发言" },
+      { is_user: false, mes: "助手回复" },
+    ],
+  });
+  const graph = createMeaningfulGraph(
+    "chat-pending-persist-already-accepted",
+    "pending-persist-already-accepted",
+  );
+  graph.historyState.lastProcessedAssistantFloor = 1;
+  graph.lastProcessedSeq = 1;
+  graph.historyState.lastBatchStatus = {
+    processedRange: [1, 1],
+    completed: true,
+    persistence: {
+      outcome: "queued",
+      accepted: false,
+      storageTier: "authority-sql",
+      reason: "extraction-batch-complete:pending",
+      revision: 7,
+      saveMode: "immediate",
+      saved: false,
+      queued: true,
+      blocked: true,
+    },
+    historyAdvanceAllowed: false,
+    historyAdvanced: false,
+  };
+  harness.api.setCurrentGraph(graph);
+  harness.api.setGraphPersistenceState({
+    loadState: "loaded",
+    chatId: "chat-pending-persist-already-accepted",
+    revision: 7,
+    lastPersistedRevision: 7,
+    lastAcceptedRevision: 7,
+    acceptedStorageTier: "authority-sql",
+    queuedPersistRevision: 7,
+    queuedPersistChatId: "chat-pending-persist-already-accepted",
+    queuedPersistMode: "immediate",
+    pendingPersist: true,
+    writesBlocked: false,
+  });
+  harness.runtimeContext.__markSyncDirtyShouldThrow = true;
+
+  const result = await harness.api.retryPendingGraphPersist({
+    reason: "queued-persist-already-accepted-test",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(
+    harness.api.getGraphPersistenceState().pendingPersist,
+    false,
+    "已被 lastAcceptedRevision 覆盖的 pendingPersist 应在重试时直接清除",
+  );
+  assert.equal(
+    harness.api.getCurrentGraph().historyState.lastBatchStatus.persistence.accepted,
+    true,
+  );
+  assert.equal(
+    harness.api.getCurrentGraph().historyState.lastBatchStatus.historyAdvanceAllowed,
+    true,
+  );
+}
+
+{
+  const harness = await createGraphPersistenceHarness({
+    chatId: "chat-pending-current",
+    globalChatId: "chat-pending-current",
+    chatMetadata: {
+      integrity: "meta-pending-current",
+    },
+    chat: [
+      { is_user: true, mes: "当前聊天用户发言" },
+      { is_user: false, mes: "当前聊天助手回复" },
+    ],
+  });
+  const graph = createMeaningfulGraph(
+    "chat-pending-current",
+    "pending-persist-chat-mismatch",
+  );
+  graph.historyState.lastBatchStatus = {
+    processedRange: [1, 1],
+    completed: true,
+    persistence: {
+      outcome: "queued",
+      accepted: false,
+      storageTier: "authority-sql",
+      reason: "extraction-batch-complete:pending",
+      revision: 7,
+      saveMode: "immediate",
+      saved: false,
+      queued: true,
+      blocked: true,
+    },
+    historyAdvanceAllowed: false,
+    historyAdvanced: false,
+  };
+  harness.api.setCurrentGraph(graph);
+  harness.api.setGraphPersistenceState({
+    loadState: "loaded",
+    chatId: "chat-pending-current",
+    revision: 9,
+    lastPersistedRevision: 9,
+    lastAcceptedRevision: 9,
+    acceptedStorageTier: "authority-sql",
+    queuedPersistRevision: 7,
+    queuedPersistChatId: "other-chat-pending",
+    queuedPersistMode: "immediate",
+    pendingPersist: true,
+    writesBlocked: false,
+  });
+
+  const result = await harness.api.retryPendingGraphPersist({
+    reason: "queued-persist-chat-mismatch-test",
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "queued-chat-mismatch");
+  assert.equal(
+    harness.api.getGraphPersistenceState().pendingPersist,
+    true,
+    "其它聊天的 queued pending 不能被当前聊天 accepted revision 清掉",
+  );
+}
+
+{
   const chatId = "meta-authority-indexeddb-migration";
   const legacyGraph = stampPersistedGraph(
     createMeaningfulGraph(chatId, "authority-indexeddb-migration"),
