@@ -1427,9 +1427,11 @@ export async function findSimilarNodesByText(
   topK = 10,
   candidates = null,
   signal = undefined,
+  options = {},
 ) {
   if (!text || !graph || !config) return [];
   throwIfAborted(signal);
+  const readOnly = options?.readOnly === true;
 
   const candidateNodes = Array.isArray(candidates)
     ? candidates
@@ -1441,6 +1443,7 @@ export async function findSimilarNodesByText(
       ? "direct"
       : "backend";
   const recordSearchTimings = (patch = {}) => {
+    if (readOnly) return;
     const state = graph?.vectorIndexState;
     if (!state || typeof state !== "object" || Array.isArray(state)) return;
     state.lastSearchTimings = {
@@ -1480,7 +1483,7 @@ export async function findSimilarNodesByText(
         reason: "vector-space-mismatch",
         resultCount: 0,
       });
-      if (state) {
+      if (!readOnly && state) {
         state.dirty = true;
         state.dirtyReason = "vector-space-mismatch";
         state.lastWarning = "向量空间不匹配，已切换到非向量召回并等待重建";
@@ -1508,11 +1511,13 @@ export async function findSimilarNodesByText(
         queryEmbedMs: roundMs(queryEmbedMs),
         resultCount: 0,
       });
-      state.dirty = true;
-      state.dirtyReason = "query-dimension-mismatch";
-      state.lastWarning = `查询向量维度 ${queryVec.length} 与索引维度 ${currentDim} 不一致，已切换到非向量召回`;
-      if (state.manifest) {
-        state.manifest = { ...state.manifest, status: "stale", lastError: "query-dimension-mismatch" };
+      if (!readOnly) {
+        state.dirty = true;
+        state.dirtyReason = "query-dimension-mismatch";
+        state.lastWarning = `查询向量维度 ${queryVec.length} 与索引维度 ${currentDim} 不一致，已切换到非向量召回`;
+        if (state.manifest) {
+          state.manifest = { ...state.manifest, status: "stale", lastError: "query-dimension-mismatch" };
+        }
       }
       return [];
     }
@@ -1564,9 +1569,11 @@ export async function findSimilarNodesByText(
           reason: "authority-vector-space-mismatch",
           resultCount: 0,
         });
-        state.dirty = true;
-        state.dirtyReason = "authority-vector-space-mismatch";
-        state.lastWarning = "Authority 向量空间不匹配，已切换到非向量召回并等待重建";
+        if (!readOnly) {
+          state.dirty = true;
+          state.dirtyReason = "authority-vector-space-mismatch";
+          state.lastWarning = "Authority 向量空间不匹配，已切换到非向量召回并等待重建";
+        }
         return [];
       }
     }
@@ -1618,13 +1625,15 @@ export async function findSimilarNodesByText(
       }
       const message = error?.message || String(error) || "Authority Trivium 查询失败";
       const errorPatch = getAuthorityDiagnosticsErrorPatch(error);
-      markAuthorityVectorStateDirty(
-        graph,
-        config,
-        "authority-trivium-query-failed",
-        `Authority Trivium 查询失败（${message}），已标记待重建`,
-        errorPatch,
-      );
+      if (!readOnly) {
+        markAuthorityVectorStateDirty(
+          graph,
+          config,
+          "authority-trivium-query-failed",
+          `Authority Trivium 查询失败（${message}），已标记待重建`,
+          errorPatch,
+        );
+      }
       recordSearchTimings({
         success: false,
         reason: "authority-trivium-query-failed",

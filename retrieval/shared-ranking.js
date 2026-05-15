@@ -435,6 +435,7 @@ export async function vectorPreFilter(
       topK,
       activeNodes,
       signal,
+      { readOnly: true },
     );
   } catch (error) {
     if (isAbortError(error)) {

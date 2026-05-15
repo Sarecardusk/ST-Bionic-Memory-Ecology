@@ -52,6 +52,7 @@ const { addEdge, addNode, createEdge, createEmptyGraph, createNode } = await imp
   "../graph/graph.js"
 );
 const { rankNodesForTaskContext } = await import("../retrieval/shared-ranking.js");
+const { deriveVectorSpace } = await import("../vector/vector-space.js");
 
 function setTestOverrides(overrides = {}) {
   globalThis.__stBmeTestOverrides = overrides;
@@ -110,6 +111,22 @@ addEdge(
   }),
 );
 
+const config = {
+  mode: "direct",
+  source: "direct",
+  apiUrl: "https://example.com/v1",
+  apiKey: "",
+  model: "test-embedding",
+};
+const currentVectorSpace = deriveVectorSpace(config, 3);
+graph.vectorIndexState.currentVectorSpace = currentVectorSpace;
+graph.vectorIndexState.manifest = {
+  status: "clean",
+  vectorSpaceId: currentVectorSpace.vectorSpaceId,
+  observedDim: currentVectorSpace.observedDim,
+  model: currentVectorSpace.model,
+};
+
 const graphBefore = JSON.stringify(graph);
 const restore = setTestOverrides({
   embedding: {
@@ -127,13 +144,6 @@ const restore = setTestOverrides({
 });
 
 try {
-  const config = {
-    mode: "direct",
-    source: "direct",
-    apiUrl: "https://example.com/v1",
-    apiKey: "",
-    model: "test-embedding",
-  };
   const first = await rankNodesForTaskContext({
     graph,
     userMessage: "[user]: 中文告白后的关系进展",
