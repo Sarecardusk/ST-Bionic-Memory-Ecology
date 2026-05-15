@@ -9,6 +9,7 @@ import { buildVectorCollectionId, stableHashString } from "../runtime/runtime-st
 import {
   AUTHORITY_VECTOR_MODE,
   AUTHORITY_VECTOR_SOURCE,
+  applyAuthorityBmeVectorManifest,
   deleteAuthorityTriviumNodes,
   isAuthorityVectorConfig,
   normalizeAuthorityVectorConfig,
@@ -840,23 +841,50 @@ export async function syncGraphVectorIndex(
         if (embeddingResult.failures > 0) {
           throw createEmbeddingProviderError(embeddingResult.failures);
         }
-        const purgeStartedAt = nowMs();
-        const purgeResult = await purgeAuthorityTriviumNamespace(config, authorityOptions);
-        authorityPurgeMs += nowMs() - purgeStartedAt;
-        authorityPurgeDiagnostics = purgeResult?.diagnostics || null;
-        if (purgeResult?.truncated) {
-          throw new Error(`Authority Trivium purge truncated after ${purgeResult.pages || 0} page(s)`);
+        let appliedViaBme = false;
+        if (config.bmeVectorApplyReady === true) {
+          try {
+            const applyStartedAt = nowMs();
+            const applyResult = await applyAuthorityBmeVectorManifest(
+              graph,
+              config,
+              desiredEntries,
+              authorityOptions,
+            );
+            authorityUpsertMs += nowMs() - applyStartedAt;
+            authorityUpsertDiagnostics = applyResult?.diagnostics || null;
+            authorityLinkDiagnostics = {
+              operation: "bmeVectorApply:links",
+              totalItems: Number(applyResult?.diagnostics?.linkItems || 0),
+              linked: Number(applyResult?.diagnostics?.linked || 0),
+              totalMs: 0,
+            };
+            resetVectorMappings(graph, config, effectiveChatId);
+            appliedViaBme = true;
+          } catch (applyError) {
+            if (isAbortError(applyError)) throw applyError;
+            console.warn("[ST-BME] BME 服务端向量 apply 失败，回退 Authority Trivium 旧路径:", applyError);
+          }
         }
-        resetVectorMappings(graph, config, effectiveChatId);
-        const upsertStartedAt = nowMs();
-        const upsertResult = await upsertAuthorityTriviumEntries(
-          graph,
-          config,
-          desiredEntries,
-          authorityOptions,
-        );
-        authorityUpsertMs += nowMs() - upsertStartedAt;
-        authorityUpsertDiagnostics = upsertResult?.diagnostics || null;
+        if (!appliedViaBme) {
+          const purgeStartedAt = nowMs();
+          const purgeResult = await purgeAuthorityTriviumNamespace(config, authorityOptions);
+          authorityPurgeMs += nowMs() - purgeStartedAt;
+          authorityPurgeDiagnostics = purgeResult?.diagnostics || null;
+          if (purgeResult?.truncated) {
+            throw new Error(`Authority Trivium purge truncated after ${purgeResult.pages || 0} page(s)`);
+          }
+          resetVectorMappings(graph, config, effectiveChatId);
+          const upsertStartedAt = nowMs();
+          const upsertResult = await upsertAuthorityTriviumEntries(
+            graph,
+            config,
+            desiredEntries,
+            authorityOptions,
+          );
+          authorityUpsertMs += nowMs() - upsertStartedAt;
+          authorityUpsertDiagnostics = upsertResult?.diagnostics || null;
+        }
         for (const entry of desiredEntries) {
           state.hashToNodeId[entry.hash] = entry.nodeId;
           state.nodeToHash[entry.nodeId] = entry.hash;
@@ -905,19 +933,45 @@ export async function syncGraphVectorIndex(
           throw createEmbeddingProviderError(embeddingResult.failures);
         }
         deletedNodeCount = nodeIdsToDelete.length;
-        const deleteStartedAt = nowMs();
-        const deleteResult = await deleteAuthorityTriviumNodes(config, nodeIdsToDelete, authorityOptions);
-        authorityDeleteMs += nowMs() - deleteStartedAt;
-        authorityDeleteDiagnostics = deleteResult?.diagnostics || null;
-        const upsertStartedAt = nowMs();
-        const upsertResult = await upsertAuthorityTriviumEntries(
-          graph,
-          config,
-          entriesToUpsert,
-          authorityOptions,
-        );
-        authorityUpsertMs += nowMs() - upsertStartedAt;
-        authorityUpsertDiagnostics = upsertResult?.diagnostics || null;
+        let appliedViaBme = false;
+        if (config.bmeVectorApplyReady === true && nodeIdsToDelete.length === 0) {
+          try {
+            const applyStartedAt = nowMs();
+            const applyResult = await applyAuthorityBmeVectorManifest(
+              graph,
+              config,
+              entriesToUpsert,
+              authorityOptions,
+            );
+            authorityUpsertMs += nowMs() - applyStartedAt;
+            authorityUpsertDiagnostics = applyResult?.diagnostics || null;
+            authorityLinkDiagnostics = {
+              operation: "bmeVectorApply:links",
+              totalItems: Number(applyResult?.diagnostics?.linkItems || 0),
+              linked: Number(applyResult?.diagnostics?.linked || 0),
+              totalMs: 0,
+            };
+            appliedViaBme = true;
+          } catch (applyError) {
+            if (isAbortError(applyError)) throw applyError;
+            console.warn("[ST-BME] BME 服务端向量 apply 失败，回退 Authority Trivium 旧路径:", applyError);
+          }
+        }
+        if (!appliedViaBme) {
+          const deleteStartedAt = nowMs();
+          const deleteResult = await deleteAuthorityTriviumNodes(config, nodeIdsToDelete, authorityOptions);
+          authorityDeleteMs += nowMs() - deleteStartedAt;
+          authorityDeleteDiagnostics = deleteResult?.diagnostics || null;
+          const upsertStartedAt = nowMs();
+          const upsertResult = await upsertAuthorityTriviumEntries(
+            graph,
+            config,
+            entriesToUpsert,
+            authorityOptions,
+          );
+          authorityUpsertMs += nowMs() - upsertStartedAt;
+          authorityUpsertDiagnostics = upsertResult?.diagnostics || null;
+        }
 
         for (const entry of entriesToUpsert) {
           state.hashToNodeId[entry.hash] = entry.nodeId;
@@ -926,10 +980,12 @@ export async function syncGraphVectorIndex(
         }
       }
 
-      const linkStartedAt = nowMs();
-      const linkResult = await syncAuthorityTriviumLinks(graph, config, authorityOptions);
-      authorityLinkMs += nowMs() - linkStartedAt;
-      authorityLinkDiagnostics = linkResult?.diagnostics || null;
+      if (!authorityLinkDiagnostics || authorityLinkDiagnostics.operation !== "bmeVectorApply:links") {
+        const linkStartedAt = nowMs();
+        const linkResult = await syncAuthorityTriviumLinks(graph, config, authorityOptions);
+        authorityLinkMs += nowMs() - linkStartedAt;
+        authorityLinkDiagnostics = linkResult?.diagnostics || null;
+      }
 
       for (const node of graph.nodes || []) {
         if (Array.isArray(node.embedding) && node.embedding.length > 0) {

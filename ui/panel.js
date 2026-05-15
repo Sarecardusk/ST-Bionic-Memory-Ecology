@@ -13949,14 +13949,18 @@ function _refreshCloudStorageModeUi(settings = _getSettings?.() || {}) {
 
 function _refreshRuntimeStatus() {
   const runtimeStatus = _getRuntimeStatus?.() || {};
+  const graphPersistence = _getGraphPersistenceSnapshot?.() || {};
+  const upgradeState = graphPersistence.authorityUpgradeState || {};
   const text = runtimeStatus.text || "待命";
   const meta = runtimeStatus.meta || "准备就绪";
+  const upgradeText = upgradeState.text || graphPersistence.authorityUpgradeText || "";
+  const displayMeta = upgradeText ? `${meta} · ${upgradeText}` : meta;
   _setText("bme-status-text", text);
-  _setText("bme-status-meta", meta);
+  _setText("bme-status-meta", displayMeta);
   _setText("bme-mobile-status-text", text);
-  _setText("bme-mobile-status-meta", meta);
+  _setText("bme-mobile-status-meta", displayMeta);
   _setText("bme-panel-status", text);
-  _renderCloudStorageModeStatus(_getSettings?.() || {}, _getGraphPersistenceSnapshot());
+  _renderCloudStorageModeStatus(_getSettings?.() || {}, graphPersistence);
   _refreshGraphAvailabilityState();
 }
 
@@ -14550,5 +14554,4 @@ function _getNodeSnippet(node) {
 function _isMobile() {
   return window.innerWidth <= 768;
 }
-
 

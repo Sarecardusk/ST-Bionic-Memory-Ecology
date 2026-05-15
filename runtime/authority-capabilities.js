@@ -6,6 +6,11 @@ const SQL_MUTATION_FEATURES = ["sql", "sql.mutation", "sql.execute", "sql.exec",
 const TRIVIUM_FEATURES = ["trivium", "trivium.search", "trivium.query", "trivium.filterwhere", "trivium.bulkupsert", "trivium.upsert", "trivium.bulkmutations"];
 const JOB_FEATURES = ["jobs", "jobs.background", "jobs.list", "jobs.wait", "diagnostics.jobspage", "events", "sse"];
 const BLOB_FEATURES = ["blob", "blob.write", "storage.blob", "transfers.blob", "transfers.fs", "fs.private", "privatefiles", "private.files", "files.private"];
+const BME_VECTOR_MANIFEST_FEATURES = ["bme.vectormanifest", "bme.vector.manifest", "bme.vector-manifest"];
+const BME_VECTOR_APPLY_FEATURES = ["bme.vectorapply", "bme.vector.apply"];
+const BME_VECTOR_APPLY_JOB_FEATURES = ["bme.vectorapplyjobs", "bme.vector.applyjobs", "bme.vector.apply.jobs"];
+const BME_SERVER_EMBEDDING_FEATURES = ["bme.serverembeddingprobe", "bme.server.embedding.probe"];
+const BME_CANDIDATE_SEARCH_FEATURES = ["bme.candidatesearch", "bme.candidate.search"];
 
 function toBoolean(value, fallback = false) {
   if (typeof value === "boolean") return value;
@@ -65,7 +70,18 @@ function createFeatureReadiness(features) {
     trivium: hasAnyFeature(features, TRIVIUM_FEATURES),
     jobs: hasAnyFeature(features, JOB_FEATURES),
     blob: hasAnyFeature(features, BLOB_FEATURES),
+    bmeVectorManifest: hasAnyFeature(features, BME_VECTOR_MANIFEST_FEATURES),
+    bmeVectorApply: hasAnyFeature(features, BME_VECTOR_APPLY_FEATURES),
+    bmeVectorApplyJobs: hasAnyFeature(features, BME_VECTOR_APPLY_JOB_FEATURES),
+    bmeServerEmbeddingProbe: hasAnyFeature(features, BME_SERVER_EMBEDDING_FEATURES),
+    bmeCandidateSearch: hasAnyFeature(features, BME_CANDIDATE_SEARCH_FEATURES),
   };
+}
+
+function normalizeBmeProtocolVersion(features, source = {}) {
+  const direct = Number(source?.bme?.protocolVersion ?? source?.features?.bme?.protocolVersion ?? 0);
+  if (Number.isFinite(direct) && direct > 0) return Math.trunc(direct);
+  return features.has("bme.protocolversion") ? 1 : 0;
 }
 
 function collectMissingFeatures(readiness) {
@@ -430,6 +446,12 @@ export function createDefaultAuthorityCapabilityState(overrides = {}) {
     supportedJobTypes: [],
     supportedJobTypesKnown: false,
     blobReady: false,
+    bmeVectorManifestReady: false,
+    bmeVectorApplyReady: false,
+    bmeVectorApplyJobsReady: false,
+    bmeServerEmbeddingProbeReady: false,
+    bmeCandidateSearchReady: false,
+    bmeProtocolVersion: 0,
     features: [],
     missingFeatures: ["sql.query", "sql.mutation", "trivium.search", "jobs", "blob-or-private-files"],
     reason: "not-probed",
@@ -461,6 +483,12 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
   const triviumPrimaryReady = healthy && sessionReady && permissionReady && readiness.trivium;
   const jobsReady = healthy && readiness.jobs;
   const blobReady = healthy && readiness.blob;
+  const bmeProtocolVersion = normalizeBmeProtocolVersion(features, source);
+  const bmeVectorManifestReady = healthy && sessionReady && permissionReady && readiness.bmeVectorManifest;
+  const bmeVectorApplyReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApply;
+  const bmeVectorApplyJobsReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApplyJobs;
+  const bmeServerEmbeddingProbeReady = healthy && sessionReady && permissionReady && readiness.bmeServerEmbeddingProbe;
+  const bmeCandidateSearchReady = healthy && sessionReady && permissionReady && readiness.bmeCandidateSearch;
   const minimumFeatureSetReady = storagePrimaryReady && triviumPrimaryReady && jobsReady && blobReady;
   const serverPrimaryRequested =
     normalizedSettings.enabled &&
@@ -483,6 +511,12 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
     supportedJobTypes: supportedJobs.supportedJobTypes,
     supportedJobTypesKnown: supportedJobs.supportedJobTypesKnown,
     blobReady,
+    bmeVectorManifestReady,
+    bmeVectorApplyReady,
+    bmeVectorApplyJobsReady,
+    bmeServerEmbeddingProbeReady,
+    bmeCandidateSearchReady,
+    bmeProtocolVersion,
     features: Array.from(features).sort(),
     missingFeatures,
     reason: String(source.reason || (healthy ? "ok" : "not-ready")),

@@ -397,6 +397,9 @@ export function normalizeAuthorityVectorConfig(settings = {}, overrides = {}) {
     ),
     timeoutMs: Math.max(0, Number(source.timeoutMs || 0) || 0),
     failOpen: source.authorityVectorFailOpen !== false && source.failOpen !== false,
+    bmeVectorApplyReady: Boolean(source.bmeVectorApplyReady ?? source.authorityBmeVectorApplyReady),
+    bmeVectorManifestReady: Boolean(source.bmeVectorManifestReady ?? source.authorityBmeVectorManifestReady),
+    bmeProtocolVersion: Math.max(0, Number(source.bmeProtocolVersion ?? source.authorityBmeProtocolVersion) || 0),
     ...overrides,
   };
 }
@@ -676,6 +679,10 @@ export class AuthorityTriviumHttpClient {
       ...(payload.includeMappingIntegrity ? { includeMappingIntegrity: true } : {}),
     });
   }
+
+  async bmeVectorApply(payload = {}) {
+    return await this.requestV06("/bme/vector-apply", payload);
+  }
 }
 
 export function createAuthorityTriviumClient(config = {}, options = {}) {
@@ -859,6 +866,79 @@ export async function upsertAuthorityTriviumEntries(graph, config = {}, entries 
       chunkSize,
       chunks,
       totalBytes,
+      totalMs: roundMs(nowMs() - startedAt),
+    },
+  };
+}
+
+export async function applyAuthorityBmeVectorManifest(graph, config = {}, entries = [], options = {}) {
+  const items = buildAuthorityVectorItems(graph, entries, options);
+  const links = buildAuthorityLinkItems(graph, options).map((link) => ({
+    src: buildNodeReference(link.fromId, options.namespace),
+    dst: buildNodeReference(link.toId, options.namespace),
+    label: link.relation,
+    weight: link.weight,
+  }));
+  const missingVector = items.find((item) => !normalizeVector(item?.vector || item?.embedding).length);
+  if (missingVector) {
+    throw new Error("BME vector apply requires vector for every item");
+  }
+  throwIfAborted(options.signal);
+  const client = createAuthorityTriviumClient(config, options);
+  const startedAt = nowMs();
+  const estimatedBytes = estimateJsonBytes({ items, links });
+  const result = await callClient(
+    client,
+    ["bmeVectorApply", "applyBmeVectorManifest", "vectorApply"],
+    "bmeVectorApply",
+    {
+      ...buildOpenOptions(config, options),
+      database: config.database,
+      namespace: options.namespace,
+      collectionId: options.collectionId,
+      chatId: options.chatId,
+      graphRevision: Math.max(0, Math.floor(Number(options.revision) || 0)),
+      modelScope: String(options.modelScope || ""),
+      embeddingMode: config.embeddingMode || "client",
+      items,
+      links,
+      idempotencyKey: [
+        options.chatId || "chat",
+        options.collectionId || options.namespace || "collection",
+        options.revision || 0,
+        options.modelScope || "model",
+        items.length,
+        links.length,
+      ].join(":"),
+    },
+  );
+  const upserted = Number(result?.upsert?.successCount ?? result?.upserted ?? items.length) || 0;
+  const linked = Number(result?.links?.successCount ?? result?.linked ?? links.length) || 0;
+  const ok = result?.ok !== false && Number(result?.upsert?.failureCount || 0) === 0 && Number(result?.links?.failureCount || 0) === 0;
+  if (!ok) {
+    const error = new Error("BME vector apply returned failures");
+    error.authorityDiagnostics = {
+      operation: "bmeVectorApply",
+      totalItems: items.length,
+      linkItems: links.length,
+      upsertFailures: Number(result?.upsert?.failureCount || 0),
+      linkFailures: Number(result?.links?.failureCount || 0),
+      result,
+    };
+    throw error;
+  }
+  return {
+    ...result,
+    upserted,
+    linked,
+    diagnostics: {
+      operation: "bmeVectorApply",
+      totalItems: items.length,
+      linkItems: links.length,
+      upserted,
+      linked,
+      estimatedBytes,
+      manifest: result?.manifest || null,
       totalMs: roundMs(nowMs() - startedAt),
     },
   };
