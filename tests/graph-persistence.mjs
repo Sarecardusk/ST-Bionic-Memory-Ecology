@@ -1691,6 +1691,9 @@ result = {
   getGraphPersistenceState() {
     return graphPersistenceState;
   },
+  getPanelRuntimeStatus,
+  getGraphMutationBlockReason,
+  ensureGraphMutationReady,
   setLocalStoreCapabilitySnapshot(patch = {}) {
     bmeLocalStoreCapabilitySnapshot = {
       ...bmeLocalStoreCapabilitySnapshot,
@@ -4197,6 +4200,70 @@ result = {
   assert.equal(unrepairedStatus.persistence.accepted, false);
   assert.equal(unrepairedStatus.persistence.queued, true);
   assert.equal(unrepairedStatus.persistence.blocked, true);
+}
+
+{
+  const graph = createMeaningfulGraph(
+    "chat-runtime-fallback-vector-maintenance",
+    "runtime-fallback-vector-maintenance",
+  );
+  graph.historyState.chatId = "chat-runtime-fallback-vector-maintenance";
+  const harness = await createGraphPersistenceHarness({
+    chatId: "",
+    globalChatId: "",
+    chat: [
+      { is_user: true, mes: "已有聊天" },
+      { is_user: false, mes: "已有回复" },
+    ],
+  });
+  harness.api.setCurrentGraph(graph);
+  harness.api.setGraphPersistenceState({
+    loadState: GRAPH_LOAD_STATES.NO_CHAT,
+    chatId: "chat-runtime-fallback-vector-maintenance",
+    dbReady: false,
+    writesBlocked: true,
+  });
+
+  assert.equal(
+    harness.api.ensureGraphMutationReady("重建向量", {
+      notify: false,
+      allowRuntimeGraphFallback: true,
+    }),
+    true,
+    "live chat id 暂空但 runtime graph 已明确绑定聊天时，向量维护不应被误判为未进入聊天",
+  );
+  const status = harness.api.getPanelRuntimeStatus();
+  assert.equal(status.text, "图谱已加载");
+  assert.match(status.meta, /维护操作会使用图谱身份继续/);
+}
+
+{
+  const graph = createMeaningfulGraph(
+    "chat-runtime-fallback-denied",
+    "runtime-fallback-denied",
+  );
+  graph.historyState.chatId = "chat-runtime-fallback-denied";
+  const harness = await createGraphPersistenceHarness({
+    chatId: "",
+    globalChatId: "",
+    chat: [{ is_user: true, mes: "其它上下文" }],
+  });
+  harness.api.setCurrentGraph(graph);
+  harness.api.setGraphPersistenceState({
+    loadState: GRAPH_LOAD_STATES.NO_CHAT,
+    chatId: "",
+    dbReady: false,
+    writesBlocked: true,
+  });
+
+  assert.equal(
+    harness.api.ensureGraphMutationReady("重建向量", {
+      notify: false,
+      allowRuntimeGraphFallback: true,
+    }),
+    false,
+    "没有 graphPersistenceState.chatId 强绑定时，不应仅凭 runtimeGraph/chat 内容放开写入",
+  );
 }
 
 {

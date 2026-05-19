@@ -69,10 +69,12 @@ import {
 } from "../ui/ui-status.js";
 import {
   onClearGraphController,
+  onClearVectorCacheController,
   onDeleteCurrentIdbController,
   onManualCompressController,
   onManualEvolveController,
   onManualSleepController,
+  onRebuildVectorIndexController,
 } from "../ui/ui-actions-controller.js";
 import { createGenerationRecallHarness } from "./helpers/generation-recall-harness.mjs";
 
@@ -7980,6 +7982,97 @@ async function testManualCompressSkipsWithoutCandidatesAndDoesNotPretendItRan() 
   assert.match(String(toastMessages[0]?.[1] || ""), /未发起 LLM 压缩/);
 }
 
+async function testClearVectorCacheLeavesActionableRebuildState() {
+  const statuses = [];
+  const toasts = [];
+  let savedReason = "";
+  const graph = {
+    nodes: [
+      { id: "n1", embedding: [1, 2, 3] },
+      { id: "n2", embedding: [4, 5, 6] },
+    ],
+    vectorIndexState: {
+      hashToNodeId: { h1: "n1", h2: "n2" },
+      nodeToHash: { n1: "h1", n2: "h2" },
+      currentVectorSpace: { vectorSpaceId: "old", observedDim: 3 },
+      manifest: { status: "clean", observedDim: 3, lastError: "" },
+      dirty: false,
+      dirtyReason: "",
+      lastWarning: "",
+      lastStats: { total: 2, indexed: 2, stale: 0, pending: 0 },
+    },
+  };
+
+  const result = await onClearVectorCacheController({
+    confirm: () => true,
+    getCurrentGraph: () => graph,
+    saveGraphToChat(payload = {}) {
+      savedReason = payload.reason;
+    },
+    setLastVectorStatus(...args) {
+      statuses.push(args);
+    },
+    refreshPanelLiveState() {},
+    toastr: {
+      warning(message) {
+        toasts.push(message);
+      },
+      success(message) {
+        toasts.push(message);
+      },
+    },
+  });
+
+  assert.equal(result?.handledToast, true);
+  assert.deepEqual(graph.vectorIndexState.hashToNodeId, {});
+  assert.deepEqual(graph.vectorIndexState.nodeToHash, {});
+  assert.equal(graph.nodes[0].embedding, null);
+  assert.equal(graph.nodes[1].embedding, null);
+  assert.equal(graph.vectorIndexState.currentVectorSpace, null);
+  assert.equal(graph.vectorIndexState.manifest.status, "stale");
+  assert.equal(graph.vectorIndexState.manifest.lastError, "manual-clear-vector-cache");
+  assert.equal(graph.vectorIndexState.dirty, true);
+  assert.equal(graph.vectorIndexState.dirtyReason, "manual-clear-vector-cache");
+  assert.equal(graph.vectorIndexState.lastStats.total, 2);
+  assert.equal(graph.vectorIndexState.lastStats.indexed, 0);
+  assert.equal(graph.vectorIndexState.lastStats.pending, 2);
+  assert.equal(statuses[0]?.[0], "向量需要重建");
+  assert.match(String(statuses[0]?.[1] || ""), /降级为非向量召回/);
+  assert.equal(savedReason, "manual-clear-vector-cache");
+  assert.match(String(toasts[0] || ""), /重建向量/);
+}
+
+async function testRebuildVectorBlockedExplainsVisibleChatMismatch() {
+  const toasts = [];
+  const calls = [];
+
+  const result = await onRebuildVectorIndexController({
+    ensureGraphMutationReady(label, options = {}) {
+      calls.push(["ensureGraphMutationReady", label, options]);
+      return false;
+    },
+    getGraphMutationBlockReason: () => "重建向量已暂停：当前尚未进入聊天。",
+    getGraphPersistenceState: () => ({ chatId: "chat-visible" }),
+    toastr: {
+      warning(message) {
+        toasts.push(message);
+      },
+      info(message) {
+        toasts.push(message);
+      },
+    },
+  });
+
+  assert.equal(result?.blocked, true);
+  assert.equal(result?.handledToast, true);
+  assert.equal(calls[0]?.[0], "ensureGraphMutationReady");
+  assert.equal(calls[0]?.[1], "重建向量");
+  assert.equal(calls[0]?.[2]?.notify, false);
+  assert.equal(calls[0]?.[2]?.allowRuntimeGraphFallback, true);
+  assert.match(String(toasts[0] || ""), /chat-visible/);
+  assert.match(String(toasts[0] || ""), /重新探测图谱/);
+}
+
 async function testManualCompressUsesForcedCompressionAndPersistsRealMutation() {
   const calls = {
     forceFlag: null,
@@ -8339,6 +8432,8 @@ await testSynopsisUsesPromptMessagesWithoutFallbackSystemPrompt();
 await testRecallUsesSectionedPromptMessagesForContextAndTarget();
 await testReflectionUsesPromptMessagesWithoutFallbackSystemPrompt();
 await testManualCompressSkipsWithoutCandidatesAndDoesNotPretendItRan();
+await testClearVectorCacheLeavesActionableRebuildState();
+await testRebuildVectorBlockedExplainsVisibleChatMismatch();
 await testManualCompressUsesForcedCompressionAndPersistsRealMutation();
 await testManualCompressUpdatesRuntimeStatusForPanelUi();
 await testManualEvolveFallsBackToLatestExtractionBatchAfterRefresh();

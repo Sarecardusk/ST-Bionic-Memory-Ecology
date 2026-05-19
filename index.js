@@ -595,6 +595,45 @@ function getCurrentChatId(context = getContext()) {
   return resolveCurrentChatIdentity(context).chatId;
 }
 
+function getRuntimeGraphChatIdFallback(graph = currentGraph) {
+  const graphMeta = getGraphPersistenceMeta(graph) || {};
+  const fallbackCandidates = [
+    graph?.historyState?.chatId,
+    graphMeta.chatId,
+    graphPersistenceState.chatId,
+    graphPersistenceState.queuedPersistChatId,
+    graphPersistenceState.commitMarker?.chatId,
+  ];
+
+  return (
+    fallbackCandidates
+      .map((candidate) => normalizeChatIdCandidate(candidate))
+      .find(Boolean) || ""
+  );
+}
+
+function getGraphOwnedChatId(graph = currentGraph) {
+  const graphMeta = getGraphPersistenceMeta(graph) || {};
+  const ownedCandidates = [graph?.historyState?.chatId, graphMeta.chatId];
+  return (
+    ownedCandidates
+      .map((candidate) => normalizeChatIdCandidate(candidate))
+      .find(Boolean) || ""
+  );
+}
+
+function resolveOperationalChatId(
+  context = getContext(),
+  graph = currentGraph,
+  explicitChatId = "",
+) {
+  return (
+    normalizeChatIdCandidate(explicitChatId) ||
+    normalizeChatIdCandidate(getCurrentChatId(context)) ||
+    getRuntimeGraphChatIdFallback(graph)
+  );
+}
+
 function resolvePersistenceChatId(
   context = getContext(),
   graph = currentGraph,
@@ -4417,6 +4456,52 @@ function hasMeaningfulRuntimeGraphForChat(
   return !isGraphEffectivelyEmpty(currentGraph);
 }
 
+function hasRuntimeGraphMutationContext(
+  context = getContext(),
+  graph = currentGraph,
+  { allowNoChatState = false } = {},
+) {
+  if (
+    !graph ||
+    typeof graph !== "object" ||
+    !graph.historyState ||
+    typeof graph.historyState !== "object" ||
+    Array.isArray(graph.historyState)
+  ) {
+    return false;
+  }
+
+  const identity = resolveCurrentChatIdentity(context);
+  const liveChatId = normalizeChatIdCandidate(identity.chatId);
+  const graphOwnedChatId = getGraphOwnedChatId(graph);
+  if (!graphOwnedChatId) return false;
+
+  if (liveChatId) {
+    return (
+      areChatIdsEquivalentForResolvedIdentity(graphOwnedChatId, liveChatId, identity) ||
+      areChatIdsEquivalentForResolvedIdentity(liveChatId, graphOwnedChatId, identity)
+    );
+  }
+
+  const stateChatId = normalizeChatIdCandidate(graphPersistenceState.chatId);
+  if (!stateChatId || stateChatId !== graphOwnedChatId) {
+    return false;
+  }
+
+  const markerChatId = normalizeChatIdCandidate(graphPersistenceState.commitMarker?.chatId);
+  if (markerChatId && markerChatId !== graphOwnedChatId) return false;
+
+  if (
+    graphPersistenceState.loadState === GRAPH_LOAD_STATES.LOADED ||
+    graphPersistenceState.loadState === GRAPH_LOAD_STATES.EMPTY_CONFIRMED ||
+    graphPersistenceState.dbReady === true
+  ) {
+    return true;
+  }
+
+  return allowNoChatState === true && graphPersistenceState.loadState === GRAPH_LOAD_STATES.NO_CHAT;
+}
+
 function isGraphReadableForRecall(
   loadState = graphPersistenceState.loadState,
   chatId = getCurrentChatId(),
@@ -4437,6 +4522,15 @@ function createGraphLoadUiStatus() {
   const chatId = graphPersistenceState.chatId || getCurrentChatId();
   switch (state) {
     case GRAPH_LOAD_STATES.NO_CHAT:
+      if (hasMeaningfulRuntimeGraphForChat(chatId)) {
+        return createUiStatus(
+          "图谱已加载",
+          chatId
+            ? `已读取聊天 ${chatId} 的图谱；宿主当前聊天 ID 暂不可用，维护操作会使用图谱身份继续`
+            : "已读取当前图谱；宿主当前聊天 ID 暂不可用，维护操作会使用图谱身份继续",
+          "warning",
+        );
+      }
       return createUiStatus("待命", "当前尚未进入聊天", "idle");
     case GRAPH_LOAD_STATES.LOADING:
       if (hasMeaningfulRuntimeGraphForChat(chatId)) {
@@ -4498,11 +4592,16 @@ function getGraphMutationBlockReason(operationLabel = "当前操作") {
     return getRestoreLockMessage(operationLabel);
   }
   const loadState = graphPersistenceState.loadState;
-  if (!getCurrentChatId()) {
+  const hasRuntimeFallback = hasRuntimeGraphMutationContext(getContext());
+  if (!getCurrentChatId() && !hasRuntimeFallback) {
     return `${operationLabel}已暂停：当前尚未进入聊天。`;
   }
 
-  if (graphPersistenceState.dbReady || isGraphLoadStateDbReady(loadState)) {
+  if (
+    graphPersistenceState.dbReady ||
+    isGraphLoadStateDbReady(loadState) ||
+    hasRuntimeFallback
+  ) {
     return `${operationLabel}暂不可用。`;
   }
 
@@ -4524,7 +4623,7 @@ function getGraphMutationBlockReason(operationLabel = "当前操作") {
 
 function ensureGraphMutationReady(
   operationLabel = "当前操作",
-  { notify = true, ignoreRestoreLock = false } = {},
+  { notify = true, ignoreRestoreLock = false, allowRuntimeGraphFallback = false } = {},
 ) {
   if (!ignoreRestoreLock && isRestoreLockActive()) {
     if (notify) {
@@ -4532,7 +4631,16 @@ function ensureGraphMutationReady(
     }
     return false;
   }
-  if (graphPersistenceState.dbReady || isGraphLoadStateDbReady()) return true;
+  if (
+    graphPersistenceState.dbReady ||
+    isGraphLoadStateDbReady() ||
+    (allowRuntimeGraphFallback === true &&
+      hasRuntimeGraphMutationContext(getContext(), currentGraph, {
+        allowNoChatState: true,
+      }))
+  ) {
+    return true;
+  }
   if (notify) {
     toastr.info(getGraphMutationBlockReason(operationLabel), "ST-BME");
   }
@@ -16530,6 +16638,7 @@ function markVectorStateDirty(reason = "向量状态已标记为待重建") {
   if (!currentGraph) return;
   ensureCurrentGraphRuntimeState();
   currentGraph.vectorIndexState.dirty = true;
+  currentGraph.vectorIndexState.dirtyReason = reason;
   currentGraph.vectorIndexState.lastWarning = reason;
 }
 
@@ -17068,7 +17177,7 @@ async function syncVectorState({
 
   try {
     const result = await syncGraphVectorIndex(currentGraph, config, {
-      chatId: getCurrentChatId(),
+      chatId: resolveOperationalChatId(getContext(), currentGraph),
       force,
       purge,
       range,
@@ -17336,7 +17445,14 @@ async function ensureVectorReadyIfNeeded(
 ) {
   if (!currentGraph) return;
   ensureCurrentGraphRuntimeState();
-  if (!isGraphMetadataWriteAllowed()) return;
+  if (
+    !isGraphMetadataWriteAllowed() &&
+    !hasRuntimeGraphMutationContext(getContext(), currentGraph, {
+      allowNoChatState: true,
+    })
+  ) {
+    return;
+  }
 
   if (!currentGraph.vectorIndexState?.dirty) return;
 
@@ -17367,14 +17483,36 @@ async function resetVectorStateForConfigChange(reason = "向量配置已变更")
   if (!currentGraph) return;
   ensureCurrentGraphRuntimeState();
   markVectorStateDirty(reason);
+  for (const node of currentGraph.nodes || []) {
+    if (Array.isArray(node?.embedding) && node.embedding.length > 0) {
+      node.embedding = null;
+    }
+  }
   currentGraph.vectorIndexState.hashToNodeId = {};
   currentGraph.vectorIndexState.nodeToHash = {};
+  currentGraph.vectorIndexState.currentVectorSpace = null;
+  if (
+    currentGraph.vectorIndexState.manifest &&
+    typeof currentGraph.vectorIndexState.manifest === "object"
+  ) {
+    currentGraph.vectorIndexState.manifest = {
+      ...currentGraph.vectorIndexState.manifest,
+      status: "stale",
+      lastError: "vector-config-changed",
+    };
+  }
   currentGraph.vectorIndexState.lastStats = {
-    total: 0,
+    total: Array.isArray(currentGraph.nodes) ? currentGraph.nodes.length : 0,
     indexed: 0,
     stale: 0,
-    pending: 0,
+    pending: Array.isArray(currentGraph.nodes) ? currentGraph.nodes.length : 0,
   };
+  setLastVectorStatus(
+    "向量需要重建",
+    `${reason}；旧向量已停用，请点击“重建向量”。如果重建失败，先用“测试 Embedding”检查模型/API key/余额。`,
+    "warning",
+    { syncRuntime: false },
+  );
   saveGraphToChat({ reason: "vector-config-reset" });
 }
 
@@ -24010,6 +24148,8 @@ async function onRebuildVectorIndex(range = null) {
       ensureGraphMutationReady,
       finishStageAbortController,
       getEmbeddingConfig,
+      getGraphPersistenceState: () => graphPersistenceState,
+      getGraphMutationBlockReason,
       isAuthorityVectorConfig,
       isBackendVectorConfig,
       refreshPanelLiveState,
@@ -24099,10 +24239,12 @@ const _cleanupRuntime = () => ({
   exportDiagnosticsBundle: async (options = {}) => await exportAuthorityDiagnosticsBundle(options),
   getCurrentChatId,
   getCurrentGraph: () => currentGraph,
+  setLastVectorStatus,
   markVectorStateDirty: (reason) => {
     if (currentGraph?.vectorIndexState) {
       currentGraph.vectorIndexState.dirty = true;
       currentGraph.vectorIndexState.dirtyReason = reason;
+      currentGraph.vectorIndexState.lastWarning = reason;
     }
   },
   normalizeGraphRuntimeState,

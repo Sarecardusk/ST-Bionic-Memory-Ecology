@@ -581,7 +581,31 @@ export async function onImportGraphController(runtime) {
 }
 
 export async function onRebuildVectorIndexController(runtime, range = null) {
-  if (!runtime.ensureGraphMutationReady(range ? "范围重建向量" : "重建向量")) return;
+  const operationLabel = range ? "范围重建向量" : "重建向量";
+  if (
+    !runtime.ensureGraphMutationReady(operationLabel, {
+      notify: false,
+      allowRuntimeGraphFallback: true,
+    })
+  ) {
+    const state = runtime.getGraphPersistenceState?.() || {};
+    const visibleChatId = String(state.chatId || "").trim();
+    const blockReason =
+      typeof runtime.getGraphMutationBlockReason === "function"
+        ? runtime.getGraphMutationBlockReason(operationLabel)
+        : "";
+    if (visibleChatId) {
+      runtime.toastr.warning(
+        String(blockReason || "").includes("当前尚未进入聊天")
+          ? `重建向量被暂停：当前图谱显示聊天 ${visibleChatId}，但宿主当前聊天上下文尚未确认。请先点“重新探测图谱”，或切换到其它聊天再切回来。`
+          : blockReason || `${operationLabel}已暂停。`,
+        "ST-BME 向量",
+      );
+    } else if (blockReason) {
+      runtime.toastr.info(blockReason, "ST-BME");
+    }
+    return { handledToast: true, blocked: true };
+  }
   runtime.ensureCurrentGraphRuntimeState();
 
   const config = runtime.getEmbeddingConfig();
@@ -1172,7 +1196,7 @@ export async function onClearGraphRangeController(runtime, startSeq, endSeq) {
 }
 
 export async function onClearVectorCacheController(runtime) {
-  if (!runtime.confirm("确定要清空向量缓存？\n\n清空后需要重新构建向量索引。")) {
+  if (!runtime.confirm("确定要清空向量缓存？\n\n清空后只会删除向量索引/embedding，不会删除图谱记忆。之后需要重新构建向量索引；在重建完成前会自动降级为非向量召回。")) {
     return { cancelled: true };
   }
 
@@ -1185,14 +1209,44 @@ export async function onClearVectorCacheController(runtime) {
   if (graph.vectorIndexState) {
     graph.vectorIndexState.hashToNodeId = {};
     graph.vectorIndexState.nodeToHash = {};
+    graph.vectorIndexState.currentVectorSpace = null;
+    if (
+      graph.vectorIndexState.manifest &&
+      typeof graph.vectorIndexState.manifest === "object"
+    ) {
+      graph.vectorIndexState.manifest = {
+        ...graph.vectorIndexState.manifest,
+        status: "stale",
+        lastError: "manual-clear-vector-cache",
+      };
+    }
     graph.vectorIndexState.dirty = true;
     graph.vectorIndexState.dirtyReason = "manual-clear-vector-cache";
-    graph.vectorIndexState.lastWarning = "向量缓存已手动清空，需要重建索引";
+    graph.vectorIndexState.lastWarning = "向量缓存已手动清空，需要重建索引；重建前会降级为非向量召回";
+    graph.vectorIndexState.lastStats = {
+      total: Array.isArray(graph.nodes) ? graph.nodes.length : 0,
+      indexed: 0,
+      stale: 0,
+      pending: Array.isArray(graph.nodes) ? graph.nodes.length : 0,
+    };
   }
+
+  for (const node of graph.nodes || []) {
+    if (Array.isArray(node?.embedding) && node.embedding.length > 0) {
+      node.embedding = null;
+    }
+  }
+
+  runtime.setLastVectorStatus?.(
+    "向量需要重建",
+    "向量缓存已清空；记忆图谱仍保留，重建前会自动降级为非向量召回。请点击“重建向量”。",
+    "warning",
+    { syncRuntime: false },
+  );
 
   runtime.saveGraphToChat({ reason: "manual-clear-vector-cache" });
   runtime.refreshPanelLiveState();
-  runtime.toastr.success("向量缓存已清空，请重建向量索引");
+  runtime.toastr.warning("向量缓存已清空；请点击“重建向量”重新索引。重建前会降级为非向量召回。", "ST-BME 向量");
   return { handledToast: true };
 }
 

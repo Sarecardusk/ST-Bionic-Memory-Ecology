@@ -1254,8 +1254,36 @@ export async function syncGraphVectorIndex(
         summarizeVectorSpaceChange(previous, current),
       );
     }
+    const clearStaleDirectEmbeddings =
+      directScopeChanged || purge || state.dirty || force;
+    if (clearStaleDirectEmbeddings) {
+      const rangedIds = hasConcreteRange ? rangedNodeIds : null;
+      for (const node of graph.nodes || []) {
+        if (rangedIds && !rangedIds.has(node.id)) continue;
+        if (Array.isArray(node?.embedding) && node.embedding.length > 0) {
+          node.embedding = null;
+        }
+      }
+      for (const [nodeId, hash] of Object.entries(state.nodeToHash || {})) {
+        if (rangedIds && !rangedIds.has(nodeId)) continue;
+        delete state.nodeToHash[nodeId];
+        if (state.hashToNodeId) {
+          delete state.hashToNodeId[hash];
+        }
+      }
+    }
     const entriesToEmbed = [];
     const hashByNodeId = {};
+    const currentDim = Number(state.currentVectorSpace?.observedDim || state.manifest?.observedDim || 0);
+    const currentVectorSpace = currentDim > 0
+      ? deriveVectorSpace(config, currentDim)
+      : state.currentVectorSpace;
+    const mayReuseExistingEmbeddings =
+      !directScopeChanged &&
+      !force &&
+      !purge &&
+      state.dirty !== true &&
+      isVectorManifestCompatible(state.manifest, currentVectorSpace);
 
     for (const entry of desiredEntries) {
       hashByNodeId[entry.nodeId] = entry.hash;
@@ -1266,7 +1294,7 @@ export async function syncGraphVectorIndex(
       const hasEmbedding =
         Array.isArray(node?.embedding) && node.embedding.length > 0;
 
-      if (!directScopeChanged && !force && !currentHash && hasEmbedding) {
+      if (mayReuseExistingEmbeddings && !currentHash && hasEmbedding) {
         state.hashToNodeId[entry.hash] = entry.nodeId;
         state.nodeToHash[entry.nodeId] = entry.hash;
         continue;
