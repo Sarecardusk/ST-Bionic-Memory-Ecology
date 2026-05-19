@@ -61,6 +61,12 @@ import {
   syncNow,
 } from "./sync/bme-sync.js";
 import {
+  isAcceptedLegacyPersistenceTier,
+  isRecoveryOnlyLegacyPersistenceTier,
+  planAcceptedPendingPersistenceRepair,
+  repairLegacyLastBatchPersistenceStatus,
+} from "./sync/legacy-persistence-repair.js";
+import {
   buildExtractionMessages,
   clampRecoveryStartFloor,
   getAssistantTurns,
@@ -887,13 +893,11 @@ function clearCurrentChatRecoveryAnchors(
 }
 
 function isAcceptedPersistTier(storageTier = "none") {
-  const normalizedTier = String(storageTier || "none").trim().toLowerCase();
-  return normalizedTier === "indexeddb" || normalizedTier === "chat-state";
+  return isAcceptedLegacyPersistenceTier(storageTier);
 }
 
 function isRecoveryOnlyPersistTier(storageTier = "none") {
-  const normalizedTier = String(storageTier || "none").trim().toLowerCase();
-  return normalizedTier === "shadow" || normalizedTier === "metadata-full";
+  return isRecoveryOnlyLegacyPersistenceTier(storageTier);
 }
 
 function resolvePersistRevisionFloor(
@@ -12929,6 +12933,30 @@ function applyIndexedDbSnapshotToRuntime(
       normalizeChatIdCandidate(snapshot?.meta?.integrity) ||
       getChatMetadataIntegrity(getContext()),
   });
+  const currentCommitMarker = getChatCommitMarker(getContext());
+  const currentCommitMarkerChatId = normalizeChatIdCandidate(currentCommitMarker?.chatId);
+  const currentIdentity = resolveCurrentChatIdentity(getContext());
+  const legacyBatchRepair = repairLegacyLastBatchPersistenceStatus({
+    batchStatus: currentGraph.historyState?.lastBatchStatus || null,
+    persistenceState: graphPersistenceState,
+    commitMarker: currentCommitMarker,
+    activeChatId: normalizedChatId,
+    commitMarkerChatMatchesActive:
+      Boolean(currentCommitMarkerChatId) &&
+      (areChatIdsEquivalentForResolvedIdentity(
+        currentCommitMarkerChatId,
+        normalizedChatId,
+        currentIdentity,
+      ) ||
+        areChatIdsEquivalentForResolvedIdentity(
+          normalizedChatId,
+          currentCommitMarkerChatId,
+          currentIdentity,
+        )),
+  });
+  if (legacyBatchRepair.repaired && currentGraph.historyState) {
+    currentGraph.historyState.lastBatchStatus = legacyBatchRepair.batchStatus;
+  }
   currentGraph.vectorIndexState.lastIntegrityIssue = null;
 
   extractionCount = Number.isFinite(currentGraph?.historyState?.extractionCount)
@@ -13002,7 +13030,8 @@ function applyIndexedDbSnapshotToRuntime(
     persistencePatch.indexedDbRevision = revision;
   }
   updateGraphPersistenceState(persistencePatch);
-  const shouldPersistPostLoadRepairs = hasGraphPersistDirtyState(currentGraph);
+  const shouldPersistPostLoadRepairs =
+    hasGraphPersistDirtyState(currentGraph) || legacyBatchRepair.repaired === true;
   rememberResolvedGraphIdentityAlias(getContext(), normalizedChatId);
 
   if (shouldPersistPostLoadRepairs) {
@@ -13017,14 +13046,17 @@ function applyIndexedDbSnapshotToRuntime(
       ) {
         return;
       }
-      debugDebug("[ST-BME] 已检测到加载后作用域自愈，后台写回修复结果", {
+      debugDebug("[ST-BME] 已检测到加载后图谱自愈，后台写回修复结果", {
         chatId: normalizedChatId,
         repairedNodeCount,
         repairedEdgeCount,
+        legacyBatchPersistenceRepaired: legacyBatchRepair.repaired === true,
         source,
       });
       saveGraphToChat({
-        reason: "scope-auto-repair-after-load",
+        reason: legacyBatchRepair.repaired
+          ? "legacy-persistence-auto-repair-after-load"
+          : "scope-auto-repair-after-load",
         markMutation: false,
         immediate: false,
       });
@@ -15050,15 +15082,6 @@ function maybeClearAcceptedPendingPersistState(
 
   const batchStatus = currentGraph?.historyState?.lastBatchStatus || null;
   const persistence = batchStatus?.persistence || null;
-  const persistenceRevision = Number(persistence?.revision || 0);
-  const queuedRevision = Number(graphPersistenceState.queuedPersistRevision || 0);
-  const targetRevision = Math.max(
-    Number.isFinite(persistenceRevision) ? persistenceRevision : 0,
-    Number.isFinite(queuedRevision) ? queuedRevision : 0,
-  );
-  if (!Number.isFinite(targetRevision) || targetRevision <= 0) {
-    return false;
-  }
 
   const commitMarker = syncCommitMarkerToPersistenceState(getContext());
   const context = getContext();
@@ -15096,27 +15119,26 @@ function maybeClearAcceptedPendingPersistState(
         markerChatId,
         currentIdentity,
       ));
-  const acceptedRevision = Math.max(
-    Number(graphPersistenceState.lastAcceptedRevision || 0),
-    markerAcceptedForQueuedChat ? Number(markerAcceptedRevision || 0) : 0,
-  );
-  if (!Number.isFinite(acceptedRevision) || acceptedRevision < targetRevision) {
+  const plan = planAcceptedPendingPersistenceRepair({
+    batchPersistence: persistence,
+    persistenceState: graphPersistenceState,
+    commitMarker,
+    activeChatId,
+    queuedChatId,
+    markerChatMatchesQueued: markerAcceptedForQueuedChat,
+  });
+  if (plan.action !== "clear-stale-pending") {
     return false;
   }
 
-  const acceptedStorageTier =
-    String(graphPersistenceState.acceptedStorageTier || "").trim() ||
-    String(commitMarker?.storageTier || "").trim() ||
-    String(persistence?.storageTier || "").trim() ||
-    "none";
   const acceptedResult = buildGraphPersistResult({
     saved: true,
     accepted: true,
     reason: `${String(source || "accepted-pending-persist-reconcile")}:accepted-revision`,
-    revision: targetRevision,
+    revision: plan.targetRevision,
     saveMode: "accepted-revision-reconcile",
-    storageTier: acceptedStorageTier,
-    acceptedBy: acceptedStorageTier,
+    storageTier: plan.tier,
+    acceptedBy: plan.tier,
   });
   applyAcceptedPendingPersistState(acceptedResult, {
     lastProcessedAssistantFloor: resolvePendingPersistLastProcessedAssistantFloor(),

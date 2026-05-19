@@ -120,6 +120,12 @@ import {
   AuthorityGraphStore,
 } from "../sync/authority-graph-store.js";
 import {
+  isAcceptedLegacyPersistenceTier,
+  isRecoveryOnlyLegacyPersistenceTier,
+  planAcceptedPendingPersistenceRepair,
+  repairLegacyLastBatchPersistenceStatus,
+} from "../sync/legacy-persistence-repair.js";
+import {
   clampFloat,
   clampInt,
   createGraphPersistenceState,
@@ -702,6 +708,10 @@ async function createGraphPersistenceHarness({
     AUTHORITY_GRAPH_STORE_KIND,
     AUTHORITY_GRAPH_STORE_MODE,
     AuthorityGraphStore: HarnessAuthorityGraphStore,
+    isAcceptedLegacyPersistenceTier,
+    isRecoveryOnlyLegacyPersistenceTier,
+    planAcceptedPendingPersistenceRepair,
+    repairLegacyLastBatchPersistenceStatus,
     migrateLegacyTaskProfiles(settings = {}) {
       return {
         taskProfilesVersion: Number(settings?.taskProfilesVersion || 0),
@@ -4027,6 +4037,166 @@ result = {
     harness.api.getCurrentGraph().batchJournal?.[0]?.id,
     "journal-queued-1",
   );
+}
+
+{
+  const graph = createMeaningfulGraph(
+    "chat-load-legacy-pending-repair",
+    "load-legacy-pending-repair",
+  );
+  graph.historyState.lastProcessedAssistantFloor = 1;
+  graph.lastProcessedSeq = 1;
+  graph.historyState.lastBatchStatus = {
+    processedRange: [1, 1],
+    completed: true,
+    persistence: {
+      outcome: "queued",
+      accepted: false,
+      storageTier: "metadata-full",
+      reason: "old-version-pending",
+      revision: 4,
+      saveMode: "immediate",
+      saved: false,
+      queued: true,
+      blocked: true,
+    },
+    historyAdvanceAllowed: false,
+    historyAdvanced: false,
+  };
+  stampPersistedGraph(graph, {
+    revision: 4,
+    chatId: "chat-load-legacy-pending-repair",
+    reason: "legacy-pending-repair-seed",
+  });
+
+  const snapshot = buildSnapshotFromGraph(graph, {
+    chatId: "meta-load-legacy-pending-repair",
+    revision: 4,
+    meta: {
+      integrity: "meta-load-legacy-pending-repair",
+    },
+  });
+  const harness = await createGraphPersistenceHarness({
+    chatId: "chat-load-legacy-pending-repair",
+    globalChatId: "chat-load-legacy-pending-repair",
+    chatMetadata: {
+      integrity: "meta-load-legacy-pending-repair",
+      [GRAPH_COMMIT_MARKER_KEY]: {
+        accepted: true,
+        revision: 4,
+        storageTier: "indexeddb",
+        chatId: "meta-load-legacy-pending-repair",
+      },
+    },
+    indexedDbSnapshots: {
+      "meta-load-legacy-pending-repair": snapshot,
+    },
+    chat: [
+      { is_user: true, mes: "旧聊天" },
+      { is_user: false, mes: "旧回复" },
+    ],
+  });
+  harness.runtimeContext.extension_settings[MODULE_NAME] = {
+    graphLocalStorageMode: "indexeddb",
+  };
+
+  const result = await harness.api.loadGraphFromIndexedDb(
+    "meta-load-legacy-pending-repair",
+    {
+      source: "legacy-pending-load-repair-test",
+      allowOverride: true,
+    },
+  );
+
+  assert.equal(result.loaded, true, result.reason);
+  const repairedStatus = harness.api.getCurrentGraph().historyState.lastBatchStatus;
+  assert.equal(repairedStatus.historyAdvanceAllowed, true);
+  assert.equal(repairedStatus.persistence.accepted, true);
+  assert.equal(repairedStatus.persistence.saved, true);
+  assert.equal(repairedStatus.persistence.queued, false);
+  assert.equal(repairedStatus.persistence.blocked, false);
+  assert.equal(repairedStatus.persistence.storageTier, "indexeddb");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(
+    harness.api.getIndexedDbSnapshotForChat("meta-load-legacy-pending-repair")?.meta?.lastMutationReason,
+    "legacy-persistence-auto-repair-after-load",
+    "加载旧 pending 状态后应将归一化结果写回 canonical store",
+  );
+}
+
+{
+  const graph = createMeaningfulGraph(
+    "chat-load-legacy-pending-no-proof",
+    "load-legacy-pending-no-proof",
+  );
+  graph.historyState.lastProcessedAssistantFloor = 1;
+  graph.lastProcessedSeq = 1;
+  graph.historyState.lastBatchStatus = {
+    processedRange: [1, 1],
+    completed: true,
+    persistence: {
+      outcome: "queued",
+      accepted: false,
+      storageTier: "metadata-full",
+      reason: "old-version-pending",
+      revision: 4,
+      saveMode: "immediate",
+      saved: false,
+      queued: true,
+      blocked: true,
+    },
+    historyAdvanceAllowed: false,
+    historyAdvanced: false,
+  };
+  stampPersistedGraph(graph, {
+    revision: 4,
+    chatId: "chat-load-legacy-pending-no-proof",
+    reason: "legacy-pending-no-proof-seed",
+  });
+
+  const snapshot = buildSnapshotFromGraph(graph, {
+    chatId: "meta-load-legacy-pending-no-proof",
+    revision: 4,
+    meta: {
+      integrity: "meta-load-legacy-pending-no-proof",
+    },
+  });
+  const harness = await createGraphPersistenceHarness({
+    chatId: "chat-load-legacy-pending-no-proof",
+    globalChatId: "chat-load-legacy-pending-no-proof",
+    chatMetadata: {
+      integrity: "meta-load-legacy-pending-no-proof",
+    },
+    indexedDbSnapshots: {
+      "meta-load-legacy-pending-no-proof": snapshot,
+    },
+    chat: [
+      { is_user: true, mes: "旧聊天" },
+      { is_user: false, mes: "旧回复" },
+    ],
+  });
+  harness.runtimeContext.extension_settings[MODULE_NAME] = {
+    graphLocalStorageMode: "indexeddb",
+  };
+
+  const result = await harness.api.loadGraphFromIndexedDb(
+    "meta-load-legacy-pending-no-proof",
+    {
+      source: "legacy-pending-load-no-proof-test",
+      allowOverride: true,
+    },
+  );
+
+  assert.equal(result.loaded, true, result.reason);
+  const unrepairedStatus = harness.api.getCurrentGraph().historyState.lastBatchStatus;
+  assert.equal(
+    unrepairedStatus.historyAdvanceAllowed,
+    false,
+    "无独立 accepted 证据时，加载旧 pending 状态不得自动放行历史推进",
+  );
+  assert.equal(unrepairedStatus.persistence.accepted, false);
+  assert.equal(unrepairedStatus.persistence.queued, true);
+  assert.equal(unrepairedStatus.persistence.blocked, true);
 }
 
 {

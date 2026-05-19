@@ -2,6 +2,7 @@
 // 通过 runtime 依赖注入，避免直接访问 index.js 模块级状态。
 
 import { debugLog } from "../runtime/debug-logging.js";
+import { getPendingPersistenceTargetRevision } from "../sync/legacy-persistence-repair.js";
 import {
   buildDialogueFloorMap,
   normalizeDialogueFloorRange,
@@ -547,15 +548,11 @@ function isPersistenceRevisionAccepted(runtime, persistence = null) {
 
 function isPendingPersistenceRevisionAccepted(runtime, persistence = null) {
   const persistenceState = runtime?.getGraphPersistenceState?.() || {};
-  const persistenceRevision = Number(persistence?.revision || 0);
-  const queuedRevision = Number(persistenceState.queuedPersistRevision || 0);
-  const targetRevision = Math.max(
-    Number.isFinite(persistenceRevision) ? persistenceRevision : 0,
-    Number.isFinite(queuedRevision) ? queuedRevision : 0,
-  );
-  if (!Number.isFinite(targetRevision) || targetRevision <= 0) {
-    return false;
-  }
+  const targetRevision = getPendingPersistenceTargetRevision({
+    batchPersistence: persistence,
+    persistenceState,
+  });
+  if (targetRevision <= 0) return false;
   const lastAcceptedRevision = Number(persistenceState.lastAcceptedRevision || 0);
   return Number.isFinite(lastAcceptedRevision) && lastAcceptedRevision >= targetRevision;
 }
