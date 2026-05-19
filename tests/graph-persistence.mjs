@@ -4239,6 +4239,42 @@ result = {
 
 {
   const graph = createMeaningfulGraph(
+    "chat-runtime-fallback-identity-repair",
+    "runtime-fallback-identity-repair",
+  );
+  graph.historyState.chatId = "";
+  const harness = await createGraphPersistenceHarness({
+    chatId: "",
+    globalChatId: "",
+    chat: [
+      { is_user: true, mes: "已有聊天" },
+      { is_user: false, mes: "已有回复" },
+    ],
+  });
+  harness.api.setCurrentGraph(graph);
+  harness.api.setGraphPersistenceState({
+    loadState: GRAPH_LOAD_STATES.NO_CHAT,
+    chatId: "chat-runtime-fallback-identity-repair",
+    dbReady: false,
+    writesBlocked: true,
+  });
+
+  assert.equal(
+    harness.api.ensureGraphMutationReady("重建向量", {
+      notify: false,
+      allowRuntimeGraphFallback: true,
+    }),
+    true,
+    "面板/持久化状态已有聊天 ID 且图谱自身缺身份时，向量维护前应补齐缺失身份",
+  );
+  assert.equal(
+    harness.api.getCurrentGraph().historyState.chatId,
+    "chat-runtime-fallback-identity-repair",
+  );
+}
+
+{
+  const graph = createMeaningfulGraph(
     "chat-runtime-fallback-denied",
     "runtime-fallback-denied",
   );
@@ -4264,6 +4300,37 @@ result = {
     false,
     "没有 graphPersistenceState.chatId 强绑定时，不应仅凭 runtimeGraph/chat 内容放开写入",
   );
+}
+
+{
+  const graph = createMeaningfulGraph(
+    "chat-runtime-fallback-conflict",
+    "runtime-fallback-conflict",
+  );
+  graph.historyState.chatId = "";
+  const harness = await createGraphPersistenceHarness({
+    chatId: "",
+    globalChatId: "",
+    chat: [{ is_user: true, mes: "已有聊天" }],
+  });
+  harness.api.setCurrentGraph(graph);
+  harness.api.setGraphPersistenceState({
+    loadState: GRAPH_LOAD_STATES.NO_CHAT,
+    chatId: "chat-runtime-fallback-conflict",
+    commitMarker: { chatId: "other-chat" },
+    dbReady: false,
+    writesBlocked: true,
+  });
+
+  assert.equal(
+    harness.api.ensureGraphMutationReady("重建向量", {
+      notify: false,
+      allowRuntimeGraphFallback: true,
+    }),
+    false,
+    "commit marker 指向其它聊天时，不应补齐身份或放开向量写入",
+  );
+  assert.equal(harness.api.getCurrentGraph().historyState.chatId, "");
 }
 
 {

@@ -4502,6 +4502,77 @@ function hasRuntimeGraphMutationContext(
   return allowNoChatState === true && graphPersistenceState.loadState === GRAPH_LOAD_STATES.NO_CHAT;
 }
 
+function repairRuntimeGraphIdentityFromPersistence(
+  operationLabel = "当前操作",
+  {
+    context = getContext(),
+    graph = currentGraph,
+    reason = "runtime-graph-identity-repair",
+  } = {},
+) {
+  if (
+    !graph ||
+    typeof graph !== "object" ||
+    Array.isArray(graph) ||
+    !graph.historyState ||
+    typeof graph.historyState !== "object" ||
+    Array.isArray(graph.historyState)
+  ) {
+    return { repaired: false, reason: "missing-runtime-graph" };
+  }
+
+  const graphOwnedChatId = getGraphOwnedChatId(graph);
+  if (graphOwnedChatId) {
+    return { repaired: false, reason: "graph-identity-present", chatId: graphOwnedChatId };
+  }
+
+  const stateChatId = normalizeChatIdCandidate(graphPersistenceState.chatId);
+  if (!stateChatId) {
+    return { repaired: false, reason: "missing-persistence-chat-id" };
+  }
+
+  const identity = resolveCurrentChatIdentity(context);
+  const liveChatId = normalizeChatIdCandidate(identity.chatId);
+  if (
+    liveChatId &&
+    !areChatIdsEquivalentForResolvedIdentity(stateChatId, liveChatId, identity) &&
+    !areChatIdsEquivalentForResolvedIdentity(liveChatId, stateChatId, identity)
+  ) {
+    return {
+      repaired: false,
+      reason: "live-chat-mismatch",
+      chatId: stateChatId,
+      liveChatId,
+    };
+  }
+
+  const markerChatId = normalizeChatIdCandidate(graphPersistenceState.commitMarker?.chatId);
+  if (markerChatId && markerChatId !== stateChatId) {
+    return {
+      repaired: false,
+      reason: "commit-marker-chat-mismatch",
+      chatId: stateChatId,
+      markerChatId,
+    };
+  }
+
+  graph.historyState.chatId = stateChatId;
+  stampGraphPersistenceMeta(graph, {
+    revision: graphPersistenceState.revision || graph?.meta?.revision || graph?.revision || 0,
+    reason: String(reason || operationLabel || "runtime-graph-identity-repair"),
+    chatId: stateChatId,
+    integrity:
+      normalizeChatIdCandidate(graphPersistenceState.commitMarker?.integrity) ||
+      getChatMetadataIntegrity(context),
+  });
+  debugDebug("[ST-BME] 已补齐运行时图谱聊天身份", {
+    operationLabel,
+    chatId: stateChatId,
+    reason,
+  });
+  return { repaired: true, reason: "repaired", chatId: stateChatId };
+}
+
 function isGraphReadableForRecall(
   loadState = graphPersistenceState.loadState,
   chatId = getCurrentChatId(),
@@ -4630,6 +4701,11 @@ function ensureGraphMutationReady(
       toastr.info(getRestoreLockMessage(operationLabel), "ST-BME");
     }
     return false;
+  }
+  if (allowRuntimeGraphFallback === true) {
+    repairRuntimeGraphIdentityFromPersistence(operationLabel, {
+      reason: "graph-mutation-ready-fallback",
+    });
   }
   if (
     graphPersistenceState.dbReady ||
@@ -14126,12 +14202,12 @@ function applyModuleInjectionPrompt(content = "", settings = getSettings()) {
   };
 }
 
-function ensureCurrentGraphRuntimeState() {
+function ensureCurrentGraphRuntimeState({ chatId = getCurrentChatId() } = {}) {
   if (!currentGraph) {
     currentGraph = createEmptyGraph();
   }
 
-  currentGraph = normalizeGraphRuntimeState(currentGraph, getCurrentChatId());
+  currentGraph = normalizeGraphRuntimeState(currentGraph, chatId);
   return currentGraph;
 }
 
@@ -17444,7 +17520,16 @@ async function ensureVectorReadyIfNeeded(
   signal = undefined,
 ) {
   if (!currentGraph) return;
-  ensureCurrentGraphRuntimeState();
+  if (
+    !isGraphMetadataWriteAllowed() &&
+    !hasRuntimeGraphMutationContext(getContext(), currentGraph, {
+      allowNoChatState: true,
+    })
+  ) {
+    repairRuntimeGraphIdentityFromPersistence("向量准备", {
+      reason: "vector-ready-fallback",
+    });
+  }
   if (
     !isGraphMetadataWriteAllowed() &&
     !hasRuntimeGraphMutationContext(getContext(), currentGraph, {
@@ -17453,6 +17538,9 @@ async function ensureVectorReadyIfNeeded(
   ) {
     return;
   }
+  ensureCurrentGraphRuntimeState({
+    chatId: getGraphOwnedChatId(currentGraph) || getCurrentChatId(),
+  });
 
   if (!currentGraph.vectorIndexState?.dirty) return;
 
