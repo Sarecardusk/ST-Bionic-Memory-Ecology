@@ -10,6 +10,7 @@
     "test:identity-resolver": "node tests/identity-resolver.mjs",
     "test:persistence-reducer": "node tests/persistence-reducer.mjs",
     "test:graph-head": "node tests/graph-head.mjs",
+    "test:graph-store-contract": "node tests/graph-store-contract.mjs",
     "test:reroll-transaction-boundary": "node tests/reroll-transaction-boundary.mjs",
     "test:vector-gate": "node tests/vector-gate.mjs",
     "test:hide-engine": "node tests/hide-engine.mjs",
