@@ -6,6 +6,7 @@
     "test:triviumdb-poc": "node tests/triviumdb-poc.mjs",
     "test:runtime-history": "node tests/runtime-history.mjs",
     "test:graph-persistence": "node tests/graph-persistence.mjs",
+    "test:rebirth-phase0": "node tests/rebirth-phase0.mjs",
     "test:hide-engine": "node tests/hide-engine.mjs",
     "test:maintenance-journal": "node tests/maintenance-journal.mjs",
     "test:indexeddb-persistence": "node tests/indexeddb-persistence.mjs",
@@ -29,7 +30,8 @@
     "test:authority:e2e:restore": "node tests/e2e/authority-checkpoint-restore.mjs",
     "test:authority:e2e:all": "npm run test:authority:e2e && npm run test:authority:e2e:diagnostics && npm run test:authority:e2e:restore",
     "test:all": "npm run test:stable",
-    "check": "node scripts/check-syntax.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "rebirth:inventory": "node scripts/rebirth-phase0-inventory.mjs"
   },
   "dependencies": {
     "triviumdb": "0.7.1"
