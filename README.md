@@ -43,8 +43,7 @@ ST-BME 的记忆图谱以「耐久快照」形式存储在各存储层（Indexed
 - `sync/graph-snapshot-schema.js`：冻结顶层键集合、`schemaVersion`、宽容解析（保留未知嵌套字段、丢弃未知顶层键）；
 - `sync/graph-snapshot-upgrade.js`：`upgradeGraphSnapshotOnRead` 就地升级链（单调、幂等、不降级、不抛错），已接入 `buildGraphFromSnapshot` 加载路径；
 - `runtime/identity-resolver.js`：活动身份、图谱身份、排队身份和 marker 身份分离；
-- `sync/persistence-reducer.js`：accepted / queued / pending 持久化状态机和事件 reducer；
-- `graph/graph-head.js`：GraphHead、ReplicaPointer 和 commit marker 纯模型。
+- `sync/persistence-reducer.js`：accepted / queued / pending 持久化状态机和事件 reducer。
 
 > 贡献提示：新增图谱数据时，请加进 `meta` / `state` / 记录对象，**不要新增耐久快照顶层键**；只有在加入一个 `upgrade-on-read` 步骤时才提升 `GRAPH_SNAPSHOT_SCHEMA_VERSION`。`tests/graph-snapshot-schema.mjs`、`tests/snapshot-forward-compat.mjs` 是该契约的长期回归保护，请勿删除。
 
@@ -803,8 +802,6 @@ ST-BME/
 ├── graph/                         # 图数据模型与领域状态
 │   ├── graph.js                   # 节点/边 CRUD、序列化、迁移
 │   ├── graph-persistence.js       # 持久化常量、加载状态、身份别名
-│   ├── graph-head.js              # GraphHead / ReplicaPointer / commit marker 纯模型
-│   ├── graph-v3-namespace.js      # 控制面命名空间常量
 │   ├── schema.js                  # 节点和关系 Schema
 │   ├── memory-scope.js            # 主客观作用域与空间区域
 │   ├── knowledge-state.js         # 认知归属、可见性、区域状态
@@ -857,7 +854,6 @@ ST-BME/
 │   ├── identity-resolver.js        # 身份解析核心
 │   ├── runtime-state.js
 │   ├── reroll-transaction-boundary.js # reroll 召回复用事务边界
-│   ├── rebirth-policy.mjs          # v3 重生策略/门禁盘点
 │   ├── settings-defaults.js
 │   ├── generation-options.js
 │   ├── planner-tag-utils.js
@@ -874,9 +870,7 @@ ST-BME/
 │   ├── persistence-reducer.js      # 持久化 accepted/queued/pending reducer
 │   ├── legacy-persistence-repair.js # 旧状态安全修复策略
 │   ├── graph-snapshot-schema.js    # 耐久快照契约：冻结顶层键 + 宽容解析
-│   ├── graph-snapshot-upgrade.js   # 快照 upgrade-on-read 就地升级链
-│   ├── graph-store-contract.js     # GraphStore 契约和路由计划
-│   └── graph-store-v3-adapter.js   # GraphStore head/marker 适配包装层
+│   └── graph-snapshot-upgrade.js   # 快照 upgrade-on-read 就地升级链
 │
 ├── host/                          # SillyTavern 宿主适配
 │   ├── event-binding.js
@@ -936,14 +930,10 @@ npm run test:p0
 控制面与数据格式专项：
 
 ```bash
-npm run test:rebirth-phase0
 npm run test:identity-resolver
 npm run test:persistence-reducer
-npm run test:graph-head
 npm run test:vector-gate
 npm run test:reroll-transaction-boundary
-npm run test:graph-store-contract
-npm run test:graph-store-v3-adapter
 npm run test:graph-snapshot-schema
 npm run test:graph-snapshot-upgrade
 npm run test:snapshot-forward-compat
@@ -998,11 +988,11 @@ npm run version:bump-manifest
 - **`tests/graph-persistence.mjs`**
   - 图谱持久化基础行为。
 
-- **`tests/identity-resolver.mjs` / `tests/persistence-reducer.mjs` / `tests/graph-head.mjs`**
-  - v3 身份、持久化状态机和 GraphHead 控制面。
+- **`tests/identity-resolver.mjs` / `tests/persistence-reducer.mjs`**
+  - 身份解析核心、持久化 accepted/queued/pending 状态机。
 
-- **`tests/graph-store-contract.mjs` / `tests/graph-store-v3-adapter.mjs`**
-  - v3 GraphStore 契约、命名空间隔离和适配器包装层。
+- **`tests/graph-snapshot-schema.mjs` / `tests/snapshot-forward-compat.mjs`**
+  - 耐久快照契约、宽容解析和真实存储向前兼容往返。
 
 - **`tests/indexeddb-persistence.mjs`**
   - IndexedDB 快照、增量提交、hydrate。

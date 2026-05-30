@@ -6,12 +6,8 @@
     "test:triviumdb-poc": "node tests/triviumdb-poc.mjs",
     "test:runtime-history": "node tests/runtime-history.mjs",
     "test:graph-persistence": "node tests/graph-persistence.mjs",
-    "test:rebirth-phase0": "node tests/rebirth-phase0.mjs",
     "test:identity-resolver": "node tests/identity-resolver.mjs",
     "test:persistence-reducer": "node tests/persistence-reducer.mjs",
-    "test:graph-head": "node tests/graph-head.mjs",
-    "test:graph-store-contract": "node tests/graph-store-contract.mjs",
-    "test:graph-store-v3-adapter": "node tests/graph-store-v3-adapter.mjs",
     "test:graph-snapshot-schema": "node tests/graph-snapshot-schema.mjs",
     "test:graph-snapshot-upgrade": "node tests/graph-snapshot-upgrade.mjs",
     "test:snapshot-forward-compat": "node tests/snapshot-forward-compat.mjs",
@@ -41,8 +37,7 @@
     "test:authority:e2e:restore": "node tests/e2e/authority-checkpoint-restore.mjs",
     "test:authority:e2e:all": "npm run test:authority:e2e && npm run test:authority:e2e:diagnostics && npm run test:authority:e2e:restore",
     "test:all": "npm run test:stable",
-    "check": "node scripts/check-syntax.mjs",
-    "rebirth:inventory": "node scripts/rebirth-phase0-inventory.mjs"
+    "check": "node scripts/check-syntax.mjs"
   },
   "dependencies": {
     "triviumdb": "0.7.1"
