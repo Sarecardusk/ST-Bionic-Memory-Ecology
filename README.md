@@ -16,7 +16,7 @@ ST-BME（Bionic Memory Ecology）是一个 **SillyTavern 第三方前端扩展**
 - [主要配置](#主要配置)
 - [记忆模型](#记忆模型)
 - [长聊天与历史安全](#长聊天与历史安全)
-- [v3 重生核心与数据格式硬切](#v3-重生核心与数据格式硬切)
+- [数据格式与向前兼容](#数据格式与向前兼容)
 - [常用操作速查](#常用操作速查)
 - [数据存储与同步](#数据存储与同步)
 - [排障指南](#排障指南)
@@ -26,33 +26,27 @@ ST-BME（Bionic Memory Ecology）是一个 **SillyTavern 第三方前端扩展**
 
 ---
 
-## v3 重生核心与数据格式硬切
+## 数据格式与向前兼容
 
-ST-BME 的“克制版重生”已经落地第一批核心控制面：身份解析、持久化确认、GraphHead 数据模型、v3 命名空间、GraphStore 契约和 v3 适配器包装层都已拆为独立纯模块。默认热路径仍保持稳定，不会在未完成显式切换前突然改写用户现有存储。
+ST-BME 的记忆图谱以「耐久快照」形式存储在各存储层（IndexedDB / OPFS / Authority SQL / Luker chat-state）。为了避免以后每改一次数据结构就被迫做一次大迁移，耐久快照遵循一套**最小向前兼容纪律**（protobuf 风格），而不是再叠一层「信封」框架：
 
-v3 方向采用 **新命名空间 + 新数据格式硬切**：
+- **聊天身份不变**：一个聊天对应一张记忆图谱，沿用宿主聊天身份作为键，不引入新的身份方案。
+- **冻结的顶层结构**：耐久快照顶层只有 `schemaVersion`、`meta`、`nodes`、`edges`、`tombstones`、`state` 六个键，永不新增、永不删除、永不改义。
+- **未来字段加法演进**：任何新增数据都放进 `meta` 或节点/边记录对象里——这些位置会**保留未知字段**，旧版本读到不认识的字段会忽略并原样保留，不报错、不丢弃。
+- **就地升级（upgrade-on-read）**：读到旧 `schemaVersion` 时在内存里逐级升级再用，下次保存自然写成新版；**存储命名空间永不更换**，不需要全量搬迁。
+- **更新版本不被降级**：读到比当前版本更新的快照时保持原样，绝不向下改写，避免旧客户端破坏新数据。
 
-- v3 热路径切换时不会把旧 IndexedDB / OPFS / Luker sidecar / metadata-full / 旧 commit marker 当作数据源；
-- 不会保留永久的“旧格式读取层”或 dark-read/dual-write 兼容层；
-- 如需保留旧图谱，请在切换前通过面板“导出图谱”或服务器备份功能先导出/备份；
-- 后续最多提供一次性导入/重置工具，旧数据导入后工具可移除；
-- 如果不导入旧图谱，v3 会从聊天历史重新提取/重建，但这会消耗 LLM 调用，且不保证完全复现旧图谱；
-- v3 数据可能无法被旧版本读取，切换或回滚前请保留导出/备份。
+这套纪律意味着：以后扩展数据结构是「加字段 + 可选加一个升级步骤」，而不是再来一次 v4、v5 的整体迁移。
 
-当前阶段的策略盘点 / 切换清单命令（不会扫描浏览器或服务器实际数据）：
+相关核心模块：
 
-```bash
-npm run rebirth:inventory
-```
-
-v3 相关核心模块：
-
+- `sync/graph-snapshot-schema.js`：冻结顶层键集合、`schemaVersion`、宽容解析（保留未知嵌套字段、丢弃未知顶层键）；
+- `sync/graph-snapshot-upgrade.js`：`upgradeGraphSnapshotOnRead` 就地升级链（单调、幂等、不降级、不抛错），已接入 `buildGraphFromSnapshot` 加载路径；
 - `runtime/identity-resolver.js`：活动身份、图谱身份、排队身份和 marker 身份分离；
 - `sync/persistence-reducer.js`：accepted / queued / pending 持久化状态机和事件 reducer；
-- `graph/graph-head.js`：v3 GraphHead、ReplicaPointer 和 v3 commit marker；
-- `graph/graph-v3-namespace.js`：v3 metadata、chat-state、IndexedDB、OPFS、Authority 命名空间；
-- `sync/graph-store-contract.js`：GraphStore 契约和纯路由计划器；
-- `sync/graph-store-v3-adapter.js`：DB-like store 与 Luker chat-state 的 v3 head / marker 适配包装层。
+- `graph/graph-head.js`：GraphHead、ReplicaPointer 和 commit marker 纯模型。
+
+> 贡献提示：新增图谱数据时，请加进 `meta` / `state` / 记录对象，**不要新增耐久快照顶层键**；只有在加入一个 `upgrade-on-read` 步骤时才提升 `GRAPH_SNAPSHOT_SCHEMA_VERSION`。`tests/graph-snapshot-schema.mjs`、`tests/snapshot-forward-compat.mjs` 是该契约的长期回归保护，请勿删除。
 
 ---
 
@@ -809,8 +803,8 @@ ST-BME/
 ├── graph/                         # 图数据模型与领域状态
 │   ├── graph.js                   # 节点/边 CRUD、序列化、迁移
 │   ├── graph-persistence.js       # 持久化常量、加载状态、身份别名
-│   ├── graph-head.js              # v3 GraphHead / ReplicaPointer / commit marker
-│   ├── graph-v3-namespace.js      # v3 硬切命名空间
+│   ├── graph-head.js              # GraphHead / ReplicaPointer / commit marker 纯模型
+│   ├── graph-v3-namespace.js      # 控制面命名空间常量
 │   ├── schema.js                  # 节点和关系 Schema
 │   ├── memory-scope.js            # 主客观作用域与空间区域
 │   ├── knowledge-state.js         # 认知归属、可见性、区域状态
@@ -879,8 +873,10 @@ ST-BME/
 │   ├── bme-chat-manager.js        # chatId → 数据库生命周期
 │   ├── persistence-reducer.js      # 持久化 accepted/queued/pending reducer
 │   ├── legacy-persistence-repair.js # 旧状态安全修复策略
-│   ├── graph-store-contract.js     # v3 GraphStore 契约和路由计划
-│   └── graph-store-v3-adapter.js   # v3 GraphStore 适配器包装层
+│   ├── graph-snapshot-schema.js    # 耐久快照契约：冻结顶层键 + 宽容解析
+│   ├── graph-snapshot-upgrade.js   # 快照 upgrade-on-read 就地升级链
+│   ├── graph-store-contract.js     # GraphStore 契约和路由计划
+│   └── graph-store-v3-adapter.js   # GraphStore head/marker 适配包装层
 │
 ├── host/                          # SillyTavern 宿主适配
 │   ├── event-binding.js
@@ -937,7 +933,7 @@ P0 回归：
 npm run test:p0
 ```
 
-v3 重生控制面专项：
+控制面与数据格式专项：
 
 ```bash
 npm run test:rebirth-phase0
@@ -948,6 +944,10 @@ npm run test:vector-gate
 npm run test:reroll-transaction-boundary
 npm run test:graph-store-contract
 npm run test:graph-store-v3-adapter
+npm run test:graph-snapshot-schema
+npm run test:graph-snapshot-upgrade
+npm run test:snapshot-forward-compat
+npm run test:luker-snapshot-forward-compat
 ```
 
 持久化矩阵：
