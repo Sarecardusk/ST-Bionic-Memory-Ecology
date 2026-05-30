@@ -7,6 +7,7 @@ export const GRAPH_V3_NAMESPACE_VERSION = 3;
 export const GRAPH_V3_MODULE_NAME = "st_bme_v3";
 
 export const GRAPH_V3_METADATA_KEY = `${GRAPH_V3_MODULE_NAME}_graph`;
+export const GRAPH_V3_HEAD_KEY = `${GRAPH_V3_MODULE_NAME}_graph_head`;
 export const GRAPH_V3_COMMIT_MARKER_KEY = `${GRAPH_V3_MODULE_NAME}_commit_marker`;
 export const GRAPH_V3_CHAT_STATE_NAMESPACE = `${GRAPH_V3_MODULE_NAME}_graph_state`;
 export const GRAPH_V3_LUKER_MANIFEST_NAMESPACE = `${GRAPH_V3_MODULE_NAME}_graph_manifest`;
@@ -65,6 +66,7 @@ export function listGraphV3NamespaceValues() {
   return Object.freeze([
     GRAPH_V3_MODULE_NAME,
     GRAPH_V3_METADATA_KEY,
+    GRAPH_V3_HEAD_KEY,
     GRAPH_V3_COMMIT_MARKER_KEY,
     GRAPH_V3_CHAT_STATE_NAMESPACE,
     GRAPH_V3_LUKER_MANIFEST_NAMESPACE,
