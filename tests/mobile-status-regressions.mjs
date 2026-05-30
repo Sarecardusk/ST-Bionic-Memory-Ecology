@@ -54,6 +54,18 @@ function createBaseStatusContext() {
     lastRecallStatus: { text: "待命", meta: "", level: "idle" },
     lastStatusToastAt: {},
     STATUS_TOAST_THROTTLE_MS: 1500,
+    getContext() {
+      return {};
+    },
+    resolveOperationalChatId(context, graph, explicitChatId = "") {
+      // VM snippet calls this as a free function (no `this`); derive only from
+      // arguments so it never depends on per-test getCurrentChatId closures.
+      return (
+        String(explicitChatId || "").trim() ||
+        String(graph?.historyState?.chatId || "").trim() ||
+        "chat-mobile"
+      );
+    },
     _panelModule: {
       updateFloatingBallStatus() {},
     },
