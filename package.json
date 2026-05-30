@@ -13,6 +13,7 @@
     "test:graph-store-contract": "node tests/graph-store-contract.mjs",
     "test:graph-store-v3-adapter": "node tests/graph-store-v3-adapter.mjs",
     "test:graph-snapshot-schema": "node tests/graph-snapshot-schema.mjs",
+    "test:graph-snapshot-upgrade": "node tests/graph-snapshot-upgrade.mjs",
     "test:reroll-transaction-boundary": "node tests/reroll-transaction-boundary.mjs",
     "test:vector-gate": "node tests/vector-gate.mjs",
     "test:hide-engine": "node tests/hide-engine.mjs",
