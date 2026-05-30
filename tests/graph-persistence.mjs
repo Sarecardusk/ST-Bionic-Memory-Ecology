@@ -137,6 +137,13 @@ import {
   repairLegacyLastBatchPersistenceStatus,
 } from "../sync/legacy-persistence-repair.js";
 import {
+  applyPersistenceRecordToBatchStatus as reducePersistenceRecordToBatchStatus,
+  buildAcceptedPersistenceStatePatch,
+  buildBatchPersistenceRecordFromPersistResult as reduceBatchPersistenceRecordFromPersistResult,
+  buildQueuedPersistenceStatePatch,
+  planAcceptedPendingClear,
+} from "../sync/persistence-reducer.js";
+import {
   clampFloat,
   clampInt,
   createGraphPersistenceState,
@@ -723,6 +730,11 @@ async function createGraphPersistenceHarness({
     isRecoveryOnlyLegacyPersistenceTier,
     planAcceptedPendingPersistenceRepair,
     repairLegacyLastBatchPersistenceStatus,
+    reducePersistenceRecordToBatchStatus,
+    buildAcceptedPersistenceStatePatch,
+    reduceBatchPersistenceRecordFromPersistResult,
+    buildQueuedPersistenceStatePatch,
+    planAcceptedPendingClear,
     migrateLegacyTaskProfiles(settings = {}) {
       return {
         taskProfilesVersion: Number(settings?.taskProfilesVersion || 0),

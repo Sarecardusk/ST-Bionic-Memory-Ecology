@@ -63,9 +63,15 @@ import {
 import {
   isAcceptedLegacyPersistenceTier,
   isRecoveryOnlyLegacyPersistenceTier,
-  planAcceptedPendingPersistenceRepair,
   repairLegacyLastBatchPersistenceStatus,
 } from "./sync/legacy-persistence-repair.js";
+import {
+  applyPersistenceRecordToBatchStatus as reducePersistenceRecordToBatchStatus,
+  buildAcceptedPersistenceStatePatch,
+  buildBatchPersistenceRecordFromPersistResult as reduceBatchPersistenceRecordFromPersistResult,
+  buildQueuedPersistenceStatePatch,
+  planAcceptedPendingClear,
+} from "./sync/persistence-reducer.js";
 import {
   buildExtractionMessages,
   clampRecoveryStartFloor,
@@ -14721,43 +14727,7 @@ function canPersistGraphToMetadataFallback(
 }
 
 function buildBatchPersistenceRecordFromPersistResult(persistResult = null) {
-  const accepted = persistResult?.accepted === true;
-  const queued = persistResult?.queued === true;
-  const blocked = persistResult?.blocked === true;
-  const recoverable = persistResult?.recoverable === true;
-  let outcome = "failed";
-
-  if (
-    accepted &&
-    ["indexeddb", "opfs", "authority-sql", "luker-chat-state"].includes(
-      String(persistResult?.storageTier || ""),
-    )
-  ) {
-    outcome = "saved";
-  } else if (accepted) {
-    outcome = "fallback";
-  } else if (queued) {
-    outcome = "queued";
-  } else if (recoverable) {
-    outcome = "recoverable";
-  } else if (blocked) {
-    outcome = "blocked";
-  }
-
-  return {
-    outcome,
-    accepted,
-    recoverable,
-    storageTier: String(persistResult?.storageTier || "none"),
-    reason: String(persistResult?.reason || ""),
-    revision: Number.isFinite(Number(persistResult?.revision))
-      ? Number(persistResult.revision)
-      : 0,
-    saveMode: String(persistResult?.saveMode || ""),
-    saved: persistResult?.saved === true,
-    queued,
-    blocked,
-  };
+  return reduceBatchPersistenceRecordFromPersistResult(persistResult);
 }
 
 async function persistGraphToConfiguredDurableTier(
@@ -15077,10 +15047,10 @@ function applyAcceptedPendingPersistState(
   );
   const batchStatus = currentGraph?.historyState?.lastBatchStatus;
   if (batchStatus && typeof batchStatus === "object") {
-    batchStatus.persistence = persistenceRecord;
-    batchStatus.historyAdvanceAllowed = persistenceRecord.accepted === true;
-    batchStatus.historyAdvanced = persistenceRecord.accepted === true;
-    currentGraph.historyState.lastBatchStatus = batchStatus;
+    currentGraph.historyState.lastBatchStatus = reducePersistenceRecordToBatchStatus(
+      batchStatus,
+      persistenceRecord,
+    );
   }
 
   if (
@@ -15129,11 +15099,13 @@ function applyAcceptedPendingPersistState(
   }
 
   if (persistenceRecord.accepted === true) {
-    updateGraphPersistenceState({
-      acceptedStorageTier: String(persistenceRecord.storageTier || "none"),
-      lastRecoverableStorageTier: "none",
-      pendingPersist: false,
-    });
+    updateGraphPersistenceState(
+      buildAcceptedPersistenceStatePatch({
+        currentState: graphPersistenceState,
+        persistenceRecord,
+        clearQueued: false,
+      }),
+    );
     const safeFloor = Number.isFinite(Number(lastProcessedAssistantFloor))
       ? Math.floor(Number(lastProcessedAssistantFloor))
       : null;
@@ -15204,7 +15176,7 @@ function maybeClearAcceptedPendingPersistState(
         markerChatId,
         currentIdentity,
       ));
-  const plan = planAcceptedPendingPersistenceRepair({
+  const plan = planAcceptedPendingClear({
     batchPersistence: persistence,
     persistenceState: graphPersistenceState,
     commitMarker,
@@ -15390,23 +15362,16 @@ function queueGraphPersist(
     }
   }
 
-  updateGraphPersistenceState({
-    queuedPersistRevision: Math.max(
-      normalizeIndexedDbRevision(graphPersistenceState.queuedPersistRevision),
-      normalizedRevision,
-    ),
-    queuedPersistChatId: String(queuedChatId || ""),
-    queuedPersistMode: immediate ? "immediate" : "debounced",
-    queuedPersistRotateIntegrity: false,
-    queuedPersistReason: String(reason || ""),
-    pendingPersist: true,
-    writesBlocked: !isRecoveryOnlyPersistTier(effectiveRecoverableTier),
-    lastPersistReason: String(reason || ""),
-    lastPersistMode: immediate ? "pending-immediate" : "pending-debounced",
-    lastRecoverableStorageTier: isRecoveryOnlyPersistTier(effectiveRecoverableTier)
-      ? effectiveRecoverableTier
-      : graphPersistenceState.lastRecoverableStorageTier,
-  });
+  updateGraphPersistenceState(
+    buildQueuedPersistenceStatePatch({
+      currentState: graphPersistenceState,
+      reason,
+      revision: normalizedRevision,
+      chatId: queuedChatId,
+      immediate,
+      recoverableTier: effectiveRecoverableTier,
+    }),
+  );
   schedulePendingGraphPersistRetry(String(reason || "graph-persist-blocked"), 0);
 
   return buildGraphPersistResult({
