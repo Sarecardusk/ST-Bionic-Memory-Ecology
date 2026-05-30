@@ -149,6 +149,10 @@ import {
   resolveRuntimeGraphFallbackIdentityCore,
 } from "./runtime/identity-resolver.js";
 import {
+  consumeRerollRecallReuseMarker,
+  createRerollRecallReuseMarker,
+} from "./runtime/reroll-transaction-boundary.js";
+import {
   extractMemories,
   generateReflection,
 } from "./maintenance/extractor.js";
@@ -405,6 +409,7 @@ import {
   testVectorConnection,
   validateVectorConfig,
 } from "./vector/vector-index.js";
+import { planVectorReadyCheck } from "./vector/vector-gate.js";
 import { createAuthorityTriviumClient } from "./vector/authority-vector-primary-adapter.js";
 import {
   buildAuthorityJobIdempotencyKey,
@@ -17386,33 +17391,56 @@ async function ensureVectorReadyIfNeeded(
   signal = undefined,
 ) {
   if (!currentGraph) return;
-  if (
-    !isGraphMetadataWriteAllowed() &&
-    !hasRuntimeGraphMutationContext(getContext(), currentGraph, {
-      allowNoChatState: true,
-    })
-  ) {
+  let metadataWriteAllowed = isGraphMetadataWriteAllowed();
+  let mutationContextAllowed = hasRuntimeGraphMutationContext(getContext(), currentGraph, {
+    allowNoChatState: true,
+  });
+  let gate = planVectorReadyCheck({
+    hasGraph: Boolean(currentGraph),
+    metadataWriteAllowed,
+    mutationContextAllowed,
+    repairAttempted: false,
+    dirty: currentGraph?.vectorIndexState?.dirty === true,
+    configValid: true,
+  });
+  if (gate.action === "skip" || gate.action === "block") return;
+
+  if (gate.action === "repair-identity") {
     repairRuntimeGraphIdentityFromPersistence("向量准备", {
       reason: "vector-ready-fallback",
     });
-  }
-  if (
-    !isGraphMetadataWriteAllowed() &&
-    !hasRuntimeGraphMutationContext(getContext(), currentGraph, {
+    metadataWriteAllowed = isGraphMetadataWriteAllowed();
+    mutationContextAllowed = hasRuntimeGraphMutationContext(getContext(), currentGraph, {
       allowNoChatState: true,
-    })
-  ) {
-    return;
+    });
+    gate = planVectorReadyCheck({
+      hasGraph: Boolean(currentGraph),
+      metadataWriteAllowed,
+      mutationContextAllowed,
+      repairAttempted: true,
+      dirty: currentGraph?.vectorIndexState?.dirty === true,
+      configValid: true,
+    });
+    if (gate.action === "skip" || gate.action === "block") return;
   }
+
   ensureCurrentGraphRuntimeState({
     chatId: getGraphOwnedChatId(currentGraph) || getCurrentChatId(),
   });
 
-  if (!currentGraph.vectorIndexState?.dirty) return;
-
   const config = getEmbeddingConfig();
   const validation = validateVectorConfig(config);
-  if (!validation.valid) return;
+  // Permission/identity gate has already passed above; this final plan only
+  // decides whether dirty state + config validity should trigger sync.
+  gate = planVectorReadyCheck({
+    hasGraph: Boolean(currentGraph),
+    metadataWriteAllowed: true,
+    mutationContextAllowed: true,
+    repairAttempted: true,
+    dirty: currentGraph?.vectorIndexState?.dirty === true,
+    configValid: validation.valid,
+  });
+  if (gate.action !== "sync") return;
 
   const result = await syncVectorState({
     force: true,
@@ -19645,32 +19673,23 @@ function prepareRerollRecallReuse({ fromFloor = null, meta = null } = {}) {
     chat,
     targetUserMessageIndex,
   );
-  const persistedInjection = normalizeRecallInputText(
-    persistedRecord?.injectionText || "",
-  );
-  if (!persistedRecord || !persistedInjection) {
-    pendingRerollRecallReuse = null;
-    return null;
-  }
-
-  const boundText = normalizeRecallInputText(
-    persistedRecord?.boundUserFloorText || persistedRecord?.recallInput || "",
-  );
-  if (boundText && boundText !== userText) {
-    pendingRerollRecallReuse = null;
-    return null;
-  }
-
   const chatId = normalizeChatIdCandidate(getCurrentChatId(context));
-  pendingRerollRecallReuse = {
+  const prepared = createRerollRecallReuseMarker({
     chatId,
-    fromFloor: Number.isFinite(Number(fromFloor)) ? Math.floor(Number(fromFloor)) : null,
+    fromFloor,
     targetUserMessageIndex,
     userText,
-    userHash: hashRecallInput(userText),
-    createdAt: Date.now(),
+    persistedRecord,
+    hashRecallInput,
+    now: Date.now(),
     meta,
-  };
+  });
+  if (!prepared.marker) {
+    pendingRerollRecallReuse = null;
+    return null;
+  }
+
+  pendingRerollRecallReuse = prepared.marker;
   return pendingRerollRecallReuse;
 }
 
@@ -19679,50 +19698,22 @@ function consumePendingRerollRecallReuse(chat = getContext()?.chat) {
   if (!reuse) return null;
 
   const activeChatId = normalizeChatIdCandidate(getCurrentChatId());
-  if (reuse.chatId && activeChatId && reuse.chatId !== activeChatId) {
-    pendingRerollRecallReuse = null;
-    return null;
-  }
-  if (Date.now() - Number(reuse.createdAt || 0) > GENERATION_RECALL_TRANSACTION_TTL_MS) {
-    pendingRerollRecallReuse = null;
-    return null;
-  }
-
   const latestUser = findLatestUserChatMessageWithIndex(chat);
   const targetUserMessageIndex = Number.isFinite(latestUser?.index)
     ? latestUser.index
     : reuse.targetUserMessageIndex;
-  if (targetUserMessageIndex !== reuse.targetUserMessageIndex) {
-    pendingRerollRecallReuse = null;
-    return null;
-  }
-
   const userText = normalizeRecallInputText(chat?.[targetUserMessageIndex]?.mes || "");
-  if (!userText || hashRecallInput(userText) !== reuse.userHash) {
-    pendingRerollRecallReuse = null;
-    return null;
-  }
-
-  pendingRerollRecallReuse = null;
-  return {
-    overrideUserMessage: userText,
-    generationType: "normal",
-    targetUserMessageIndex,
-    overrideSource: "chat-last-user",
-    overrideSourceLabel: "历史最后用户楼层",
-    overrideReason: "reroll-user-floor-reuse",
-    sourceCandidates: [
-      {
-        text: userText,
-        source: "chat-last-user",
-        sourceLabel: "历史最后用户楼层",
-        reason: "reroll-user-floor-reuse",
-        includeSyntheticUserMessage: false,
-      },
-    ],
-    includeSyntheticUserMessage: false,
-    rerollRecallReuse: true,
-  };
+  const consumed = consumeRerollRecallReuseMarker({
+    marker: reuse,
+    activeChatId,
+    latestUserMessageIndex: targetUserMessageIndex,
+    currentUserText: userText,
+    hashRecallInput,
+    now: Date.now(),
+    ttlMs: GENERATION_RECALL_TRANSACTION_TTL_MS,
+  });
+  pendingRerollRecallReuse = consumed.marker;
+  return consumed.consumed ? consumed.override : null;
 }
 
 function buildRecallRecentMessages(chat, limit, syntheticUserMessage = "") {

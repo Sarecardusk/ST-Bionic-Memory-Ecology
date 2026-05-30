@@ -58,6 +58,10 @@ import {
   normalizeAuthorityBrowserState,
   recordAuthorityAcceptedRevision,
 } from "../../sync/authority-browser-state.js";
+import {
+  consumeRerollRecallReuseMarker,
+  createRerollRecallReuseMarker,
+} from "../../runtime/reroll-transaction-boundary.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -109,6 +113,8 @@ export function createGenerationRecallHarness(options = {}) {
       getAuthorityBrowserStateSnapshot,
       normalizeAuthorityBrowserState,
       recordAuthorityAcceptedRevision,
+      consumeRerollRecallReuseMarker,
+      createRerollRecallReuseMarker,
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },
