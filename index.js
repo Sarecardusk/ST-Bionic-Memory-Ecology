@@ -132,6 +132,17 @@ import {
   debugLog,
 } from "./runtime/debug-logging.js";
 import {
+  areChatIdsEquivalentForIdentityCore,
+  canMutateRuntimeGraphForIdentityCore,
+  doesChatIdMatchIdentityCore,
+  planRuntimeGraphIdentityRepairCore,
+  resolveActiveHostChatIdCore,
+  resolveCurrentChatIdentityCore,
+  resolveGraphOwnerIdentityCore,
+  resolvePersistenceChatIdCore,
+  resolveRuntimeGraphFallbackIdentityCore,
+} from "./runtime/identity-resolver.js";
+import {
   extractMemories,
   generateReflection,
 } from "./maintenance/extractor.js";
@@ -540,55 +551,17 @@ function getChatCommitMarker(context = getContext()) {
 }
 
 function resolveCurrentHostChatId(context = getContext()) {
-  const candidates = [
-    context?.chatId,
-    context?.getCurrentChatId?.(),
-    readGlobalCurrentChatId(),
-    context?.chatMetadata?.chat_id,
-    context?.chatMetadata?.chatId,
-    context?.chatMetadata?.session_id,
-    context?.chatMetadata?.sessionId,
-  ];
-
-  return (
-    candidates
-      .map((candidate) => normalizeChatIdCandidate(candidate))
-      .find(Boolean) || ""
-  );
+  return resolveActiveHostChatIdCore({ context, readGlobalCurrentChatId });
 }
 
 function resolveCurrentChatIdentity(context = getContext()) {
-  const hostChatId = resolveCurrentHostChatId(context);
-  const integrity =
-    typeof getChatMetadataIntegrity === "function"
-      ? getChatMetadataIntegrity(context)
-      : normalizeChatIdCandidate(
-          context?.chatMetadata?.integrity ||
-            context?.chatMetadata?.chat_id ||
-            context?.chatMetadata?.chatId ||
-            "",
-        );
-  const aliasedChatId =
-    !integrity &&
-    hostChatId &&
-    typeof resolveGraphIdentityAliasByHostChatId === "function"
-      ? resolveGraphIdentityAliasByHostChatId(hostChatId)
-      : "";
-  const chatId = integrity || aliasedChatId || hostChatId;
-
-  return {
-    chatId,
-    hostChatId,
-    integrity,
-    identitySource: integrity
-      ? "integrity"
-      : aliasedChatId
-        ? "alias"
-        : hostChatId
-          ? "host-chat-id"
-          : "",
-    hasLikelySelectedChat: hasLikelySelectedChatContext(context),
-  };
+  return resolveCurrentChatIdentityCore({
+    context,
+    readGlobalCurrentChatId,
+    resolveAliasByHostChatId: resolveGraphIdentityAliasByHostChatId,
+    resolveIntegrity: getChatMetadataIntegrity,
+    hasLikelySelectedChat: hasLikelySelectedChatContext,
+  });
 }
 
 function getCurrentChatId(context = getContext()) {
@@ -597,29 +570,16 @@ function getCurrentChatId(context = getContext()) {
 
 function getRuntimeGraphChatIdFallback(graph = currentGraph) {
   const graphMeta = getGraphPersistenceMeta(graph) || {};
-  const fallbackCandidates = [
-    graph?.historyState?.chatId,
-    graphMeta.chatId,
-    graphPersistenceState.chatId,
-    graphPersistenceState.queuedPersistChatId,
-    graphPersistenceState.commitMarker?.chatId,
-  ];
-
-  return (
-    fallbackCandidates
-      .map((candidate) => normalizeChatIdCandidate(candidate))
-      .find(Boolean) || ""
-  );
+  return resolveRuntimeGraphFallbackIdentityCore({
+    graph,
+    graphMeta,
+    persistenceState: graphPersistenceState,
+  }).chatId;
 }
 
 function getGraphOwnedChatId(graph = currentGraph) {
   const graphMeta = getGraphPersistenceMeta(graph) || {};
-  const ownedCandidates = [graph?.historyState?.chatId, graphMeta.chatId];
-  return (
-    ownedCandidates
-      .map((candidate) => normalizeChatIdCandidate(candidate))
-      .find(Boolean) || ""
-  );
+  return resolveGraphOwnerIdentityCore({ graph, graphMeta }).chatId;
 }
 
 function resolveOperationalChatId(
@@ -639,34 +599,16 @@ function resolvePersistenceChatId(
   graph = currentGraph,
   explicitChatId = "",
 ) {
-  const directChatId = normalizeChatIdCandidate(explicitChatId);
-  if (directChatId) return directChatId;
-
-  const resolvedIdentity = resolveCurrentChatIdentity(context);
-  const resolvedChatId = normalizeChatIdCandidate(resolvedIdentity.chatId);
-  if (resolvedChatId) return resolvedChatId;
-
-  const graphMeta = getGraphPersistenceMeta(graph) || {};
-  const fallbackCandidates = [
-    graph?.historyState?.chatId,
-    graphMeta.chatId,
-    currentGraph?.historyState?.chatId,
-    getGraphPersistenceMeta(currentGraph)?.chatId,
-    graphPersistenceState.chatId,
-    graphPersistenceState.queuedPersistChatId,
-    graphPersistenceState.commitMarker?.chatId,
-    context?.chatMetadata?.integrity,
-    context?.chatMetadata?.chat_id,
-    context?.chatMetadata?.chatId,
-    context?.chatMetadata?.session_id,
-    context?.chatMetadata?.sessionId,
-  ];
-
-  return (
-    fallbackCandidates
-      .map((candidate) => normalizeChatIdCandidate(candidate))
-      .find(Boolean) || ""
-  );
+  return resolvePersistenceChatIdCore({
+    explicitChatId,
+    activeIdentity: resolveCurrentChatIdentity(context),
+    graph,
+    graphMeta: getGraphPersistenceMeta(graph) || {},
+    currentGraph,
+    currentGraphMeta: getGraphPersistenceMeta(currentGraph) || {},
+    persistenceState: graphPersistenceState,
+    context,
+  });
 }
 
 function rememberResolvedGraphIdentityAlias(
@@ -689,32 +631,14 @@ function doesChatIdMatchResolvedGraphIdentity(
   candidateChatId,
   identity = resolveCurrentChatIdentity(getContext()),
 ) {
-  const normalizedCandidate = normalizeChatIdCandidate(candidateChatId);
-  if (!normalizedCandidate || !identity || typeof identity !== "object") {
-    return false;
-  }
-
-  const knownChatIds = new Set();
-  const addKnownChatId = (value) => {
-    const normalized = normalizeChatIdCandidate(value);
-    if (normalized) {
-      knownChatIds.add(normalized);
-    }
-  };
-
-  addKnownChatId(identity.chatId);
-  addKnownChatId(identity.hostChatId);
-  addKnownChatId(identity.integrity);
-
-  for (const aliasCandidate of getGraphIdentityAliasCandidates({
-    integrity: identity.integrity,
-    hostChatId: identity.hostChatId,
-    persistenceChatId: identity.chatId,
-  })) {
-    addKnownChatId(aliasCandidate);
-  }
-
-  return knownChatIds.has(normalizedCandidate);
+  return doesChatIdMatchIdentityCore(candidateChatId, {
+    identity,
+    aliasCandidates: getGraphIdentityAliasCandidates({
+      integrity: identity?.integrity,
+      hostChatId: identity?.hostChatId,
+      persistenceChatId: identity?.chatId,
+    }),
+  });
 }
 
 function areChatIdsEquivalentForResolvedIdentity(
@@ -722,18 +646,14 @@ function areChatIdsEquivalentForResolvedIdentity(
   referenceChatId,
   identity = resolveCurrentChatIdentity(getContext()),
 ) {
-  const normalizedCandidate = normalizeChatIdCandidate(candidateChatId);
-  const normalizedReference = normalizeChatIdCandidate(referenceChatId);
-  if (!normalizedCandidate || !normalizedReference) {
-    return normalizedCandidate === normalizedReference;
-  }
-  if (normalizedCandidate === normalizedReference) {
-    return true;
-  }
-  return (
-    doesChatIdMatchResolvedGraphIdentity(normalizedCandidate, identity) &&
-    doesChatIdMatchResolvedGraphIdentity(normalizedReference, identity)
-  );
+  return areChatIdsEquivalentForIdentityCore(candidateChatId, referenceChatId, {
+    identity,
+    aliasCandidates: getGraphIdentityAliasCandidates({
+      integrity: identity?.integrity,
+      hostChatId: identity?.hostChatId,
+      persistenceChatId: identity?.chatId,
+    }),
+  });
 }
 
 function syncCommitMarkerToPersistenceState(context = getContext()) {
@@ -4472,34 +4392,24 @@ function hasRuntimeGraphMutationContext(
   }
 
   const identity = resolveCurrentChatIdentity(context);
-  const liveChatId = normalizeChatIdCandidate(identity.chatId);
   const graphOwnedChatId = getGraphOwnedChatId(graph);
-  if (!graphOwnedChatId) return false;
-
-  if (liveChatId) {
-    return (
-      areChatIdsEquivalentForResolvedIdentity(graphOwnedChatId, liveChatId, identity) ||
-      areChatIdsEquivalentForResolvedIdentity(liveChatId, graphOwnedChatId, identity)
-    );
-  }
-
-  const stateChatId = normalizeChatIdCandidate(graphPersistenceState.chatId);
-  if (!stateChatId || stateChatId !== graphOwnedChatId) {
-    return false;
-  }
-
-  const markerChatId = normalizeChatIdCandidate(graphPersistenceState.commitMarker?.chatId);
-  if (markerChatId && markerChatId !== graphOwnedChatId) return false;
-
-  if (
-    graphPersistenceState.loadState === GRAPH_LOAD_STATES.LOADED ||
-    graphPersistenceState.loadState === GRAPH_LOAD_STATES.EMPTY_CONFIRMED ||
-    graphPersistenceState.dbReady === true
-  ) {
-    return true;
-  }
-
-  return allowNoChatState === true && graphPersistenceState.loadState === GRAPH_LOAD_STATES.NO_CHAT;
+  return canMutateRuntimeGraphForIdentityCore({
+    graph,
+    activeIdentity: identity,
+    graphOwnedChatId,
+    persistenceState: graphPersistenceState,
+    aliasCandidates: getGraphIdentityAliasCandidates({
+      integrity: identity.integrity,
+      hostChatId: identity.hostChatId,
+      persistenceChatId: identity.chatId,
+    }),
+    loadedStates: [
+      GRAPH_LOAD_STATES.LOADED,
+      GRAPH_LOAD_STATES.EMPTY_CONFIRMED,
+    ],
+    allowNoChatState,
+    noChatState: GRAPH_LOAD_STATES.NO_CHAT,
+  });
 }
 
 function repairRuntimeGraphIdentityFromPersistence(
@@ -4522,55 +4432,46 @@ function repairRuntimeGraphIdentityFromPersistence(
   }
 
   const graphOwnedChatId = getGraphOwnedChatId(graph);
-  if (graphOwnedChatId) {
-    return { repaired: false, reason: "graph-identity-present", chatId: graphOwnedChatId };
-  }
-
   const stateChatId = normalizeChatIdCandidate(graphPersistenceState.chatId);
-  if (!stateChatId) {
-    return { repaired: false, reason: "missing-persistence-chat-id" };
-  }
-
   const identity = resolveCurrentChatIdentity(context);
-  const liveChatId = normalizeChatIdCandidate(identity.chatId);
-  if (
-    liveChatId &&
-    !areChatIdsEquivalentForResolvedIdentity(stateChatId, liveChatId, identity) &&
-    !areChatIdsEquivalentForResolvedIdentity(liveChatId, stateChatId, identity)
-  ) {
-    return {
-      repaired: false,
-      reason: "live-chat-mismatch",
-      chatId: stateChatId,
-      liveChatId,
-    };
-  }
-
   const markerChatId = normalizeChatIdCandidate(graphPersistenceState.commitMarker?.chatId);
-  if (markerChatId && markerChatId !== stateChatId) {
+  const repairPlan = planRuntimeGraphIdentityRepairCore({
+    graph,
+    graphOwnedChatId,
+    stateChatId,
+    activeIdentity: identity,
+    markerChatId,
+    aliasCandidates: getGraphIdentityAliasCandidates({
+      integrity: identity.integrity,
+      hostChatId: identity.hostChatId,
+      persistenceChatId: identity.chatId,
+    }),
+  });
+  if (!repairPlan.shouldRepair) {
     return {
       repaired: false,
-      reason: "commit-marker-chat-mismatch",
-      chatId: stateChatId,
-      markerChatId,
+      reason: repairPlan.reason,
+      chatId: repairPlan.chatId,
+      liveChatId: repairPlan.liveChatId,
+      markerChatId: repairPlan.markerChatId,
     };
   }
 
-  graph.historyState.chatId = stateChatId;
+  graph.historyState.chatId = repairPlan.chatId;
   stampGraphPersistenceMeta(graph, {
     revision: graphPersistenceState.revision || graph?.meta?.revision || graph?.revision || 0,
     reason: String(reason || operationLabel || "runtime-graph-identity-repair"),
-    chatId: stateChatId,
+    chatId: repairPlan.chatId,
     integrity:
       normalizeChatIdCandidate(graphPersistenceState.commitMarker?.integrity) ||
       getChatMetadataIntegrity(context),
   });
   debugDebug("[ST-BME] 已补齐运行时图谱聊天身份", {
     operationLabel,
-    chatId: stateChatId,
+    chatId: repairPlan.chatId,
     reason,
   });
-  return { repaired: true, reason: "repaired", chatId: stateChatId };
+  return { repaired: true, reason: "repaired", chatId: repairPlan.chatId };
 }
 
 function isGraphReadableForRecall(
