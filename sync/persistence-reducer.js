@@ -1,7 +1,8 @@
 // ST-BME persistence reducer core.
 //
-// Pure helpers only: no IO, no graph mutation, no UI side effects. Phase 2
-// centralizes accepted/queued/pending invariants while leaving durable routing
+// Pure helpers only: no IO, no graph mutation, no UI side effects.
+// Phase 2 centralized accepted/queued/pending invariants; Phase 5 routes
+// call sites through explicit events while leaving durable routing
 // (IndexedDB/OPFS/Authority/Luker) in the existing orchestration layer.
 
 import {
@@ -16,6 +17,11 @@ const SAVED_BATCH_ACCEPTED_TIERS = new Set([
   "authority-sql",
   "luker-chat-state",
 ]);
+
+export const PERSISTENCE_EVENT_TYPES = Object.freeze({
+  ACCEPTED: "accepted",
+  QUEUED: "queued",
+});
 
 function normalizeRevision(value = 0) {
   const numeric = Number(value || 0);
@@ -141,4 +147,39 @@ export function buildQueuedPersistenceStatePatch({
 
 export function planAcceptedPendingClear(options = {}) {
   return planAcceptedPendingPersistenceRepair(options);
+}
+
+export function reducePersistenceStatePatch(currentState = null, event = null) {
+  const type = String(event?.type || "").trim();
+  switch (type) {
+    case PERSISTENCE_EVENT_TYPES.ACCEPTED:
+      return buildAcceptedPersistenceStatePatch({
+        currentState,
+        persistenceRecord: event.persistenceRecord,
+        acceptedRevision: event.acceptedRevision,
+        acceptedStorageTier: event.acceptedStorageTier,
+        acceptedBy: event.acceptedBy,
+        clearQueued: event.clearQueued !== false,
+      });
+
+    case PERSISTENCE_EVENT_TYPES.QUEUED:
+      return buildQueuedPersistenceStatePatch({
+        currentState,
+        reason: event.reason,
+        revision: event.revision,
+        chatId: event.chatId,
+        immediate: event.immediate === true,
+        recoverableTier: event.recoverableTier,
+      });
+
+    default:
+      return {};
+  }
+}
+
+export function reducePersistenceState(currentState = null, event = null) {
+  return {
+    ...(currentState && typeof currentState === "object" ? currentState : {}),
+    ...reducePersistenceStatePatch(currentState, event),
+  };
 }

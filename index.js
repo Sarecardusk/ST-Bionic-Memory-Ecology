@@ -66,11 +66,11 @@ import {
   repairLegacyLastBatchPersistenceStatus,
 } from "./sync/legacy-persistence-repair.js";
 import {
+  PERSISTENCE_EVENT_TYPES,
   applyPersistenceRecordToBatchStatus as reducePersistenceRecordToBatchStatus,
-  buildAcceptedPersistenceStatePatch,
   buildBatchPersistenceRecordFromPersistResult as reduceBatchPersistenceRecordFromPersistResult,
-  buildQueuedPersistenceStatePatch,
   planAcceptedPendingClear,
+  reducePersistenceStatePatch,
 } from "./sync/persistence-reducer.js";
 import {
   buildExtractionMessages,
@@ -15105,8 +15105,8 @@ function applyAcceptedPendingPersistState(
 
   if (persistenceRecord.accepted === true) {
     updateGraphPersistenceState(
-      buildAcceptedPersistenceStatePatch({
-        currentState: graphPersistenceState,
+      reducePersistenceStatePatch(graphPersistenceState, {
+        type: PERSISTENCE_EVENT_TYPES.ACCEPTED,
         persistenceRecord,
         clearQueued: false,
       }),
@@ -15368,8 +15368,8 @@ function queueGraphPersist(
   }
 
   updateGraphPersistenceState(
-    buildQueuedPersistenceStatePatch({
-      currentState: graphPersistenceState,
+    reducePersistenceStatePatch(graphPersistenceState, {
+      type: PERSISTENCE_EVENT_TYPES.QUEUED,
       reason,
       revision: normalizedRevision,
       chatId: queuedChatId,

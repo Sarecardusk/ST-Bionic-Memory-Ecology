@@ -2,11 +2,14 @@
 
 import assert from "node:assert/strict";
 import {
+  PERSISTENCE_EVENT_TYPES,
   applyPersistenceRecordToBatchStatus,
   buildAcceptedPersistenceStatePatch,
   buildBatchPersistenceRecordFromPersistResult,
   buildQueuedPersistenceStatePatch,
   planAcceptedPendingClear,
+  reducePersistenceState,
+  reducePersistenceStatePatch,
 } from "../sync/persistence-reducer.js";
 
 const acceptedRecord = buildBatchPersistenceRecordFromPersistResult({
@@ -88,6 +91,38 @@ assert.deepEqual(
 
 console.log("  ✓ canonical accepted state clears pending and queued fields");
 
+assert.deepEqual(
+  reducePersistenceStatePatch(
+    {
+      lastAcceptedRevision: 9,
+      pendingPersist: true,
+      writesBlocked: true,
+    },
+    {
+      type: PERSISTENCE_EVENT_TYPES.ACCEPTED,
+      persistenceRecord: acceptedRecord,
+    },
+  ),
+  buildAcceptedPersistenceStatePatch({
+    currentState: {
+      lastAcceptedRevision: 9,
+      pendingPersist: true,
+      writesBlocked: true,
+    },
+    persistenceRecord: acceptedRecord,
+  }),
+);
+
+const reducedAcceptedState = reducePersistenceState(
+  { pendingPersist: true, writesBlocked: true, lastAcceptedRevision: 9, custom: "keep" },
+  { type: PERSISTENCE_EVENT_TYPES.ACCEPTED, persistenceRecord: acceptedRecord },
+);
+assert.equal(reducedAcceptedState.pendingPersist, false);
+assert.equal(reducedAcceptedState.custom, "keep");
+assert.equal(reducedAcceptedState.acceptedStorageTier, "authority-sql");
+
+console.log("  ✓ accepted persistence state updates are event-reduced patches");
+
 const queuedPatch = buildQueuedPersistenceStatePatch({
   currentState: {
     queuedPersistRevision: 6,
@@ -118,6 +153,23 @@ assert.equal(blockedQueuedPatch.writesBlocked, true);
 assert.equal(blockedQueuedPatch.lastRecoverableStorageTier, "shadow");
 
 console.log("  ✓ queued state preserves max revision and recovery-only semantics");
+
+assert.deepEqual(
+  reducePersistenceStatePatch(
+    { queuedPersistRevision: 6, lastRecoverableStorageTier: "metadata-full" },
+    {
+      type: PERSISTENCE_EVENT_TYPES.QUEUED,
+      reason: "extraction-batch-complete:pending",
+      revision: 10,
+      chatId: "chat-a",
+      immediate: true,
+      recoverableTier: "shadow",
+    },
+  ),
+  queuedPatch,
+);
+
+assert.deepEqual(reducePersistenceStatePatch({}, { type: "unknown" }), {});
 
 const batchStatus = {
   completed: true,
