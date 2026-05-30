@@ -1,4 +1,9 @@
 import { createEmptyGraph, deserializeGraph } from "../graph/graph.js";
+import { upgradeGraphSnapshotOnRead } from "./graph-snapshot-upgrade.js";
+import {
+  GRAPH_SNAPSHOT_SCHEMA_VERSION,
+  readGraphSnapshotSchemaVersion,
+} from "./graph-snapshot-schema.js";
 import {
   hasMeaningfulMemoryScope,
   normalizeMemoryScope,
@@ -2917,6 +2922,34 @@ export function buildPersistDelta(beforeSnapshot, afterSnapshot, options = {}) {
 export function buildGraphFromSnapshot(snapshot, options = {}) {
   const shouldCollectDiagnostics = typeof options?.onDiagnostics === "function";
   const hydrateStartedAt = shouldCollectDiagnostics ? readPersistDeltaNow() : 0;
+  // Upgrade-on-read hook. Only a durable snapshot (has explicit meta/nodes shape)
+  // with a layout schemaVersion OLDER than current is upgraded in place. We swap
+  // the snapshot only when an actual upgrade step ran, so unknown top-level keys
+  // (e.g. __stBmeTombstonesOmitted) and runtime-graph-shaped inputs pass through
+  // untouched. At GRAPH_SNAPSHOT_SCHEMA_VERSION=1 with an empty step map this is a
+  // strict no-op; it becomes live behavior at the first future schema bump.
+  let snapshotSchemaUpgradeInfo = null;
+  if (
+    snapshot &&
+    typeof snapshot === "object" &&
+    !Array.isArray(snapshot) &&
+    Array.isArray(snapshot.nodes)
+  ) {
+    const storedVersion = readGraphSnapshotSchemaVersion(snapshot);
+    if (storedVersion > 0 && storedVersion < GRAPH_SNAPSHOT_SCHEMA_VERSION) {
+      const upgradeResult = upgradeGraphSnapshotOnRead(snapshot);
+      if (upgradeResult.upgraded) {
+        snapshot = upgradeResult.snapshot;
+      }
+      snapshotSchemaUpgradeInfo = {
+        from: upgradeResult.fromVersion,
+        to: upgradeResult.toVersion,
+        upgraded: upgradeResult.upgraded,
+        ahead: upgradeResult.ahead,
+        steps: upgradeResult.steps,
+      };
+    }
+  }
   const hydrateDiagnostics = shouldCollectDiagnostics
     ? {
         success: false,
@@ -3379,6 +3412,7 @@ export function buildGraphFromSnapshot(snapshot, options = {}) {
       ...hydrateDiagnostics,
       success: true,
       integrityReasons: [],
+      snapshotSchemaUpgrade: snapshotSchemaUpgradeInfo,
       totalMs: readPersistDeltaNow() - hydrateStartedAt,
     });
   }
