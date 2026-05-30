@@ -1756,6 +1756,7 @@ export function buildSnapshotFromGraph(graph, options = {}) {
   }
 
   const snapshotResult = {
+    schemaVersion: BME_DB_SCHEMA_VERSION,
     meta: mergedMeta,
     nodes,
     edges,
