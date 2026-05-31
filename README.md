@@ -812,6 +812,8 @@ ST-BME/
 ├── maintenance/                   # 写入链路
 │   ├── extractor.js               # LLM 提取管线
 │   ├── extraction-controller.js   # 自动/手动提取编排
+│   ├── extraction-success-controller.js # 提取成功后处理编排（注入式）
+│   ├── reroll-recovery-controller.js # reroll 回滚 + 历史恢复编排（注入式）
 │   ├── extraction-context.js      # 结构化消息和边界过滤
 │   ├── chat-history.js            # 楼层、hash、历史恢复工具
 │   ├── consolidator.js            # 记忆整合
@@ -848,12 +850,19 @@ ST-BME/
 ├── vector/                        # 向量索引与直连 Embedding
 │   ├── vector-index.js
 │   ├── vector-gate.js             # 向量准备/修复门禁策略
+│   ├── vector-sync-controller.js  # 向量同步编排（注入式）
 │   └── embedding.js
 │
 ├── runtime/                       # 运行时状态和设置
 │   ├── identity-resolver.js        # 身份解析核心
 │   ├── runtime-state.js
 │   ├── reroll-transaction-boundary.js # reroll 召回复用事务边界
+│   ├── recall-input-state.js       # 召回 input/intent/trivial-skip 状态工厂
+│   ├── reroll-recall-input.js      # reroll 复用 + planner handoff 输入工厂
+│   ├── generation-recall-transactions.js # 生成召回事务生命周期工厂
+│   ├── final-recall-injection.js   # 最终召回注入解析工厂
+│   ├── auto-extraction-defer.js    # 自动提取 defer/resume 工厂
+│   ├── planner-recall-controller.js # ENA planner 召回管线（注入式）
 │   ├── settings-defaults.js
 │   ├── generation-options.js
 │   ├── planner-tag-utils.js
@@ -868,6 +877,9 @@ ST-BME/
 │   ├── bme-sync.js                # 云端镜像与备份恢复
 │   ├── bme-chat-manager.js        # chatId → 数据库生命周期
 │   ├── persistence-reducer.js      # 持久化 accepted/queued/pending reducer
+│   ├── graph-persistence-io.js     # IndexedDB 图谱 save/load/queue/retry（注入式）
+│   ├── graph-load-persist.js       # 图谱加载/持久化/authority 编排（注入式）
+│   ├── graph-mutation-gate.js      # 图谱变更门禁 + 持久化 live-state 投影（注入式）
 │   ├── legacy-persistence-repair.js # 旧状态安全修复策略
 │   ├── graph-snapshot-schema.js    # 耐久快照契约：冻结顶层键 + 宽容解析
 │   └── graph-snapshot-upgrade.js   # 快照 upgrade-on-read 就地升级链
@@ -886,10 +898,13 @@ ST-BME/
 │   ├── panel-ena-sections.js
 │   ├── ui-actions-controller.js
 │   ├── ui-status.js
+│   ├── message-render-limit.js    # 聊天区渲染楼层限制策略
+│   ├── history-notice.js          # 历史变更通知文案
 │   ├── graph-renderer.js
 │   ├── graph-layout-solver.js
 │   ├── graph-native-bridge.js
 │   ├── recall-message-ui.js
+│   ├── recall-message-ui-controller.js # 召回卡片挂载/刷新工厂（封装定时器/observer 状态）
 │   ├── hide-engine.js
 │   ├── notice.js
 │   └── themes.js
@@ -1023,6 +1038,7 @@ npm run version:bump-manifest
 - 修改中心抽象时，补充或更新对应测试。
 - 涉及持久化、历史恢复、导入/恢复等路径时，优先防止空图覆盖和并发写入。
 - 涉及 prompt 或正则迁移时，保留旧设置兼容。
+- **测试不得把 `index.js` 当文本切片执行。** 历史上部分回归测试用 `readFile(index.js)` + 标记字符串切片 + `vm.runInContext` 来测内部函数，这让 `index.js` 与字节偏移强耦合、反复出现 `X is not defined` 沙箱崩溃。现在这些逻辑已抽成可直接 `import` 的控制器/工厂模块（`runtime/`、`sync/`、`ui/`、`maintenance/` 下），测试应直接导入真实模块并注入依赖。`tests/index-slicing-ratchet.mjs` 会守住这条线：任何新测试若再读取 `index.js` 文本，CI 失败。
 - 提交前至少运行 `npm run check` 和相关专项测试。
 
 ---
