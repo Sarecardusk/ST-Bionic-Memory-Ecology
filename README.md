@@ -947,6 +947,7 @@ npm run test:p0
 ```bash
 npm run test:identity-resolver
 npm run test:persistence-reducer
+npm run test:runtime-deps
 npm run test:vector-gate
 npm run test:reroll-transaction-boundary
 npm run test:graph-snapshot-schema
@@ -1006,6 +1007,9 @@ npm run version:bump-manifest
 - **`tests/identity-resolver.mjs` / `tests/persistence-reducer.mjs`**
   - 身份解析核心、持久化 accepted/queued/pending 状态机。
 
+- **`tests/runtime-deps-completeness.mjs`**
+  - 检查注入式控制器模块里的所有 `runtime.X` 依赖，都已由 `index.js` 对应的 `create*Runtime()` builder 提供；禁止用 `runtime[dynamicKey]` 绕过检查。
+
 - **`tests/graph-snapshot-schema.mjs` / `tests/snapshot-forward-compat.mjs`**
   - 耐久快照契约、宽容解析和真实存储向前兼容往返。
 
@@ -1039,6 +1043,7 @@ npm run version:bump-manifest
 - 涉及持久化、历史恢复、导入/恢复等路径时，优先防止空图覆盖和并发写入。
 - 涉及 prompt 或正则迁移时，保留旧设置兼容。
 - **测试不得把 `index.js` 当文本切片执行。** 历史上部分回归测试用 `readFile(index.js)` + 标记字符串切片 + `vm.runInContext` 来测内部函数，这让 `index.js` 与字节偏移强耦合、反复出现 `X is not defined` 沙箱崩溃。现在这些逻辑已抽成可直接 `import` 的控制器/工厂模块（`runtime/`、`sync/`、`ui/`、`maintenance/` 下），测试应直接导入真实模块并注入依赖。`tests/index-slicing-ratchet.mjs` 会守住这条线：任何新测试若再读取 `index.js` 文本，CI 失败。
+- **注入式模块新增 `runtime.X` 依赖时，必须同步更新对应的 `create*Runtime()` builder。** `tests/runtime-deps-completeness.mjs` 会扫描 `sync/graph-persistence-io.js`、`sync/graph-load-persist.js`、`sync/graph-mutation-gate.js` 的直接 `runtime.X` 引用，并和 `index.js` 的 builder 返回键对比；漏注入或使用 `runtime[dynamicKey]` 都会失败。
 - 提交前至少运行 `npm run check` 和相关专项测试。
 
 ---
