@@ -585,12 +585,14 @@ export async function onGenerationAfterCommandsController(
 
   const context = runtime.getContext();
   const chat = context?.chat;
+  const generationContext = runtime.getGenerationContext?.() || null;
 
   const recallOptions = runtime.buildGenerationAfterCommandsRecallInput(
-    type,
+    generationContext?.type || type,
     {
       ...params,
       frozenInputSnapshot,
+      generationContext,
     },
     chat,
   );
@@ -599,6 +601,26 @@ export async function onGenerationAfterCommandsController(
   }
   if (recallOptions?.__trivialSkip) {
     return;
+  }
+
+  if (globalThis.__stBmeDebugLoggingEnabled === true) {
+    const tail = Array.isArray(chat)
+      ? chat.slice(-3).map((m, i) => ({
+          idx: chat.length - 3 + i,
+          is_user: Boolean(m?.is_user),
+          hasRecall: Boolean(m?.extra?.bme_recall),
+          mes: String(m?.mes || "").slice(0, 40),
+        }))
+      : null;
+    console.warn("[ST-BME][reroll-trace] AFTER_COMMANDS enter", {
+      type,
+      generationContextType: generationContext?.type || null,
+      generationContextKind: generationContext?.kind || null,
+      recallOptionsSource: recallOptions?.overrideSource || recallOptions?.source || null,
+      recallOptionsType: recallOptions?.generationType || null,
+      targetUserMessageIndex: recallOptions?.targetUserMessageIndex ?? null,
+      chatTail: tail,
+    });
   }
 
   const recallContext = runtime.createGenerationRecallContext({
