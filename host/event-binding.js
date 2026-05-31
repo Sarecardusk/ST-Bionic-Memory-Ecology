@@ -428,13 +428,29 @@ export function onMessageDeletedController(
   chatLengthOrMessageId,
   meta = null,
 ) {
-  runtime.invalidateRecallAfterHistoryMutation("消息已删除");
+  const generationContext = runtime.getGenerationContext?.() || null;
+  const expectedRegenerateDelete = Boolean(
+    generationContext?.kind === "no-new-user" &&
+      generationContext?.type === "regenerate",
+  );
+  if (expectedRegenerateDelete) {
+    runtime.markGenerationContextExpectedMutation?.("regenerate-delete", {
+      chatLengthOrMessageId,
+      meta,
+    });
+  } else {
+    runtime.invalidateRecallAfterHistoryMutation("消息已删除");
+  }
   runtime.scheduleHistoryMutationRecheck(
-    "message-deleted",
+    expectedRegenerateDelete ? "message-deleted-regenerate" : "message-deleted",
     chatLengthOrMessageId,
     meta,
   );
   runtime.refreshPersistedRecallMessageUi?.();
+  return {
+    invalidated: !expectedRegenerateDelete,
+    expectedRegenerateDelete,
+  };
 }
 
 export function onMessageEditedController(runtime, messageId, meta = null) {
@@ -469,13 +485,6 @@ export function onMessageUpdatedController(runtime, messageId, meta = null) {
 export async function onMessageSwipedController(runtime, messageId, meta = null) {
   const parsedFloor = Number(messageId);
   const fromFloor = Number.isFinite(parsedFloor) ? parsedFloor : undefined;
-  const preparedRerollReuse = runtime.prepareRerollRecallReuse?.({
-    fromFloor,
-    meta,
-  });
-  if (!preparedRerollReuse) {
-    runtime.invalidateRecallAfterHistoryMutation("已切换楼层 swipe");
-  }
   let result = {
     success: false,
     rollbackPerformed: false,
@@ -508,9 +517,6 @@ export async function onMessageSwipedController(runtime, messageId, meta = null)
       "[ST-BME] MESSAGE_SWIPED missing onReroll; skip generic history recovery fallback.",
       { messageId, meta },
     );
-  }
-  if (!result?.success) {
-    runtime.clearPendingRerollRecallReuse?.("swipe-reroll-failed");
   }
   runtime.refreshPersistedRecallMessageUi?.();
   return result;
@@ -720,6 +726,82 @@ export async function onBeforeCombinePromptsController(
     {};
   const context = runtime.getContext();
   const chat = context?.chat;
+  const generationContext = runtime.getGenerationContext?.() || null;
+  const effectiveGenerationType =
+    generationContext?.type ||
+    String(generationContext?.generationType || "").trim() ||
+    "normal";
+  const effectiveGenerationKind = generationContext?.kind || "fresh";
+  if (effectiveGenerationKind === "skip") {
+    return {
+      skipped: true,
+      reason: `generation-kind:${effectiveGenerationKind}`,
+    };
+  }
+
+  if (effectiveGenerationKind === "no-new-user") {
+    const recallOptions =
+      runtime.buildGenerationAfterCommandsRecallInput(
+        effectiveGenerationType,
+        { generationContext },
+        chat,
+      ) || {};
+    const recallContext = runtime.createGenerationRecallContext({
+      hookName: "GENERATE_BEFORE_COMBINE_PROMPTS",
+      generationType: effectiveGenerationType,
+      recallOptions,
+    });
+    if (!recallContext.shouldRun && !recallContext.transaction) {
+      return;
+    }
+    const runtimeRecallOptions =
+      recallContext.recallOptions || recallOptions || {};
+    const deliveryMode =
+      runtime.resolveGenerationRecallDeliveryMode?.(
+        recallContext.hookName,
+        recallContext.generationType,
+        runtimeRecallOptions,
+      ) || "deferred";
+    let recallResult = runtime.getGenerationRecallTransactionResult?.(
+      recallContext.transaction,
+    );
+    if (recallContext.shouldRun) {
+      runtime.markGenerationRecallTransactionHookState(
+        recallContext.transaction,
+        recallContext.hookName,
+        "running",
+      );
+      if (deliveryMode === "deferred") {
+        runtime.clearLiveRecallInjectionPromptForRewrite?.();
+      }
+      recallResult = await runtime.runRecall({
+        ...runtimeRecallOptions,
+        deliveryMode,
+        recallKey: recallContext.recallKey,
+        hookName: recallContext.hookName,
+      });
+      runtime.storeGenerationRecallTransactionResult?.(
+        recallContext.transaction,
+        recallResult,
+        {
+          hookName: recallContext.hookName,
+          deliveryMode,
+        },
+      );
+      runtime.markGenerationRecallTransactionHookState(
+        recallContext.transaction,
+        recallContext.hookName,
+        runtime.getGenerationRecallHookStateFromResult(recallResult),
+      );
+    }
+    return runtime.applyFinalRecallInjectionForGeneration({
+      generationType: recallContext.generationType,
+      freshRecallResult: recallResult,
+      transaction: recallContext.transaction,
+      promptData,
+      hookName: recallContext.hookName,
+    });
+  }
   const normalInput = runtime.buildNormalGenerationRecallInput(chat, {
     frozenInputSnapshot,
   });
@@ -735,7 +817,7 @@ export async function onBeforeCombinePromptsController(
     {};
   const recallContext = runtime.createGenerationRecallContext({
     hookName: "GENERATE_BEFORE_COMBINE_PROMPTS",
-    generationType: "normal",
+    generationType: effectiveGenerationType,
     recallOptions,
   });
   if (!recallContext.shouldRun && !recallContext.transaction) {

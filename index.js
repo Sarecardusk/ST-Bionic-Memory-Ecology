@@ -16004,7 +16004,10 @@ function onCharacterMessageRendered(messageId = null, type = "") {
 function onMessageDeleted(chatLengthOrMessageId, meta = null) {
   const result = onMessageDeletedController(
     {
+      getGenerationContext: (...args) => generationContextTracker.get(...args),
       invalidateRecallAfterHistoryMutation,
+      markGenerationContextExpectedMutation: (...args) =>
+        generationContextTracker.markExpectedMutation(...args),
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
       scheduleHistoryMutationRecheck,
     },
@@ -16053,8 +16056,6 @@ async function onMessageSwiped(messageId, meta = null) {
     {
       invalidateRecallAfterHistoryMutation,
       onReroll,
-      prepareRerollRecallReuse,
-      clearPendingRerollRecallReuse,
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
       scheduleHistoryMutationRecheck,
     },
@@ -16247,6 +16248,7 @@ async function onGenerationAfterCommands(type, params = {}, dryRun = false) {
       consumeHostGenerationInputSnapshot,
       createGenerationRecallContext,
       ensurePersistedRecallRecordForGeneration,
+      getGenerationContext: (...args) => generationContextTracker.get(...args),
       getContext,
       getGenerationRecallHookStateFromResult,
       getGenerationRecallTransactionResult,
@@ -16271,6 +16273,7 @@ async function onBeforeCombinePrompts(promptData = null) {
   return await onBeforeCombinePromptsController(
     {
       applyFinalRecallInjectionForGeneration,
+      buildGenerationAfterCommandsRecallInput,
       buildHistoryGenerationRecallInput,
       buildNormalGenerationRecallInput,
       clearPendingHostGenerationInputSnapshot,
@@ -16279,6 +16282,7 @@ async function onBeforeCombinePrompts(promptData = null) {
       consumeDryRunPromptPreview,
       consumeHostGenerationInputSnapshot,
       createGenerationRecallContext,
+      getGenerationContext: (...args) => generationContextTracker.get(...args),
       getContext,
       getGenerationRecallHookStateFromResult,
       getGenerationRecallTransactionResult,

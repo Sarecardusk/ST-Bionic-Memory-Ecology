@@ -5116,7 +5116,7 @@ async function testSwipeRoutesToRerollWithoutHistoryRecoveryFallback() {
     { reason: "host-swipe" },
   );
 
-  assert.equal(invalidationReasons.length, 1);
+  assert.equal(invalidationReasons.length, 0);
   assert.deepEqual(rerollCalls, [{ fromFloor: 16, meta: { reason: "host-swipe" } }]);
   assert.equal(historyRecheckCalls, 0);
   assert.equal(refreshCalls, 1);
