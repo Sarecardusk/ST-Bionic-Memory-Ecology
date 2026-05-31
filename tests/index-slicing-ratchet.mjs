@@ -28,7 +28,6 @@ const SELF_RELATIVE = "tests/index-slicing-ratchet.mjs";
 // Remove the entry entirely once a file no longer reads index.js as text.
 const ALLOWLIST = Object.freeze({
   "tests/graph-persistence.mjs": { maxMarkerCalls: 7, stage: "Phase 5" },
-  "tests/index-esm-entry-smoke.mjs": { maxMarkerCalls: 4, stage: "Phase 5" },
 });
 
 async function collectTestFiles(dir) {
