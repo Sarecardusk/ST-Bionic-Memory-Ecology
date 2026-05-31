@@ -1,0 +1,445 @@
+export function createRerollRecallInput(deps = {}) {
+  let pendingRerollRecallReuse = null;
+  const plannerRecallHandoffs = new Map();
+
+  const getContext = (...args) => deps.getContext?.(...args);
+  const getCurrentChatId = (...args) => deps.getCurrentChatId?.(...args);
+  const normalizeChatIdCandidate = (value = "") =>
+    deps.normalizeChatIdCandidate?.(value) ?? String(value ?? "").trim();
+  const normalizeRecallInputText = (value = "") =>
+    deps.normalizeRecallInputText?.(value) ?? String(value || "").trim();
+  const hashRecallInput = (value = "") => deps.hashRecallInput?.(value) ?? "";
+  const getLastRecallSentUserMessage = () =>
+    deps.getLastRecallSentUserMessage?.() || {};
+  const getPendingRecallSendIntent = () =>
+    deps.getPendingRecallSendIntent?.() || {};
+  const getGenerationRecallTransactionTtlMs = () =>
+    Number.isFinite(Number(deps.GENERATION_RECALL_TRANSACTION_TTL_MS))
+      ? Number(deps.GENERATION_RECALL_TRANSACTION_TTL_MS)
+      : 60000;
+  const getPlannerRecallHandoffTtlMs = () =>
+    Number.isFinite(Number(deps.PLANNER_RECALL_HANDOFF_TTL_MS))
+      ? Number(deps.PLANNER_RECALL_HANDOFF_TTL_MS)
+      : 60000;
+
+  function getPendingRerollRecallReuse() {
+    return pendingRerollRecallReuse;
+  }
+
+  function clearPendingRerollRecallReuse(reason = "") {
+    const previous = pendingRerollRecallReuse;
+    pendingRerollRecallReuse = null;
+    return previous;
+  }
+
+  function prepareRerollRecallReuse({ fromFloor = null, meta = null } = {}) {
+    const context = getContext();
+    const chat = context?.chat;
+    if (!Array.isArray(chat) || chat.length === 0) {
+      pendingRerollRecallReuse = null;
+      return null;
+    }
+
+    const latestUser = deps.findLatestUserChatMessageWithIndex(chat);
+    const targetUserMessageIndex = Number.isFinite(latestUser?.index)
+      ? latestUser.index
+      : null;
+    if (!Number.isFinite(targetUserMessageIndex)) {
+      pendingRerollRecallReuse = null;
+      return null;
+    }
+
+    const userMessage = chat[targetUserMessageIndex];
+    const userText = normalizeRecallInputText(userMessage?.mes || "");
+    if (!userText) {
+      pendingRerollRecallReuse = null;
+      return null;
+    }
+
+    const persistedRecord = deps.readPersistedRecallFromUserMessage(
+      chat,
+      targetUserMessageIndex,
+    );
+    const chatId = normalizeChatIdCandidate(getCurrentChatId(context));
+    const prepared = deps.createRerollRecallReuseMarker({
+      chatId,
+      fromFloor,
+      targetUserMessageIndex,
+      userText,
+      persistedRecord,
+      hashRecallInput,
+      now: Date.now(),
+      meta,
+    });
+    if (!prepared.marker) {
+      pendingRerollRecallReuse = null;
+      return null;
+    }
+
+    pendingRerollRecallReuse = prepared.marker;
+    return pendingRerollRecallReuse;
+  }
+
+  function consumePendingRerollRecallReuse(chat = getContext()?.chat) {
+    const reuse = pendingRerollRecallReuse;
+    if (!reuse) return null;
+
+    const activeChatId = normalizeChatIdCandidate(getCurrentChatId());
+    const latestUser = deps.findLatestUserChatMessageWithIndex(chat);
+    const targetUserMessageIndex = Number.isFinite(latestUser?.index)
+      ? latestUser.index
+      : reuse.targetUserMessageIndex;
+    const userText = normalizeRecallInputText(chat?.[targetUserMessageIndex]?.mes || "");
+    const consumed = deps.consumeRerollRecallReuseMarker({
+      marker: reuse,
+      activeChatId,
+      latestUserMessageIndex: targetUserMessageIndex,
+      currentUserText: userText,
+      hashRecallInput,
+      now: Date.now(),
+      ttlMs: getGenerationRecallTransactionTtlMs(),
+    });
+    pendingRerollRecallReuse = consumed.marker;
+    return consumed.consumed ? consumed.override : null;
+  }
+
+  function buildGenerationAfterCommandsRecallInput(type, params = {}, chat) {
+    if (params?.automatic_trigger || params?.quiet_prompt) {
+      return null;
+    }
+
+    const generationType = String(type || "").trim() || "normal";
+    if (!["normal", "continue", "regenerate", "swipe"].includes(generationType)) {
+      return null;
+    }
+
+    const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(chat, {
+      generationType,
+    });
+
+    // 对于 history 类型（continue/regenerate/swipe），必须依赖 chat 中的用户消息
+    if (generationType !== "normal") {
+      if (!Number.isFinite(targetUserMessageIndex)) {
+        return {
+          generationType,
+          targetUserMessageIndex: null,
+        };
+      }
+      const historyInput = buildHistoryGenerationRecallInput(chat);
+      if (!historyInput) {
+        return {
+          generationType,
+          targetUserMessageIndex,
+        };
+      }
+      return {
+        ...historyInput,
+        generationType,
+        targetUserMessageIndex,
+      };
+    }
+
+    // 对于 normal 类型：GENERATION_AFTER_COMMANDS 触发时用户消息可能不在 chat 末尾
+    // （ST 可能已追加空 assistant 消息）。如果 chat 中存在任何用户消息，
+    // 继续走 buildNormalGenerationRecallInput，它会通过 latestUserText 兜底找到。
+    // 如果 chat 中完全没有用户消息，则延迟到 BEFORE_COMBINE_PROMPTS 处理。
+    if (!Number.isFinite(targetUserMessageIndex) && !deps.getLatestUserChatMessage(chat)) {
+      return {
+        generationType,
+        targetUserMessageIndex: null,
+      };
+    }
+
+    const normalInput = buildNormalGenerationRecallInput(chat, {
+      frozenInputSnapshot: params?.frozenInputSnapshot,
+    });
+    return normalInput;
+  }
+
+  function buildNormalGenerationRecallInput(chat, options = {}) {
+    const rerollReuse = consumePendingRerollRecallReuse(chat);
+    if (rerollReuse) {
+      return rerollReuse;
+    }
+
+    const lastNonSystemMessage = deps.getLastNonSystemChatMessage(chat);
+    const tailUserText = lastNonSystemMessage?.is_user
+      ? normalizeRecallInputText(lastNonSystemMessage?.mes || "")
+      : "";
+    // 当 GENERATION_AFTER_COMMANDS 触发时，ST 可能已追加了空 assistant 消息。
+    // 导致 lastNonSystemMessage 不是 user。用 getLatestUserChatMessage 反向扫描
+    // 定位真正的用户消息（与 shujuku 参考实现一致）。
+    const latestUserMessage = !tailUserText ? deps.getLatestUserChatMessage(chat) : null;
+    const latestUserText = latestUserMessage
+      ? normalizeRecallInputText(latestUserMessage?.mes || "")
+      : "";
+    const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(chat, {
+      generationType: "normal",
+    });
+    const frozenInputSnapshot = deps.isFreshRecallInputRecord(
+      options?.frozenInputSnapshot,
+    )
+      ? options.frozenInputSnapshot
+      : null;
+    const pendingRecallSendIntent = getPendingRecallSendIntent();
+    const pendingSendIntent = deps.isFreshRecallInputRecord(pendingRecallSendIntent)
+      ? pendingRecallSendIntent
+      : null;
+    const sendIntentText = normalizeRecallInputText(
+      pendingSendIntent?.text || "",
+    );
+    const hostSnapshotText = normalizeRecallInputText(
+      frozenInputSnapshot?.text || "",
+    );
+    const textareaText = normalizeRecallInputText(deps.getSendTextareaValue());
+    const sourceCandidates = [
+      sendIntentText
+        ? {
+            text: sendIntentText,
+            source: "send-intent",
+            sourceLabel: "发送意图",
+            reason: tailUserText
+              ? "send-intent-overrides-chat-tail"
+              : "send-intent-captured",
+            includeSyntheticUserMessage: !tailUserText,
+          }
+        : null,
+      hostSnapshotText
+        ? {
+            text: hostSnapshotText,
+            source: String(
+              frozenInputSnapshot?.source || "host-generation-lifecycle",
+            ),
+            sourceLabel: "宿主发送快照",
+            reason: sendIntentText
+              ? "host-snapshot-suppressed-by-send-intent"
+              : tailUserText
+                ? "host-snapshot-suppressed-by-chat-tail"
+                : "host-snapshot-captured",
+            includeSyntheticUserMessage: !tailUserText,
+          }
+        : null,
+      tailUserText
+        ? {
+            text: tailUserText,
+            source: "chat-tail-user",
+            sourceLabel: "当前用户楼层",
+            reason:
+              sendIntentText || hostSnapshotText
+                ? "chat-tail-deprioritized"
+                : "chat-tail-fallback",
+            includeSyntheticUserMessage: false,
+          }
+        : null,
+      latestUserText
+        ? {
+            text: latestUserText,
+            source: "chat-latest-user",
+            sourceLabel: "最近用户消息",
+            reason:
+              sendIntentText || hostSnapshotText || tailUserText
+                ? "latest-user-deprioritized"
+                : "latest-user-fallback",
+            includeSyntheticUserMessage: false,
+          }
+        : null,
+      textareaText
+        ? {
+            text: textareaText,
+            source: "textarea-live",
+            sourceLabel: "输入框当前文本",
+            reason:
+              sendIntentText || hostSnapshotText || tailUserText
+                ? "textarea-live-deprioritized"
+                : "textarea-live-fallback",
+            includeSyntheticUserMessage: !tailUserText,
+          }
+        : null,
+    ].filter(Boolean);
+    const activeTrivialSkip = deps.getCurrentGenerationTrivialSkip();
+    if (activeTrivialSkip) {
+      deps.clearPendingRecallSendIntent();
+      deps.clearPendingHostGenerationInputSnapshot();
+      return deps.createTrivialRecallSkipSentinel(activeTrivialSkip.reason);
+    }
+
+    const selectedCandidate = sourceCandidates[0] || null;
+    if (!selectedCandidate?.text) return null;
+
+    const trivialInputResult = deps.isTrivialUserInput(selectedCandidate.text);
+
+    if (trivialInputResult.trivial) {
+      deps.clearPendingRecallSendIntent();
+      deps.clearPendingHostGenerationInputSnapshot();
+      deps.markCurrentGenerationTrivialSkip({
+        reason: trivialInputResult.reason,
+        chatId: getCurrentChatId(),
+        chatLength: Array.isArray(chat) ? chat.length : 0,
+      });
+      deps.console?.info?.(
+        `[ST-BME] trivial-input skip: reason=${trivialInputResult.reason} len=${trivialInputResult.normalizedText.length} hook=build-normal-input`,
+      );
+      return deps.createTrivialRecallSkipSentinel(trivialInputResult.reason);
+    }
+
+    return {
+      overrideUserMessage: selectedCandidate.text,
+      generationType: "normal",
+      targetUserMessageIndex,
+      overrideSource: selectedCandidate.source,
+      overrideSourceLabel: selectedCandidate.sourceLabel,
+      overrideReason: selectedCandidate.reason,
+      sourceCandidates,
+      includeSyntheticUserMessage: selectedCandidate.includeSyntheticUserMessage,
+    };
+  }
+
+  function buildHistoryGenerationRecallInput(chat) {
+    const lastRecallSentUserMessage = getLastRecallSentUserMessage();
+    const latestUserText = normalizeRecallInputText(
+      deps.getLatestUserChatMessage(chat)?.mes || lastRecallSentUserMessage.text,
+    );
+    if (!latestUserText) return null;
+    const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(chat, {
+      generationType: "history",
+    });
+
+    return {
+      overrideUserMessage: latestUserText,
+      generationType: "history",
+      targetUserMessageIndex,
+      overrideSource: Number.isFinite(targetUserMessageIndex)
+        ? "chat-last-user"
+        : "chat-last-user-missing",
+      overrideSourceLabel: Number.isFinite(targetUserMessageIndex)
+        ? "历史最后用户楼层"
+        : "历史用户楼层缺失",
+      includeSyntheticUserMessage: false,
+    };
+  }
+
+  function cleanupPlannerRecallHandoffs(now = Date.now()) {
+    for (const [chatId, handoff] of plannerRecallHandoffs.entries()) {
+      if (
+        !handoff ||
+        String(handoff.chatId || "") !== String(chatId || "") ||
+        now - Number(handoff.updatedAt || handoff.createdAt || 0) >
+          getPlannerRecallHandoffTtlMs()
+      ) {
+        plannerRecallHandoffs.delete(chatId);
+      }
+    }
+  }
+
+  function peekPlannerRecallHandoff(
+    chatId = getCurrentChatId(),
+    now = Date.now(),
+  ) {
+    cleanupPlannerRecallHandoffs(now);
+    const normalizedChatId = normalizeChatIdCandidate(chatId);
+    if (!normalizedChatId) return null;
+
+    const handoff = plannerRecallHandoffs.get(normalizedChatId) || null;
+    if (!handoff) return null;
+    if (
+      now - Number(handoff.updatedAt || handoff.createdAt || 0) >
+      getPlannerRecallHandoffTtlMs()
+    ) {
+      plannerRecallHandoffs.delete(normalizedChatId);
+      return null;
+    }
+    return handoff;
+  }
+
+  function clearPlannerRecallHandoffsForChat(
+    chatId = getCurrentChatId(),
+    { clearAll = false } = {},
+  ) {
+    cleanupPlannerRecallHandoffs();
+    if (clearAll) {
+      const removed = plannerRecallHandoffs.size;
+      plannerRecallHandoffs.clear();
+      return removed;
+    }
+
+    const normalizedChatId = normalizeChatIdCandidate(chatId);
+    if (!normalizedChatId) return 0;
+    return plannerRecallHandoffs.delete(normalizedChatId) ? 1 : 0;
+  }
+
+  function consumePlannerRecallHandoff(
+    chatId = getCurrentChatId(),
+    { handoffId = "" } = {},
+  ) {
+    const normalizedChatId = normalizeChatIdCandidate(chatId);
+    if (!normalizedChatId) return null;
+
+    const handoff = peekPlannerRecallHandoff(normalizedChatId);
+    if (!handoff) return null;
+    if (handoffId && String(handoff.id || "") !== String(handoffId || "")) {
+      return null;
+    }
+
+    plannerRecallHandoffs.delete(normalizedChatId);
+    return handoff;
+  }
+
+  function preparePlannerRecallHandoff({
+    rawUserInput = "",
+    plannerAugmentedMessage = "",
+    plannerRecall = null,
+    chatId = getCurrentChatId(),
+  } = {}) {
+    const normalizedChatId = normalizeChatIdCandidate(chatId);
+    const normalizedRawUserInput = normalizeRecallInputText(rawUserInput);
+    const normalizedPlannerAugmentedMessage = normalizeRecallInputText(
+      plannerAugmentedMessage,
+    );
+    const result = plannerRecall?.result || null;
+    if (!normalizedChatId || !normalizedRawUserInput || !result) {
+      return null;
+    }
+
+    cleanupPlannerRecallHandoffs();
+    const createdAt = Date.now();
+    const injectionText = normalizeRecallInputText(
+      plannerRecall?.memoryBlock || deps.formatInjection(result, deps.getSchema()),
+    );
+    const handoff = {
+      id: [
+        normalizedChatId,
+        hashRecallInput(normalizedRawUserInput),
+        createdAt,
+      ].join(":"),
+      chatId: normalizedChatId,
+      rawUserInput: normalizedRawUserInput,
+      plannerAugmentedMessage: normalizedPlannerAugmentedMessage,
+      result,
+      recentMessages: Array.isArray(plannerRecall?.recentMessages)
+        ? plannerRecall.recentMessages.map((item) => String(item || ""))
+        : [],
+      injectionText,
+      source: "planner-handoff",
+      sourceLabel: "Planner handoff",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    plannerRecallHandoffs.set(normalizedChatId, handoff);
+    return handoff;
+  }
+
+  return {
+    prepareRerollRecallReuse,
+    getPendingRerollRecallReuse,
+    clearPendingRerollRecallReuse,
+    consumePendingRerollRecallReuse,
+    buildNormalGenerationRecallInput,
+    buildHistoryGenerationRecallInput,
+    buildGenerationAfterCommandsRecallInput,
+    preparePlannerRecallHandoff,
+    cleanupPlannerRecallHandoffs,
+    peekPlannerRecallHandoff,
+    clearPlannerRecallHandoffsForChat,
+    consumePlannerRecallHandoff,
+  };
+}

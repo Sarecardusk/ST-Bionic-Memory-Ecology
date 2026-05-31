@@ -63,6 +63,7 @@ import {
   createRerollRecallReuseMarker,
 } from "../../runtime/reroll-transaction-boundary.js";
 import { createRecallInputState } from "../../runtime/recall-input-state.js";
+import { createRerollRecallInput } from "../../runtime/reroll-recall-input.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -120,6 +121,7 @@ export function createGenerationRecallHarness(options = {}) {
       consumeRerollRecallReuseMarker,
       createRerollRecallReuseMarker,
       createRecallInputState,
+      createRerollRecallInput,
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },
@@ -178,6 +180,9 @@ export function createGenerationRecallHarness(options = {}) {
       getSendTextareaValue: () => context.__sendTextareaValue,
       getRecallUserMessageSourceLabel: (source = "") => source,
       getRecallUserMessageSourceLabelController: (source = "") => source,
+      formatInjection: (result = null) =>
+        String(result?.injectionText || result?.memoryBlock || ""),
+      getSchema: () => [],
       buildRecallRecentMessages: (
         chat = [],
         _limit,

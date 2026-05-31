@@ -161,6 +161,11 @@ import {
   normalizeStageNoticeLevel,
 } from "../ui/ui-status.js";
 import { createRecallInputState } from "../runtime/recall-input-state.js";
+import { createRerollRecallInput } from "../runtime/reroll-recall-input.js";
+import {
+  consumeRerollRecallReuseMarker,
+  createRerollRecallReuseMarker,
+} from "../runtime/reroll-transaction-boundary.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../index.js");
@@ -783,6 +788,9 @@ async function createGraphPersistenceHarness({
       },
     },
     createRecallInputState,
+    createRerollRecallInput,
+    consumeRerollRecallReuseMarker,
+    createRerollRecallReuseMarker,
     createRecallMessageUiController() {
       return {
         refreshPersistedRecallMessageUi: () => ({
@@ -936,6 +944,9 @@ async function createGraphPersistenceHarness({
       return serializeBmeChatStateTarget(target);
     },
     readPersistedRecallFromUserMessage,
+    formatInjection: (result = null) =>
+      String(result?.injectionText || result?.memoryBlock || ""),
+    getSchema: () => [],
     areChatIdsEquivalentForIdentityCore,
     cloneGraphForPersistence,
     canMutateRuntimeGraphForIdentityCore,
