@@ -1,131 +1,96 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const indexPath = path.resolve(moduleDir, "../index.js");
-const indexSource = await fs.readFile(indexPath, "utf8");
-
-function extractSnippet(startMarker, endMarker) {
-  const start = indexSource.indexOf(startMarker);
-  const end = indexSource.indexOf(endMarker, start);
-  if (start < 0 || end < 0 || end <= start) {
-    throw new Error(`无法提取 index.js 片段: ${startMarker} -> ${endMarker}`);
-  }
-  return indexSource.slice(start, end).replace(/^export\s+/gm, "");
-}
-
-const renderLimitSnippet = extractSnippet(
-  "function getMessageRenderLimitSettings(",
-  "function getHideRuntimeAdapters(",
-);
-
-const tempModulePath = path.resolve(
-  moduleDir,
-  "../.tmp-message-render-limit.mjs",
-);
-
-await fs.writeFile(
-  tempModulePath,
-  `
-let powerUser = { chat_truncation: 0 };
-let reloadCount = 0;
-let inputValue = "";
-let counterValue = "";
-let currentGraph = null;
-const triggeredEvents = [];
-
-function getContext() {
-  return {
-    power_user: powerUser,
-    reloadCurrentChat() {
-      reloadCount += 1;
-    },
-  };
-}
-
-function makeInput(kind) {
-  return {
-    length: 1,
-    val(value) {
-      if (arguments.length > 0) {
-        if (kind === "counter") {
-          counterValue = value;
-        } else {
-          inputValue = value;
-        }
-        return this;
-      }
-      return kind === "counter" ? counterValue : inputValue;
-    },
-    trigger(eventName) {
-      triggeredEvents.push(eventName);
-      return this;
-    },
-  };
-}
-
-function $(selector) {
-  if (selector === "#chat_truncation") return makeInput("input");
-  if (selector === "#chat_truncation_counter") return makeInput("counter");
-  return { length: 0 };
-}
-
-${renderLimitSnippet}
-
-function getState() {
-  return {
-    counterValue,
-    inputValue,
-    powerUserChatTruncation: powerUser.chat_truncation,
-    reloadCount,
-    triggeredEvents: [...triggeredEvents],
-  };
-}
-
-function setCurrentGraph(graph) {
-  currentGraph = graph;
-}
-
-export {
+import {
   applyMessageRenderLimit,
-  getRenderLimitedHistoryRecoveryGuard,
   getMessageRenderLimitSettings,
-  getState,
-  setCurrentGraph,
-};
-`,
-  "utf8",
+  getRenderLimitedHistoryRecoveryGuard,
+} from "../ui/message-render-limit.js";
+
+// Builds a fake host adapter mirroring index.js getMessageRenderLimitHostAdapter,
+// so we test the real extracted module by import (no index.js slicing).
+function createHostHarness() {
+  const state = {
+    powerUser: { chat_truncation: 0 },
+    reloadCount: 0,
+    inputValue: "",
+    counterValue: "",
+    triggeredEvents: [],
+  };
+
+  function makeInput(kind) {
+    return {
+      length: 1,
+      val(value) {
+        if (arguments.length > 0) {
+          if (kind === "counter") state.counterValue = value;
+          else state.inputValue = value;
+          return this;
+        }
+        return kind === "counter" ? state.counterValue : state.inputValue;
+      },
+      trigger(eventName) {
+        state.triggeredEvents.push(eventName);
+        return this;
+      },
+    };
+  }
+
+  const host = {
+    getPowerUser() {
+      return state.powerUser;
+    },
+    jq(selector) {
+      if (selector === "#chat_truncation") return makeInput("input");
+      if (selector === "#chat_truncation_counter") return makeInput("counter");
+      return { length: 0 };
+    },
+    reloadCurrentChat() {
+      state.reloadCount += 1;
+    },
+    console,
+  };
+
+  return { host, state };
+}
+
+function getState(state) {
+  return {
+    counterValue: state.counterValue,
+    inputValue: state.inputValue,
+    powerUserChatTruncation: state.powerUser.chat_truncation,
+    reloadCount: state.reloadCount,
+    triggeredEvents: [...state.triggeredEvents],
+  };
+}
+
+// ── normalization ────────────────────────────────────────────────
+assert.deepEqual(
+  getMessageRenderLimitSettings({
+    enabled: true,
+    hideOldMessagesRenderLimitEnabled: true,
+    hideOldMessagesRenderLimit: "24",
+  }),
+  { enabled: true, render_last_n: 24 },
+);
+assert.deepEqual(
+  getMessageRenderLimitSettings({
+    enabled: false,
+    hideOldMessagesRenderLimitEnabled: true,
+    hideOldMessagesRenderLimit: 24,
+  }),
+  { enabled: false, render_last_n: 24 },
 );
 
-try {
-  const module = await import(`${pathToFileURL(tempModulePath).href}?t=${Date.now()}`);
-
-  assert.deepEqual(
-    module.getMessageRenderLimitSettings({
-      enabled: true,
-      hideOldMessagesRenderLimitEnabled: true,
-      hideOldMessagesRenderLimit: "24",
-    }),
-    { enabled: true, render_last_n: 24 },
-  );
-  assert.deepEqual(
-    module.getMessageRenderLimitSettings({
-      enabled: false,
-      hideOldMessagesRenderLimitEnabled: true,
-      hideOldMessagesRenderLimit: 24,
-    }),
-    { enabled: false, render_last_n: 24 },
-  );
-
-  const applied = module.applyMessageRenderLimit(
+// ── apply (active) ───────────────────────────────────────────────
+{
+  const { host, state } = createHostHarness();
+  const applied = applyMessageRenderLimit(
     {
       enabled: true,
       hideOldMessagesRenderLimitEnabled: true,
       hideOldMessagesRenderLimit: 24,
     },
     { reloadCurrentChat: true },
+    host,
   );
   assert.deepEqual(applied, {
     active: true,
@@ -133,14 +98,18 @@ try {
     applied: true,
     skipped: false,
   });
-  assert.deepEqual(module.getState(), {
+  assert.deepEqual(getState(state), {
     counterValue: "24",
     inputValue: "24",
     powerUserChatTruncation: 24,
     reloadCount: 1,
     triggeredEvents: ["change"],
   });
-  const guarded = module.getRenderLimitedHistoryRecoveryGuard(
+}
+
+// ── history recovery guard ───────────────────────────────────────
+{
+  const guarded = getRenderLimitedHistoryRecoveryGuard(
     new Array(10).fill({ mes: "visible" }),
     {
       settings: {
@@ -159,7 +128,7 @@ try {
   assert.equal(guarded.highestProcessedFloor, 30);
 
   const notGuardedWhenFullerThanRenderWindow =
-    module.getRenderLimitedHistoryRecoveryGuard(new Array(20).fill({}), {
+    getRenderLimitedHistoryRecoveryGuard(new Array(20).fill({}), {
       settings: {
         enabled: true,
         hideOldMessagesRenderLimitEnabled: true,
@@ -173,7 +142,7 @@ try {
   assert.equal(notGuardedWhenFullerThanRenderWindow.blocked, false);
 
   const notGuardedWhenHistoryFitsVisibleChat =
-    module.getRenderLimitedHistoryRecoveryGuard(new Array(10).fill({}), {
+    getRenderLimitedHistoryRecoveryGuard(new Array(10).fill({}), {
       settings: {
         enabled: true,
         hideOldMessagesRenderLimitEnabled: true,
@@ -185,22 +154,32 @@ try {
       },
     });
   assert.equal(notGuardedWhenHistoryFitsVisibleChat.blocked, false);
+}
 
-  const skipped = module.applyMessageRenderLimit({
-    enabled: true,
-    hideOldMessagesRenderLimitEnabled: false,
-    hideOldMessagesRenderLimit: 24,
-  });
+// ── apply (skipped vs cleared) ───────────────────────────────────
+{
+  const { host, state } = createHostHarness();
+  state.powerUser.chat_truncation = 24;
+  const skipped = applyMessageRenderLimit(
+    {
+      enabled: true,
+      hideOldMessagesRenderLimitEnabled: false,
+      hideOldMessagesRenderLimit: 24,
+    },
+    {},
+    host,
+  );
   assert.equal(skipped.skipped, true);
-  assert.equal(module.getState().powerUserChatTruncation, 24);
+  assert.equal(getState(state).powerUserChatTruncation, 24);
 
-  const cleared = module.applyMessageRenderLimit(
+  const cleared = applyMessageRenderLimit(
     {
       enabled: true,
       hideOldMessagesRenderLimitEnabled: false,
       hideOldMessagesRenderLimit: 24,
     },
     { clearWhenDisabled: true, reloadCurrentChat: true },
+    host,
   );
   assert.deepEqual(cleared, {
     active: false,
@@ -208,13 +187,13 @@ try {
     applied: true,
     skipped: false,
   });
-  assert.deepEqual(module.getState(), {
+  assert.deepEqual(getState(state), {
     counterValue: "0",
     inputValue: "0",
     powerUserChatTruncation: 0,
-    reloadCount: 2,
-    triggeredEvents: ["change", "change"],
+    reloadCount: 1,
+    triggeredEvents: ["change"],
   });
-} finally {
-  await fs.unlink(tempModulePath).catch(() => {});
 }
+
+console.log("message-render-limit tests passed");

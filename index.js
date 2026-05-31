@@ -252,6 +252,13 @@ import { fetchMemoryLLMModels, testLLMConnection } from "./llm/llm.js";
 import { getNodeDisplayName } from "./graph/node-labels.js";
 import { showManagedBmeNotice } from "./ui/notice.js";
 import {
+  applyMessageRenderLimit as applyMessageRenderLimitCore,
+  getActiveMessageRenderLimitForHistoryGuard as getActiveMessageRenderLimitForHistoryGuardCore,
+  getHighestTrackedProcessedHistoryFloor as getHighestTrackedProcessedHistoryFloorCore,
+  getMessageRenderLimitSettings as getMessageRenderLimitSettingsCore,
+  getRenderLimitedHistoryRecoveryGuard as getRenderLimitedHistoryRecoveryGuardCore,
+} from "./ui/message-render-limit.js";
+import {
   createNoticePanelActionController,
   initializePanelBridgeController,
   refreshPanelLiveStateController,
@@ -7820,24 +7827,10 @@ function getMessageHideSettings(settings = null) {
 }
 
 function getMessageRenderLimitSettings(settings = null) {
-  let sourceSettings = settings;
-  if (!sourceSettings || typeof sourceSettings !== "object") {
-    try {
-      sourceSettings =
-        typeof getSettings === "function" ? getSettings() : {};
-    } catch {
-      sourceSettings = {};
-    }
-  }
-  return {
-    enabled:
-      sourceSettings.enabled !== false &&
-      Boolean(sourceSettings.hideOldMessagesRenderLimitEnabled),
-    render_last_n: Math.max(
-      0,
-      Math.trunc(Number(sourceSettings.hideOldMessagesRenderLimit ?? 0) || 0),
-    ),
-  };
+  return getMessageRenderLimitSettingsCore(
+    settings,
+    typeof getSettings === "function" ? getSettings : null,
+  );
 }
 
 function getHostPowerUserSettings() {
@@ -7854,152 +7847,49 @@ function getHostPowerUserSettings() {
   }
 }
 
-function applyMessageRenderLimit(settings = null, options = {}) {
-  const normalized = getMessageRenderLimitSettings(settings);
-  const shouldClear = options.clearWhenDisabled === true;
-  if (!normalized.enabled && !shouldClear) {
-    return {
-      active: false,
-      renderLimit: 0,
-      applied: false,
-      skipped: true,
-    };
-  }
-
-  const renderLimit =
-    normalized.enabled && normalized.render_last_n > 0
-      ? normalized.render_last_n
-      : 0;
-  let applied = false;
-  const powerUserSettings = getHostPowerUserSettings();
-  if (powerUserSettings && typeof powerUserSettings === "object") {
-    powerUserSettings.chat_truncation = renderLimit;
-    applied = true;
-  }
-
-  try {
-    const jq = typeof $ === "function" ? $ : null;
-    if (jq) {
-      const value = String(renderLimit);
-      const truncationInput = jq("#chat_truncation");
-      if (
-        truncationInput &&
-        Number(truncationInput.length || 0) > 0 &&
-        typeof truncationInput.val === "function"
-      ) {
-        truncationInput.val(value);
-        if (typeof truncationInput.trigger === "function") {
-          truncationInput.trigger("change");
-        }
-        applied = true;
-      }
-      const truncationCounter = jq("#chat_truncation_counter");
-      if (
-        truncationCounter &&
-        Number(truncationCounter.length || 0) > 0 &&
-        typeof truncationCounter.val === "function"
-      ) {
-        truncationCounter.val(value);
-        applied = true;
-      }
-    }
-  } catch (error) {
-    console.warn("[ST-BME] 同步聊天区渲染楼层限制失败:", error);
-  }
-
-  if (options.reloadCurrentChat === true) {
-    try {
+function getMessageRenderLimitHostAdapter() {
+  return {
+    getPowerUser: getHostPowerUserSettings,
+    jq: typeof $ === "function" ? $ : null,
+    reloadCurrentChat: () => {
       const context = typeof getContext === "function" ? getContext() : null;
       if (typeof context?.reloadCurrentChat === "function") {
         context.reloadCurrentChat();
       }
-    } catch (error) {
-      console.warn("[ST-BME] 重新加载聊天区渲染楼层失败:", error);
-    }
-  }
-
-  return {
-    active: renderLimit > 0,
-    renderLimit,
-    applied,
-    skipped: false,
+    },
+    resolveSettings: typeof getSettings === "function" ? getSettings : null,
+    console,
   };
 }
 
-function getActiveMessageRenderLimitForHistoryGuard(settings = null) {
-  const normalized = getMessageRenderLimitSettings(settings);
-  const configuredLimit =
-    normalized.enabled && normalized.render_last_n > 0
-      ? normalized.render_last_n
-      : 0;
-  let hostLimit = 0;
-  try {
-    const powerUserSettings = getHostPowerUserSettings();
-    hostLimit = Math.max(
-      0,
-      Math.trunc(Number(powerUserSettings?.chat_truncation ?? 0) || 0),
-    );
-  } catch {
-    hostLimit = 0;
-  }
+function applyMessageRenderLimit(settings = null, options = {}) {
+  return applyMessageRenderLimitCore(
+    settings,
+    options,
+    getMessageRenderLimitHostAdapter(),
+  );
+}
 
-  if (configuredLimit > 0 && hostLimit > 0) {
-    return Math.min(configuredLimit, hostLimit);
-  }
-  return Math.max(configuredLimit, hostLimit);
+function getActiveMessageRenderLimitForHistoryGuard(settings = null) {
+  return getActiveMessageRenderLimitForHistoryGuardCore(
+    settings,
+    getMessageRenderLimitHostAdapter(),
+  );
 }
 
 function getHighestTrackedProcessedHistoryFloor(historyState = {}) {
-  const lastProcessed = Number.isFinite(
-    Number(historyState?.lastProcessedAssistantFloor),
-  )
-    ? Math.floor(Number(historyState.lastProcessedAssistantFloor))
-    : -1;
-  const hashes =
-    historyState?.processedMessageHashes &&
-    typeof historyState.processedMessageHashes === "object" &&
-    !Array.isArray(historyState.processedMessageHashes)
-      ? historyState.processedMessageHashes
-      : {};
-  const maxHashFloor = Object.keys(hashes).reduce((maxFloor, key) => {
-    const floor = Number.parseInt(key, 10);
-    return Number.isFinite(floor) ? Math.max(maxFloor, floor) : maxFloor;
-  }, -1);
-
-  return Math.max(lastProcessed, maxHashFloor);
+  return getHighestTrackedProcessedHistoryFloorCore(historyState);
 }
 
 function getRenderLimitedHistoryRecoveryGuard(
   chat,
   { settings = null, historyState = currentGraph?.historyState } = {},
 ) {
-  const renderLimit = getActiveMessageRenderLimitForHistoryGuard(settings);
-  if (!Array.isArray(chat) || renderLimit <= 0) {
-    return { blocked: false };
-  }
-
-  const chatLength = chat.length;
-  const highestProcessedFloor =
-    getHighestTrackedProcessedHistoryFloor(historyState);
-  const renderWindowTolerance = renderLimit + 1;
-  if (
-    chatLength > renderWindowTolerance ||
-    highestProcessedFloor < chatLength
-  ) {
-    return { blocked: false };
-  }
-
-  return {
-    blocked: true,
-    chatLength,
-    highestProcessedFloor,
-    renderLimit,
-    reason: "render-limited-chat-slice",
-    message:
-      `当前聊天区最多只渲染最近 ${renderLimit} 条消息，当前可见 ${chatLength} 条；` +
-      `图谱已处理到楼层 ${highestProcessedFloor}。为避免把截断视图误判为历史删除并清空运行时图谱，已暂停历史恢复。` +
-      "请临时关闭“限制聊天区渲染楼层”或调大渲染数量并刷新后再提取。",
-  };
+  return getRenderLimitedHistoryRecoveryGuardCore(chat, {
+    settings,
+    historyState,
+    host: getMessageRenderLimitHostAdapter(),
+  });
 }
 
 function notifyRenderLimitedHistoryRecoveryBlocked(guard, trigger = "") {
