@@ -251,6 +251,7 @@ import { estimateTokens, formatInjection } from "./retrieval/injector.js";
 import { fetchMemoryLLMModels, testLLMConnection } from "./llm/llm.js";
 import { getNodeDisplayName } from "./graph/node-labels.js";
 import { showManagedBmeNotice } from "./ui/notice.js";
+import { notifyHistoryDirtyNotice } from "./ui/history-notice.js";
 import {
   applyMessageRenderLimit as applyMessageRenderLimitCore,
   getActiveMessageRenderLimitForHistoryGuard as getActiveMessageRenderLimitForHistoryGuardCore,
@@ -21287,16 +21288,7 @@ async function handleExtractionSuccess(
 }
 
 function notifyHistoryDirty(dirtyFrom, reason) {
-  updateStageNotice(
-    "history",
-    "检测到楼层历史变化",
-    `将从楼层 ${dirtyFrom} 之后自动恢复${reason ? `\n${reason}` : ""}`,
-    "warning",
-    {
-      persist: true,
-      busy: true,
-    },
-  );
+  notifyHistoryDirtyNotice({ dirtyFrom, reason, updateStageNotice });
 }
 
 function clearPendingHistoryMutationChecks() {

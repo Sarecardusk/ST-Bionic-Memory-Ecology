@@ -9,6 +9,7 @@ import {
   toDataModuleUrl,
 } from "./helpers/register-hooks-compat.mjs";
 import { pruneProcessedMessageHashesFromFloor } from "../maintenance/chat-history.js";
+import { notifyHistoryDirtyNotice } from "../ui/history-notice.js";
 import {
   onBeforeCombinePromptsController,
   onCharacterMessageRenderedController,
@@ -564,35 +565,27 @@ function createHistoryRecoveryHarness() {
 }
 
 function createHistoryNotificationHarness() {
-  return fs.readFile(indexPath, "utf8").then((source) => {
-    const start = source.indexOf("function notifyHistoryDirty(dirtyFrom, reason) {");
-    const end = source.indexOf("function clearPendingHistoryMutationChecks() {");
-    if (start < 0 || end < 0 || end <= start) {
-      throw new Error("无法从 index.js 提取 history notify 定义");
-    }
-    const snippet = source.slice(start, end).replace(/^export\s+/gm, "");
-    const context = {
-      console,
-      result: null,
-      notices: [],
-      warningToasts: [],
-      updateStageNotice(...args) {
-        context.notices.push(args);
+  const context = {
+    notices: [],
+    warningToasts: [],
+    updateStageNotice(...args) {
+      context.notices.push(args);
+    },
+    toastr: {
+      warning(...args) {
+        context.warningToasts.push(args);
       },
-      toastr: {
-        warning(...args) {
-          context.warningToasts.push(args);
-        },
-      },
-    };
-    vm.createContext(context);
-    vm.runInContext(
-      `${snippet}\nresult = { notifyHistoryDirty };`,
-      context,
-      { filename: indexPath },
-    );
-    return context;
-  });
+    },
+    notifyHistoryDirty(dirtyFrom, reason) {
+      notifyHistoryDirtyNotice({
+        dirtyFrom,
+        reason,
+        updateStageNotice: context.updateStageNotice,
+      });
+    },
+  };
+  context.result = context;
+  return Promise.resolve(context);
 }
 
 function createRerollHarness() {
