@@ -7,6 +7,8 @@ export function createGenerationRecallTransactions(deps = {}) {
     deps.normalizeRecallInputText?.(value) ?? String(value || "").trim();
   const getCurrentChatId = (...args) => deps.getCurrentChatId?.(...args);
   const getContext = (...args) => deps.getContext?.(...args);
+  const getActiveGenerationId = () =>
+    String(deps.getActiveGenerationId?.() || "").trim();
   const getGenerationRecallTransactionTtlMs = () =>
     Number.isFinite(Number(deps.GENERATION_RECALL_TRANSACTION_TTL_MS))
       ? Number(deps.GENERATION_RECALL_TRANSACTION_TTL_MS)
@@ -317,6 +319,7 @@ export function createGenerationRecallTransactions(deps = {}) {
       chatId: normalizedChatId,
       generationType: normalizedGenerationType,
       recallKey: normalizedRecallKey,
+      generationId: getActiveGenerationId(),
       hookStates: {},
       createdAt: now,
       frozenRecallOptions: null,
@@ -333,12 +336,23 @@ export function createGenerationRecallTransactions(deps = {}) {
     const normalizedChatId = normalizeChatIdCandidate(chatId);
     if (!normalizedChatId) return null;
 
+    // 跨代际隔离：当宿主提供了当前生成代际 id 时，只桥接“同一次生成”的事务。
+    // 这阻止上一轮 normal 生成遗留的事务被本轮 reroll 复用，从而保证
+    // reroll 真正进入 runRecall → 持久召回复用门禁，而不是继承旧的 fresh 结果。
+    const activeGenerationId = getActiveGenerationId();
+
     let latestTransaction = null;
     for (const transaction of generationRecallTransactions.values()) {
       if (!transaction || String(transaction.chatId || "") !== normalizedChatId)
         continue;
       if (!isGenerationRecallTransactionWithinBridgeWindow(transaction, now))
         continue;
+      if (activeGenerationId) {
+        const transactionGenerationId = String(transaction.generationId || "").trim();
+        if (transactionGenerationId && transactionGenerationId !== activeGenerationId) {
+          continue;
+        }
+      }
       if (
         !latestTransaction ||
         Number(transaction.updatedAt || 0) >

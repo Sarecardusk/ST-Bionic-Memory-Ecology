@@ -1721,6 +1721,8 @@ let lastPreGenerationRecallAt = 0;
 const generationRecallTransactionRuntime = createGenerationRecallTransactions({
   getContext,
   getCurrentChatId,
+  getActiveGenerationId: () =>
+    generationContextTracker.get?.({ allowStale: true })?.id || "",
   getRecallUserMessageSourceLabel: (...args) =>
     getRecallUserMessageSourceLabel(...args),
   getSettings,
