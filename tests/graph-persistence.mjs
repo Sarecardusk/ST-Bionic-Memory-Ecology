@@ -178,6 +178,15 @@ import {
   saveGraphToIndexedDbImpl,
 } from "../sync/graph-persistence-io.js";
 import {
+  assertRecoveryChatStillActiveImpl,
+  buildPanelOpenLocalStoreRefreshPlanImpl,
+  ensureGraphMutationReadyImpl,
+  getGraphMutationBlockReasonImpl,
+  getGraphPersistenceLiveStateImpl,
+  getPanelRuntimeStatusImpl,
+  readRuntimeDebugSnapshotImpl,
+} from "../sync/graph-mutation-gate.js";
+import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
 } from "../runtime/reroll-transaction-boundary.js";
@@ -748,6 +757,7 @@ async function createGraphPersistenceHarness({
     recordAuthorityAcceptedRevision,
     AUTHORITY_GRAPH_STORE_KIND,
     AUTHORITY_GRAPH_STORE_MODE,
+    AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT: 20,
     AuthorityGraphStore: HarnessAuthorityGraphStore,
     isAcceptedLegacyPersistenceTier,
     isRecoveryOnlyLegacyPersistenceTier,
@@ -813,6 +823,13 @@ async function createGraphPersistenceHarness({
     queueGraphPersistToIndexedDbImpl,
     retryPendingGraphPersistImpl,
     saveGraphToIndexedDbImpl,
+    assertRecoveryChatStillActiveImpl,
+    buildPanelOpenLocalStoreRefreshPlanImpl,
+    ensureGraphMutationReadyImpl,
+    getGraphMutationBlockReasonImpl,
+    getGraphPersistenceLiveStateImpl,
+    getPanelRuntimeStatusImpl,
+    readRuntimeDebugSnapshotImpl,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {

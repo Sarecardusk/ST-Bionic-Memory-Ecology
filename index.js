@@ -339,6 +339,16 @@ import {
   retryPendingGraphPersistImpl,
   saveGraphToIndexedDbImpl,
 } from "./sync/graph-persistence-io.js";
+
+import {
+  assertRecoveryChatStillActiveImpl,
+  buildPanelOpenLocalStoreRefreshPlanImpl,
+  ensureGraphMutationReadyImpl,
+  getGraphMutationBlockReasonImpl,
+  getGraphPersistenceLiveStateImpl,
+  getPanelRuntimeStatusImpl,
+  readRuntimeDebugSnapshotImpl,
+} from "./sync/graph-mutation-gate.js";
 import {
   applyProcessedHistorySnapshotToGraph,
   appendBatchJournal,
@@ -1244,37 +1254,8 @@ function recordMaintenanceDebugSnapshot(patch = {}) {
 }
 
 function readRuntimeDebugSnapshot() {
-  const state = getRuntimeDebugState();
-  return cloneRuntimeDebugValue(
-    {
-      hostCapabilities: state.hostCapabilities,
-      taskPromptBuilds: state.taskPromptBuilds,
-      taskLlmRequests: state.taskLlmRequests,
-      injections: state.injections,
-      taskTimeline: state.taskTimeline,
-      messageTrace: state.messageTrace,
-      maintenance: state.maintenance,
-      graphPersistence: state.graphPersistence,
-      graphLayout: state.graphLayout,
-      updatedAt: state.updatedAt,
-    },
-    {
-      hostCapabilities: null,
-      taskPromptBuilds: {},
-      taskLlmRequests: {},
-      injections: {},
-      taskTimeline: [],
-      messageTrace: {
-        lastSentUserMessage: null,
-      },
-      maintenance: {
-        lastAction: null,
-        lastUndoResult: null,
-      },
-      graphPersistence: null,
-      graphLayout: null,
-      updatedAt: "",
-    },
+  return readRuntimeDebugSnapshotImpl(
+    createGraphMutationGateRuntime(),
   );
 }
 
@@ -1287,6 +1268,49 @@ let activeRecallPromise = null;
 let recallRunSequence = 0;
 let nativePersistDeltaInstallPromise = null;
 let nativeHydrateInstallPromise = null;
+
+function createGraphMutationGateRuntime() {
+  return {
+    AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT,
+    GRAPH_LOAD_STATES,
+    buildGraphLocalStoreSelectorKey,
+    buildPersistenceEnvironment,
+    cloneRuntimeDebugValue,
+    console,
+    createAbortError,
+    createGraphLoadUiStatus,
+    doesChatIdMatchResolvedGraphIdentity,
+    getAuthorityRuntimeSnapshot,
+    getContext,
+    getCurrentChatId,
+    getCurrentGraph: () => currentGraph,
+    getBmeLocalStoreCapabilitySnapshot: () => bmeLocalStoreCapabilitySnapshot,
+    getGraphMutationBlockReason,
+    getGraphPersistenceState: () => graphPersistenceState,
+    getPreferredGraphLocalStorePresentationSync,
+    getRequestedGraphLocalStorageMode,
+    getRestoreLockMessage,
+    getRuntimeDebugState,
+    getRuntimeStatus: () => runtimeStatus,
+    getSettings,
+    hasMeaningfulRuntimeGraphForChat,
+    hasRuntimeGraphMutationContext,
+    isGraphLoadStateDbReady,
+    isGraphLocalStorageModeOpfs,
+    isGraphMetadataWriteAllowed,
+    isRestoreLockActive,
+    normalizeChatIdCandidate,
+    normalizeGraphSyncState,
+    normalizePersistenceHostProfile,
+    normalizePersistenceStorageTier,
+    normalizeRestoreLockState,
+    readGraphCommitMarker,
+    repairRuntimeGraphIdentityFromPersistence,
+    resolveCurrentChatIdentity,
+    syncBmeHostRuntimeFlags,
+    toastr,
+  };
+}
 
 function createGraphPersistenceIoRuntime() {
   return {
@@ -2108,379 +2132,9 @@ async function refreshAuthorityRuntimeState({
 }
 
 function getGraphPersistenceLiveState() {
-  const liveCommitMarker =
-    cloneRuntimeDebugValue(graphPersistenceState.commitMarker, null) ||
-    readGraphCommitMarker(getContext());
-  const restoreLock = normalizeRestoreLockState(graphPersistenceState.restoreLock);
-  const persistenceEnvironment = buildPersistenceEnvironment(
-    getContext(),
-    getPreferredGraphLocalStorePresentationSync(),
+  return getGraphPersistenceLiveStateImpl(
+    createGraphMutationGateRuntime(),
   );
-  const adapterRuntime = syncBmeHostRuntimeFlags(getContext());
-  const hostProfile = normalizePersistenceHostProfile(
-    graphPersistenceState.hostProfile ||
-      adapterRuntime.adapter.hostProfile ||
-      persistenceEnvironment.hostProfile,
-  );
-  const authorityRuntime = getAuthorityRuntimeSnapshot();
-  const primaryStorageTier = normalizePersistenceStorageTier(
-    graphPersistenceState.primaryStorageTier ||
-      persistenceEnvironment.primaryStorageTier,
-  );
-  const cacheStorageTier = normalizePersistenceStorageTier(
-    graphPersistenceState.cacheStorageTier ||
-      persistenceEnvironment.cacheStorageTier,
-  );
-  const runtimeGraphReadable = hasMeaningfulRuntimeGraphForChat(
-    graphPersistenceState.chatId || getCurrentChatId(),
-  );
-  const snapshot = {
-    loadState: graphPersistenceState.loadState,
-    chatId: graphPersistenceState.chatId,
-    reason: graphPersistenceState.reason,
-    attemptIndex: graphPersistenceState.attemptIndex,
-    graphRevision: graphPersistenceState.revision,
-    lastPersistedRevision: graphPersistenceState.lastPersistedRevision,
-    queuedPersistRevision: graphPersistenceState.queuedPersistRevision,
-    queuedPersistChatId: graphPersistenceState.queuedPersistChatId,
-    shadowSnapshotUsed: graphPersistenceState.shadowSnapshotUsed,
-    shadowSnapshotRevision: graphPersistenceState.shadowSnapshotRevision,
-    shadowSnapshotUpdatedAt: graphPersistenceState.shadowSnapshotUpdatedAt,
-    shadowSnapshotReason: graphPersistenceState.shadowSnapshotReason,
-    lastPersistReason: graphPersistenceState.lastPersistReason,
-    lastPersistMode: graphPersistenceState.lastPersistMode,
-    metadataIntegrity: graphPersistenceState.metadataIntegrity,
-    writesBlocked: graphPersistenceState.writesBlocked,
-    pendingPersist: graphPersistenceState.pendingPersist,
-    lastAcceptedRevision: Number(graphPersistenceState.lastAcceptedRevision || 0),
-    acceptedStorageTier: String(graphPersistenceState.acceptedStorageTier || "none"),
-    hostProfile,
-    primaryStorageTier,
-    cacheStorageTier,
-    cacheMirrorState: String(graphPersistenceState.cacheMirrorState || "idle"),
-    cacheLag: Number(graphPersistenceState.cacheLag || 0),
-    chatStateTarget: cloneRuntimeDebugValue(
-      graphPersistenceState.chatStateTarget || adapterRuntime.target,
-      null,
-    ),
-    lightweightHostMode:
-      graphPersistenceState.lightweightHostMode ??
-      adapterRuntime.lightweightHostMode,
-    persistDiagnosticTier: String(
-      graphPersistenceState.persistDiagnosticTier || "none",
-    ),
-    acceptedBy: String(graphPersistenceState.acceptedBy || "none"),
-    lastRecoverableStorageTier: String(
-      graphPersistenceState.lastRecoverableStorageTier || "none",
-    ),
-    persistMismatchReason: String(graphPersistenceState.persistMismatchReason || ""),
-    commitMarker: cloneRuntimeDebugValue(liveCommitMarker, null),
-    restoreLock,
-    backgroundMaintenance: cloneRuntimeDebugValue(
-      graphPersistenceState.backgroundMaintenance,
-      {
-        state: "idle",
-        queued: 0,
-        activeId: "",
-        activeName: "",
-        completed: 0,
-        failed: 0,
-        dropped: 0,
-        lastTask: null,
-        updatedAt: 0,
-      },
-    ),
-    queuedPersistMode: graphPersistenceState.queuedPersistMode,
-    queuedPersistRotateIntegrity:
-      graphPersistenceState.queuedPersistRotateIntegrity,
-    queuedPersistReason: graphPersistenceState.queuedPersistReason,
-    canWriteToMetadata: isGraphMetadataWriteAllowed(
-      graphPersistenceState.loadState,
-    ),
-    updatedAt: graphPersistenceState.updatedAt,
-    storagePrimary: graphPersistenceState.storagePrimary || "indexeddb",
-    storageMode: graphPersistenceState.storageMode || "indexeddb",
-    authority: cloneRuntimeDebugValue(authorityRuntime.capability, null),
-    authorityBrowserState: cloneRuntimeDebugValue(
-      authorityRuntime.browserState,
-      null,
-    ),
-    authorityInstalled: Boolean(authorityRuntime.capability.installed),
-    authorityHealthy: Boolean(authorityRuntime.capability.healthy),
-    authorityServerPrimaryReady: Boolean(
-      authorityRuntime.capability.serverPrimaryReady,
-    ),
-    authorityStoragePrimaryReady: Boolean(
-      authorityRuntime.capability.storagePrimaryReady,
-    ),
-    authorityTriviumPrimaryReady: Boolean(
-      authorityRuntime.capability.triviumPrimaryReady,
-    ),
-    authorityJobsReady: Boolean(authorityRuntime.capability.jobsReady),
-    authorityJobQueueState: String(graphPersistenceState.authorityJobQueueState || "idle"),
-    authorityLastJob: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityLastJob,
-      null,
-    ),
-    authorityLastJobId: String(graphPersistenceState.authorityLastJobId || ""),
-    authorityLastJobKind: String(graphPersistenceState.authorityLastJobKind || ""),
-    authorityLastJobStatus: String(graphPersistenceState.authorityLastJobStatus || ""),
-    authorityLastJobProgress: Number(
-      graphPersistenceState.authorityLastJobProgress || 0,
-    ),
-    authorityLastJobError: String(graphPersistenceState.authorityLastJobError || ""),
-    authorityLastJobUpdatedAt: String(
-      graphPersistenceState.authorityLastJobUpdatedAt || "",
-    ),
-    authorityJobTrackingMode: String(
-      graphPersistenceState.authorityJobTrackingMode || "idle",
-    ),
-    authorityJobTrackingReason: String(
-      graphPersistenceState.authorityJobTrackingReason || "",
-    ),
-    authorityJobTrackingUpdatedAt: String(
-      graphPersistenceState.authorityJobTrackingUpdatedAt || "",
-    ),
-    authorityRecentJobs: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityRecentJobs,
-      [],
-    ),
-    authorityRecentJobsUpdatedAt: String(
-      graphPersistenceState.authorityRecentJobsUpdatedAt || "",
-    ),
-    authorityRecentJobsError: String(
-      graphPersistenceState.authorityRecentJobsError || "",
-    ),
-    authorityRecentJobsNextCursor: String(
-      graphPersistenceState.authorityRecentJobsNextCursor || "",
-    ),
-    authorityRecentJobsHasMore: Boolean(
-      graphPersistenceState.authorityRecentJobsHasMore,
-    ),
-    authorityBlobReady: Boolean(authorityRuntime.capability.blobReady),
-    authorityBlobState: String(graphPersistenceState.authorityBlobState || "idle"),
-    authorityLastBlobEvent: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityLastBlobEvent,
-      null,
-    ),
-    authorityLastBlobAction: String(graphPersistenceState.authorityLastBlobAction || ""),
-    authorityLastBlobBackend: String(graphPersistenceState.authorityLastBlobBackend || ""),
-    authorityLastBlobPath: String(graphPersistenceState.authorityLastBlobPath || ""),
-    authorityLastBlobReason: String(graphPersistenceState.authorityLastBlobReason || ""),
-    authorityLastBlobError: String(graphPersistenceState.authorityLastBlobError || ""),
-    authorityLastBlobUpdatedAt: String(
-      graphPersistenceState.authorityLastBlobUpdatedAt || "",
-    ),
-    authorityBlobCheckpointPath: String(
-      graphPersistenceState.authorityBlobCheckpointPath || "",
-    ),
-    authorityBlobCheckpointRevision: Number(
-      graphPersistenceState.authorityBlobCheckpointRevision || 0,
-    ),
-    authorityBlobCheckpointUpdatedAt: String(
-      graphPersistenceState.authorityBlobCheckpointUpdatedAt || "",
-    ),
-    authorityConsistencyState: String(
-      graphPersistenceState.authorityConsistencyState || "idle",
-    ),
-    authorityConsistencyAudit: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityConsistencyAudit,
-      null,
-    ),
-    authorityConsistencyUpdatedAt: String(
-      graphPersistenceState.authorityConsistencyUpdatedAt || "",
-    ),
-    authorityConsistencyError: String(
-      graphPersistenceState.authorityConsistencyError || "",
-    ),
-    authorityCheckpointRestoreState: String(
-      graphPersistenceState.authorityCheckpointRestoreState || "idle",
-    ),
-    authorityCheckpointRestoreResult: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityCheckpointRestoreResult,
-      null,
-    ),
-    authorityCheckpointRestoreUpdatedAt: String(
-      graphPersistenceState.authorityCheckpointRestoreUpdatedAt || "",
-    ),
-    authorityCheckpointRestoreError: String(
-      graphPersistenceState.authorityCheckpointRestoreError || "",
-    ),
-    authorityRepairState: String(graphPersistenceState.authorityRepairState || "idle"),
-    authorityRepairResult: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityRepairResult,
-      null,
-    ),
-    authorityRepairUpdatedAt: String(
-      graphPersistenceState.authorityRepairUpdatedAt || "",
-    ),
-    authorityRepairError: String(graphPersistenceState.authorityRepairError || ""),
-    authorityPerformanceBaseline: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityPerformanceBaseline,
-      null,
-    ),
-    authorityPerformanceBaselineComparison: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityPerformanceBaselineComparison,
-      null,
-    ),
-    authorityPerformanceBaselineUpdatedAt: String(
-      graphPersistenceState.authorityPerformanceBaselineUpdatedAt || "",
-    ),
-    authorityPerformanceBaselineReason: String(
-      graphPersistenceState.authorityPerformanceBaselineReason || "",
-    ),
-    authorityBrowserCacheMode: String(
-      authorityRuntime.browserState.mode || "minimal",
-    ),
-    authorityOfflineQueueBytes: Number(
-      authorityRuntime.browserState.offlineQueueBytes || 0,
-    ),
-    authorityOfflineQueueItems: Number(
-      authorityRuntime.browserState.offlineQueueItems || 0,
-    ),
-    authorityDegradedReason: authorityRuntime.capability.serverPrimaryReady
-      ? ""
-      : String(
-          authorityRuntime.capability.reason ||
-            authorityRuntime.capability.lastError ||
-            "",
-        ),
-    authorityMigrationState: String(
-      graphPersistenceState.authorityMigrationState || "idle",
-    ),
-    authorityMigrationSource: String(
-      graphPersistenceState.authorityMigrationSource || "",
-    ),
-    authorityMigrationRevision: Number(
-      graphPersistenceState.authorityMigrationRevision || 0,
-    ),
-    authorityMigrationLastError: String(
-      graphPersistenceState.authorityMigrationLastError || "",
-    ),
-    lastAuthorityMigrationResult: cloneRuntimeDebugValue(
-      graphPersistenceState.lastAuthorityMigrationResult,
-      null,
-    ),
-    resolvedLocalStore: String(
-      graphPersistenceState.resolvedLocalStore ||
-        buildGraphLocalStoreSelectorKey(getPreferredGraphLocalStorePresentationSync()),
-    ),
-    lukerSidecarFormatVersion:
-      Number(graphPersistenceState.lukerSidecarFormatVersion || 0) || 0,
-    lukerManifestRevision: Number(graphPersistenceState.lukerManifestRevision || 0),
-    lukerJournalDepth: Number(graphPersistenceState.lukerJournalDepth || 0),
-    lukerJournalBytes: Number(graphPersistenceState.lukerJournalBytes || 0),
-    lukerCheckpointRevision: Number(
-      graphPersistenceState.lukerCheckpointRevision || 0,
-    ),
-    projectionState: cloneRuntimeDebugValue(
-      graphPersistenceState.projectionState,
-      null,
-    ),
-    lastHookPhase: String(graphPersistenceState.lastHookPhase || ""),
-    lastRequestRescanReason: String(
-      graphPersistenceState.lastRequestRescanReason || "",
-    ),
-    lastIgnoredMutationEvent: String(
-      graphPersistenceState.lastIgnoredMutationEvent || "",
-    ),
-    lastIgnoredMutationReason: String(
-      graphPersistenceState.lastIgnoredMutationReason || "",
-    ),
-    lastChatStateConflict: cloneRuntimeDebugValue(
-      graphPersistenceState.lastChatStateConflict,
-      null,
-    ),
-    lastBranchInheritResult: cloneRuntimeDebugValue(
-      graphPersistenceState.lastBranchInheritResult,
-      null,
-    ),
-    localStoreFormatVersion: Number(graphPersistenceState.localStoreFormatVersion || 0) || 1,
-    localStoreMigrationState: String(
-      graphPersistenceState.localStoreMigrationState || "idle",
-    ),
-    opfsWriteLockState: cloneRuntimeDebugValue(
-      graphPersistenceState.opfsWriteLockState,
-      null,
-    ),
-    opfsWalDepth: Number(graphPersistenceState.opfsWalDepth || 0),
-    opfsPendingBytes: Number(graphPersistenceState.opfsPendingBytes || 0),
-    opfsCompactionState: cloneRuntimeDebugValue(
-      graphPersistenceState.opfsCompactionState,
-      null,
-    ),
-    runtimeGraphReadable,
-    remoteSyncFormatVersion: Number(graphPersistenceState.remoteSyncFormatVersion || 0) || 1,
-    dbReady:
-      graphPersistenceState.dbReady ??
-      isGraphLoadStateDbReady(graphPersistenceState.loadState),
-    indexedDbRevision: graphPersistenceState.indexedDbRevision || 0,
-    indexedDbLastError: graphPersistenceState.indexedDbLastError || "",
-    syncState: normalizeGraphSyncState(graphPersistenceState.syncState),
-    syncDirty: Boolean(graphPersistenceState.syncDirty),
-    syncDirtyReason: String(graphPersistenceState.syncDirtyReason || ""),
-    lastSyncUploadedAt: Number(graphPersistenceState.lastSyncUploadedAt) || 0,
-    lastSyncDownloadedAt:
-      Number(graphPersistenceState.lastSyncDownloadedAt) || 0,
-    lastSyncedRevision: Number(graphPersistenceState.lastSyncedRevision) || 0,
-    lastBackupUploadedAt:
-      Number(graphPersistenceState.lastBackupUploadedAt) || 0,
-    lastBackupRestoredAt:
-      Number(graphPersistenceState.lastBackupRestoredAt) || 0,
-    lastBackupRollbackAt:
-      Number(graphPersistenceState.lastBackupRollbackAt) || 0,
-    lastBackupFilename: String(graphPersistenceState.lastBackupFilename || ""),
-    lastSyncError: String(graphPersistenceState.lastSyncError || ""),
-    dualWriteLastResult: cloneRuntimeDebugValue(
-      graphPersistenceState.dualWriteLastResult,
-      null,
-    ),
-    persistDelta: cloneRuntimeDebugValue(graphPersistenceState.persistDelta, null),
-    loadDiagnostics: cloneRuntimeDebugValue(
-      graphPersistenceState.loadDiagnostics,
-      null,
-    ),
-    authorityDiagnosticsBundlePath: String(
-      graphPersistenceState.authorityDiagnosticsBundlePath || "",
-    ),
-    authorityDiagnosticsBundleReason: String(
-      graphPersistenceState.authorityDiagnosticsBundleReason || "",
-    ),
-    authorityDiagnosticsBundleUpdatedAt: String(
-      graphPersistenceState.authorityDiagnosticsBundleUpdatedAt || "",
-    ),
-    authorityDiagnosticsBundleSize: Number(
-      graphPersistenceState.authorityDiagnosticsBundleSize || 0,
-    ),
-    authorityDiagnosticsManifestPath: String(
-      graphPersistenceState.authorityDiagnosticsManifestPath || "",
-    ),
-    authorityDiagnosticsArtifacts: cloneRuntimeDebugValue(
-      graphPersistenceState.authorityDiagnosticsArtifacts,
-      [],
-    ),
-    authorityDiagnosticsArtifactsUpdatedAt: String(
-      graphPersistenceState.authorityDiagnosticsArtifactsUpdatedAt || "",
-    ),
-    authorityDiagnosticsArtifactsError: String(
-      graphPersistenceState.authorityDiagnosticsArtifactsError || "",
-    ),
-    authorityDiagnosticsRetentionLimit: Number(
-      graphPersistenceState.authorityDiagnosticsRetentionLimit ||
-        AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT,
-    ),
-    authorityDiagnosticsLastPrunedCount: Number(
-      graphPersistenceState.authorityDiagnosticsLastPrunedCount || 0,
-    ),
-    authorityDiagnosticsLastPrunedAt: String(
-      graphPersistenceState.authorityDiagnosticsLastPrunedAt || "",
-    ),
-    authorityDiagnosticsLastPruneError: String(
-      graphPersistenceState.authorityDiagnosticsLastPruneError || "",
-    ),
-  };
-
-  return cloneRuntimeDebugValue(snapshot, snapshot);
 }
 
 function syncGraphPersistenceDebugState() {
@@ -4852,82 +4506,26 @@ function createGraphLoadUiStatus() {
 }
 
 function getPanelRuntimeStatus() {
-  const graphStatus = createGraphLoadUiStatus();
-  if (
-    !graphPersistenceState.dbReady ||
-    graphPersistenceState.loadState === GRAPH_LOAD_STATES.LOADING ||
-    graphPersistenceState.loadState === GRAPH_LOAD_STATES.SHADOW_RESTORED ||
-    graphPersistenceState.loadState === GRAPH_LOAD_STATES.BLOCKED ||
-    graphPersistenceState.loadState === GRAPH_LOAD_STATES.NO_CHAT
-  ) {
-    return graphStatus;
-  }
-  return runtimeStatus;
+  return getPanelRuntimeStatusImpl(
+    createGraphMutationGateRuntime(),
+  );
 }
 
 function getGraphMutationBlockReason(operationLabel = "当前操作") {
-  if (isRestoreLockActive()) {
-    return getRestoreLockMessage(operationLabel);
-  }
-  const loadState = graphPersistenceState.loadState;
-  const hasRuntimeFallback = hasRuntimeGraphMutationContext(getContext());
-  if (!getCurrentChatId() && !hasRuntimeFallback) {
-    return `${operationLabel}已暂停：当前尚未进入聊天。`;
-  }
-
-  if (
-    graphPersistenceState.dbReady ||
-    isGraphLoadStateDbReady(loadState) ||
-    hasRuntimeFallback
-  ) {
-    return `${operationLabel}暂不可用。`;
-  }
-
-  switch (graphPersistenceState.loadState) {
-    case GRAPH_LOAD_STATES.LOADING:
-      return hasMeaningfulRuntimeGraphForChat()
-        ? `${operationLabel}已暂停：当前图谱已暂载，正在确认本地存储。`
-        : `${operationLabel}已暂停：正在加载 IndexedDB 图谱。`;
-    case GRAPH_LOAD_STATES.SHADOW_RESTORED:
-      return `${operationLabel}已暂停：当前图谱仍处于旧恢复状态，请等待 IndexedDB 初始化完成。`;
-    case GRAPH_LOAD_STATES.BLOCKED:
-      return `${operationLabel}已暂停：IndexedDB 初始化受阻，请稍后重试。`;
-    case GRAPH_LOAD_STATES.NO_CHAT:
-      return `${operationLabel}已暂停：当前尚未进入聊天。`;
-    default:
-      return `${operationLabel}已暂停：图谱尚未完成初始化。`;
-  }
+  return getGraphMutationBlockReasonImpl(
+    createGraphMutationGateRuntime(),
+    operationLabel,
+  );
 }
 
 function ensureGraphMutationReady(
   operationLabel = "当前操作",
   { notify = true, ignoreRestoreLock = false, allowRuntimeGraphFallback = false } = {},
 ) {
-  if (!ignoreRestoreLock && isRestoreLockActive()) {
-    if (notify) {
-      toastr.info(getRestoreLockMessage(operationLabel), "ST-BME");
-    }
-    return false;
-  }
-  if (allowRuntimeGraphFallback === true) {
-    repairRuntimeGraphIdentityFromPersistence(operationLabel, {
-      reason: "graph-mutation-ready-fallback",
-    });
-  }
-  if (
-    graphPersistenceState.dbReady ||
-    isGraphLoadStateDbReady() ||
-    (allowRuntimeGraphFallback === true &&
-      hasRuntimeGraphMutationContext(getContext(), currentGraph, {
-        allowNoChatState: true,
-      }))
-  ) {
-    return true;
-  }
-  if (notify) {
-    toastr.info(getGraphMutationBlockReason(operationLabel), "ST-BME");
-  }
-  return false;
+  return ensureGraphMutationReadyImpl(
+    createGraphMutationGateRuntime(),
+    operationLabel, { notify, ignoreRestoreLock, allowRuntimeGraphFallback },
+  );
 }
 
 function applyGraphLoadState(
@@ -5018,22 +4616,10 @@ function throwIfAborted(signal, message = "操作已终止") {
 }
 
 function assertRecoveryChatStillActive(expectedChatId, label = "") {
-  if (!expectedChatId) return;
-  const currentIdentity = resolveCurrentChatIdentity(getContext());
-  const currentId = normalizeChatIdCandidate(currentIdentity.chatId);
-  const normalizedExpectedChatId = normalizeChatIdCandidate(expectedChatId);
-  if (
-    currentId &&
-    normalizedExpectedChatId &&
-    !doesChatIdMatchResolvedGraphIdentity(
-      normalizedExpectedChatId,
-      currentIdentity,
-    )
-  ) {
-    throw createAbortError(
-      `历史恢复已终止：聊天已从 ${normalizedExpectedChatId} 切换到 ${currentId}${label ? ` (${label})` : ""}`,
-    );
-  }
+  return assertRecoveryChatStillActiveImpl(
+    createGraphMutationGateRuntime(),
+    expectedChatId, label,
+  );
 }
 
 function getStageAbortLabel(stage) {
@@ -6572,85 +6158,10 @@ function buildPanelOpenLocalStoreRefreshPlan(
   context = getContext(),
   settings = getSettings(),
 ) {
-  const requestedMode = getRequestedGraphLocalStorageMode(settings);
-  const usesOpfsPreference =
-    requestedMode === "auto" || isGraphLocalStorageModeOpfs(requestedMode);
-  const activeChatId = normalizeChatIdCandidate(getCurrentChatId(context));
-  const preferredLocalStore = getPreferredGraphLocalStorePresentationSync(settings);
-  const resolvedLocalStoreKey = String(
-    graphPersistenceState.resolvedLocalStore ||
-      buildGraphLocalStoreSelectorKey(preferredLocalStore),
-  ).trim();
-  const resolvedIsOpfs = resolvedLocalStoreKey.startsWith("opfs:");
-  const preferredIsOpfs = preferredLocalStore.storagePrimary === "opfs";
-  const capabilityUnchecked = bmeLocalStoreCapabilitySnapshot.checked !== true;
-  const capabilityRetryRecommended =
-    usesOpfsPreference &&
-    bmeLocalStoreCapabilitySnapshot.checked === true &&
-    bmeLocalStoreCapabilitySnapshot.opfsAvailable !== true &&
-    !(
-      String(bmeLocalStoreCapabilitySnapshot.reason || "") ===
-        "missing-directory-handle" ||
-      String(bmeLocalStoreCapabilitySnapshot.reason || "") === "OPFS 不可用" ||
-      /not.?supported/i.test(
-        String(bmeLocalStoreCapabilitySnapshot.reason || ""),
-      ) ||
-      /missing.+getdirectory/i.test(
-        String(bmeLocalStoreCapabilitySnapshot.reason || ""),
-      )
-    );
-  const pendingPersist = graphPersistenceState.pendingPersist === true;
-  const writesBlocked = graphPersistenceState.writesBlocked === true;
-  const loadState = String(graphPersistenceState.loadState || "");
-  const loadingWithoutDb =
-    loadState === GRAPH_LOAD_STATES.LOADING && graphPersistenceState.dbReady !== true;
-  const blocked = loadState === GRAPH_LOAD_STATES.BLOCKED;
-  const persistError = String(graphPersistenceState.indexedDbLastError || "").trim();
-  const localStoreMismatch =
-    Boolean(activeChatId) &&
-    preferredIsOpfs &&
-    Boolean(resolvedLocalStoreKey) &&
-    !resolvedIsOpfs;
-  const shouldRefresh =
-    usesOpfsPreference &&
-    (capabilityUnchecked ||
-      capabilityRetryRecommended ||
-      pendingPersist ||
-      writesBlocked ||
-      blocked ||
-      loadingWithoutDb ||
-      Boolean(persistError) ||
-      localStoreMismatch);
-  const forceCapabilityRefresh =
-    capabilityUnchecked ||
-    capabilityRetryRecommended ||
-    pendingPersist ||
-    blocked ||
-    loadingWithoutDb ||
-    Boolean(persistError) ||
-    localStoreMismatch;
-  const reopenCurrentDb =
-    Boolean(activeChatId) &&
-    (pendingPersist || writesBlocked || blocked || Boolean(persistError) || localStoreMismatch);
-  const reasons = [];
-  if (capabilityUnchecked) reasons.push("capability-unchecked");
-  if (capabilityRetryRecommended) reasons.push("capability-retryable-failure");
-  if (pendingPersist) reasons.push("pending-persist");
-  if (writesBlocked) reasons.push("writes-blocked");
-  if (blocked) reasons.push("load-blocked");
-  if (loadingWithoutDb) reasons.push("loading-without-db");
-  if (persistError) reasons.push("local-store-error");
-  if (localStoreMismatch) reasons.push("resolved-store-mismatch");
-
-  return {
-    shouldRefresh,
-    forceCapabilityRefresh,
-    reopenCurrentDb,
-    requestedMode,
-    resolvedLocalStoreKey,
-    preferredLocalStore,
-    reasons,
-  };
+  return buildPanelOpenLocalStoreRefreshPlanImpl(
+    createGraphMutationGateRuntime(),
+    context, settings,
+  );
 }
 
 function getMessageHideSettings(settings = null) {
