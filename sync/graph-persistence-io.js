@@ -21,15 +21,32 @@ function createGraphPersistenceStateProxy(runtime = {}) {
   });
 }
 
-function createRuntimeRef(runtime = {}, name) {
-  const getter = runtime[`get${name}`];
-  const setter = runtime[`set${name}`];
+function createNativeHydrateInstallPromiseRef(runtime = {}) {
   return {
     get value() {
-      return typeof getter === "function" ? getter() : undefined;
+      return typeof runtime.getNativeHydrateInstallPromise === "function"
+        ? runtime.getNativeHydrateInstallPromise()
+        : undefined;
     },
     set value(nextValue) {
-      if (typeof setter === "function") setter(nextValue);
+      if (typeof runtime.setNativeHydrateInstallPromise === "function") {
+        runtime.setNativeHydrateInstallPromise(nextValue);
+      }
+    },
+  };
+}
+
+function createNativePersistDeltaInstallPromiseRef(runtime = {}) {
+  return {
+    get value() {
+      return typeof runtime.getNativePersistDeltaInstallPromise === "function"
+        ? runtime.getNativePersistDeltaInstallPromise()
+        : undefined;
+    },
+    set value(nextValue) {
+      if (typeof runtime.setNativePersistDeltaInstallPromise === "function") {
+        runtime.setNativePersistDeltaInstallPromise(nextValue);
+      }
     },
   };
 }
@@ -51,8 +68,8 @@ export async function loadGraphFromIndexedDbImpl(runtime,
 ) {
   const graphPersistenceState = createGraphPersistenceStateProxy(runtime);
   const currentGraph = runtime.getCurrentGraph?.() || null;
-  const nativeHydrateInstallPromiseRef = createRuntimeRef(runtime, "NativeHydrateInstallPromise");
-  const nativePersistDeltaInstallPromiseRef = createRuntimeRef(runtime, "NativePersistDeltaInstallPromise");
+  const nativeHydrateInstallPromiseRef = createNativeHydrateInstallPromiseRef(runtime);
+  const nativePersistDeltaInstallPromiseRef = createNativePersistDeltaInstallPromiseRef(runtime);
   const bmeIndexedDbLatestQueuedRevisionByChatId = runtime.bmeIndexedDbLatestQueuedRevisionByChatId;
   const bmeIndexedDbWriteInFlightByChatId = runtime.bmeIndexedDbWriteInFlightByChatId;
   const updateGraphPersistenceState = runtime.updateGraphPersistenceState || ((patch = {}) => runtime.setGraphPersistenceState?.({ ...(runtime.getGraphPersistenceState?.() || {}), ...(patch || {}) }));
@@ -869,8 +886,8 @@ export async function loadGraphFromIndexedDbImpl(runtime,
 export function maybeFlushQueuedGraphPersistImpl(runtime, reason = "queued-graph-persist") {
   const graphPersistenceState = createGraphPersistenceStateProxy(runtime);
   const currentGraph = runtime.getCurrentGraph?.() || null;
-  const nativeHydrateInstallPromiseRef = createRuntimeRef(runtime, "NativeHydrateInstallPromise");
-  const nativePersistDeltaInstallPromiseRef = createRuntimeRef(runtime, "NativePersistDeltaInstallPromise");
+  const nativeHydrateInstallPromiseRef = createNativeHydrateInstallPromiseRef(runtime);
+  const nativePersistDeltaInstallPromiseRef = createNativePersistDeltaInstallPromiseRef(runtime);
   const bmeIndexedDbLatestQueuedRevisionByChatId = runtime.bmeIndexedDbLatestQueuedRevisionByChatId;
   const bmeIndexedDbWriteInFlightByChatId = runtime.bmeIndexedDbWriteInFlightByChatId;
   const updateGraphPersistenceState = runtime.updateGraphPersistenceState || ((patch = {}) => runtime.setGraphPersistenceState?.({ ...(runtime.getGraphPersistenceState?.() || {}), ...(patch || {}) }));
@@ -1020,8 +1037,8 @@ export async function retryPendingGraphPersistImpl(runtime, {
 } = {}) {
   const graphPersistenceState = createGraphPersistenceStateProxy(runtime);
   const currentGraph = runtime.getCurrentGraph?.() || null;
-  const nativeHydrateInstallPromiseRef = createRuntimeRef(runtime, "NativeHydrateInstallPromise");
-  const nativePersistDeltaInstallPromiseRef = createRuntimeRef(runtime, "NativePersistDeltaInstallPromise");
+  const nativeHydrateInstallPromiseRef = createNativeHydrateInstallPromiseRef(runtime);
+  const nativePersistDeltaInstallPromiseRef = createNativePersistDeltaInstallPromiseRef(runtime);
   const bmeIndexedDbLatestQueuedRevisionByChatId = runtime.bmeIndexedDbLatestQueuedRevisionByChatId;
   const bmeIndexedDbWriteInFlightByChatId = runtime.bmeIndexedDbWriteInFlightByChatId;
   const updateGraphPersistenceState = runtime.updateGraphPersistenceState || ((patch = {}) => runtime.setGraphPersistenceState?.({ ...(runtime.getGraphPersistenceState?.() || {}), ...(patch || {}) }));
@@ -1342,8 +1359,8 @@ export async function saveGraphToIndexedDbImpl(runtime,
 ) {
   const graphPersistenceState = createGraphPersistenceStateProxy(runtime);
   const currentGraph = runtime.getCurrentGraph?.() || null;
-  const nativeHydrateInstallPromiseRef = createRuntimeRef(runtime, "NativeHydrateInstallPromise");
-  const nativePersistDeltaInstallPromiseRef = createRuntimeRef(runtime, "NativePersistDeltaInstallPromise");
+  const nativeHydrateInstallPromiseRef = createNativeHydrateInstallPromiseRef(runtime);
+  const nativePersistDeltaInstallPromiseRef = createNativePersistDeltaInstallPromiseRef(runtime);
   const bmeIndexedDbLatestQueuedRevisionByChatId = runtime.bmeIndexedDbLatestQueuedRevisionByChatId;
   const bmeIndexedDbWriteInFlightByChatId = runtime.bmeIndexedDbWriteInFlightByChatId;
   const updateGraphPersistenceState = runtime.updateGraphPersistenceState || ((patch = {}) => runtime.setGraphPersistenceState?.({ ...(runtime.getGraphPersistenceState?.() || {}), ...(patch || {}) }));
@@ -2399,8 +2416,8 @@ export function queueGraphPersistToIndexedDbImpl(runtime,
 ) {
   const graphPersistenceState = createGraphPersistenceStateProxy(runtime);
   const currentGraph = runtime.getCurrentGraph?.() || null;
-  const nativeHydrateInstallPromiseRef = createRuntimeRef(runtime, "NativeHydrateInstallPromise");
-  const nativePersistDeltaInstallPromiseRef = createRuntimeRef(runtime, "NativePersistDeltaInstallPromise");
+  const nativeHydrateInstallPromiseRef = createNativeHydrateInstallPromiseRef(runtime);
+  const nativePersistDeltaInstallPromiseRef = createNativePersistDeltaInstallPromiseRef(runtime);
   const bmeIndexedDbLatestQueuedRevisionByChatId = runtime.bmeIndexedDbLatestQueuedRevisionByChatId;
   const bmeIndexedDbWriteInFlightByChatId = runtime.bmeIndexedDbWriteInFlightByChatId;
   const updateGraphPersistenceState = runtime.updateGraphPersistenceState || ((patch = {}) => runtime.setGraphPersistenceState?.({ ...(runtime.getGraphPersistenceState?.() || {}), ...(patch || {}) }));

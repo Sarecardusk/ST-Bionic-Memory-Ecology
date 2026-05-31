@@ -7,6 +7,7 @@
     "test:runtime-history": "node tests/runtime-history.mjs",
     "test:graph-persistence": "node tests/graph-persistence.mjs",
     "test:index-slicing-ratchet": "node tests/index-slicing-ratchet.mjs",
+    "test:runtime-deps": "node tests/runtime-deps-completeness.mjs",
     "test:identity-resolver": "node tests/identity-resolver.mjs",
     "test:persistence-reducer": "node tests/persistence-reducer.mjs",
     "test:graph-snapshot-schema": "node tests/graph-snapshot-schema.mjs",
