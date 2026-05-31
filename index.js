@@ -164,6 +164,7 @@ import { createRecallInputState } from "./runtime/recall-input-state.js";
 import { createRerollRecallInput } from "./runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "./runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "./runtime/final-recall-injection.js";
+import { createAutoExtractionDefer } from "./runtime/auto-extraction-defer.js";
 import {
   extractMemories,
   generateReflection,
@@ -208,7 +209,7 @@ import {
   LUKER_GRAPH_SIDECAR_V2_FORMAT,
   MODULE_NAME,
   cloneGraphForPersistence,
-  cloneRuntimeDebugValue,
+  cloneRuntimeDebugValue: (...args) => cloneRuntimeDebugValue(...args),
   getGraphPersistedRevision,
   getGraphPersistenceMeta,
   getGraphIdentityAliasCandidates,
@@ -1432,20 +1433,10 @@ let pendingGraphLoadRetryChatId = "";
 let pendingGraphPersistRetryTimer = null;
 let pendingGraphPersistRetryChatId = "";
 let pendingGraphPersistRetryAttempt = 0;
-let pendingAutoExtractionTimer = null;
 let authorityJobPollAbortController = null;
 let authorityJobPollJobId = "";
 let authorityJobPollChatId = "";
 let authorityJobPollPromise = null;
-let pendingAutoExtraction = {
-  chatId: "",
-  messageId: null,
-  reason: "",
-  requestedAt: 0,
-  attempts: 0,
-  targetEndFloor: null,
-  strategy: "normal",
-};
 let isHostGenerationRunning = false;
 let lastHostGenerationEndedAt = 0;
 let skipBeforeCombineRecallUntil = 0;
@@ -1513,6 +1504,30 @@ const finalRecallInjectionRuntime = createFinalRecallInjection({
     storeGenerationRecallTransactionFinalResolution(...args),
   triggerChatMetadataSave,
   writePersistedRecallToUserMessage,
+});
+const autoExtractionDeferRuntime = createAutoExtractionDefer({
+  clearTimeout,
+  cloneRuntimeDebugValue: (...args) => cloneRuntimeDebugValue(...args),
+  console,
+  ensureGraphMutationReady: (...args) => ensureGraphMutationReady(...args),
+  getContext,
+  getCurrentChatId,
+  getGraphPersistenceState: () => graphPersistenceState,
+  getIsExtracting: () => isExtracting,
+  getIsHostGenerationRunning: () => isHostGenerationRunning,
+  getIsRecoveringHistory: () => isRecoveringHistory,
+  getLastHostGenerationEndedAt: () => lastHostGenerationEndedAt,
+  getSettings,
+  isAssistantChatMessage: (...args) => isAssistantChatMessage(...args),
+  isRestoreLockActive: (...args) => isRestoreLockActive(...args),
+  normalizeChatIdCandidate,
+  normalizeRestoreLockState: (...args) => normalizeRestoreLockState(...args),
+  notifyExtractionIssue: (...args) => notifyExtractionIssue(...args),
+  resolveAutoExtractionPlan: (...args) => resolveAutoExtractionPlan(...args),
+  runExtraction: (...args) => runExtraction(...args),
+  setTimeout,
+  AUTO_EXTRACTION_DEFER_RETRY_DELAYS_MS,
+  AUTO_EXTRACTION_HOST_SETTLE_MS,
 });
 const PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS = [
   0,
@@ -12747,22 +12762,7 @@ function isGraphLoadRetryPending(chatId = getCurrentChatId()) {
 }
 
 function clearPendingAutoExtraction({ resetState = true } = {}) {
-  if (pendingAutoExtractionTimer) {
-    clearTimeout(pendingAutoExtractionTimer);
-    pendingAutoExtractionTimer = null;
-  }
-
-  if (resetState) {
-    pendingAutoExtraction = {
-      chatId: "",
-      messageId: null,
-      reason: "",
-      requestedAt: 0,
-      attempts: 0,
-      targetEndFloor: null,
-      strategy: "normal",
-    };
-  }
+  return autoExtractionDeferRuntime.clearPendingAutoExtraction({ resetState });
 }
 
 function deferAutoExtraction(
@@ -12775,96 +12775,22 @@ function deferAutoExtraction(
     strategy = "",
   } = {},
 ) {
-  const normalizedChatId = normalizeChatIdCandidate(chatId);
-  if (!normalizedChatId) {
-    clearPendingAutoExtraction();
-    return {
-      scheduled: false,
-      reason: "missing-chat-id",
-      chatId: "",
-    };
-  }
-
-  const sameChat = normalizedChatId === pendingAutoExtraction.chatId;
-  const previousAttempts = sameChat
-    ? Math.max(0, Math.floor(Number(pendingAutoExtraction.attempts) || 0))
-    : 0;
-  const nextAttempts = previousAttempts + 1;
-  const resolvedDelayMs =
-    delayMs !== null &&
-    delayMs !== undefined &&
-    Number.isFinite(Number(delayMs))
-    ? Math.max(0, Math.floor(Number(delayMs)))
-    : AUTO_EXTRACTION_DEFER_RETRY_DELAYS_MS[
-        Math.min(
-          previousAttempts,
-          AUTO_EXTRACTION_DEFER_RETRY_DELAYS_MS.length - 1,
-        )
-      ];
-
-  pendingAutoExtraction = {
-    chatId: normalizedChatId,
-    messageId: Number.isFinite(Number(messageId))
-      ? Math.floor(Number(messageId))
-      : sameChat
-        ? pendingAutoExtraction.messageId
-        : null,
-    reason: String(reason || "auto-extraction-deferred"),
-    requestedAt:
-      sameChat && pendingAutoExtraction.requestedAt > 0
-        ? pendingAutoExtraction.requestedAt
-        : Date.now(),
-    attempts: nextAttempts,
-    targetEndFloor: Number.isFinite(Number(targetEndFloor))
-      ? sameChat &&
-        Number.isFinite(Number(pendingAutoExtraction.targetEndFloor))
-        ? Math.max(
-            Math.floor(Number(targetEndFloor)),
-            Math.floor(Number(pendingAutoExtraction.targetEndFloor)),
-          )
-        : Math.floor(Number(targetEndFloor))
-      : sameChat
-        ? pendingAutoExtraction.targetEndFloor
-        : null,
-    strategy: String(strategy || "")
-      ? String(strategy || "")
-      : sameChat
-        ? String(pendingAutoExtraction.strategy || "normal")
-        : "normal",
-  };
-
-  if (pendingAutoExtractionTimer) {
-    clearTimeout(pendingAutoExtractionTimer);
-  }
-
-  pendingAutoExtractionTimer = setTimeout(() => {
-    pendingAutoExtractionTimer = null;
-    void maybeResumePendingAutoExtraction(
-      `retry:${pendingAutoExtraction.reason || "auto-extraction-deferred"}`,
-    );
-  }, resolvedDelayMs);
-  console.debug?.("[ST-BME] auto extraction deferred", {
-    reason: pendingAutoExtraction.reason,
-    chatId: normalizedChatId,
-    messageId: pendingAutoExtraction.messageId,
-    targetEndFloor: pendingAutoExtraction.targetEndFloor,
-    strategy: pendingAutoExtraction.strategy,
-    attempts: nextAttempts,
-    delayMs: resolvedDelayMs,
+  return autoExtractionDeferRuntime.deferAutoExtraction(reason, {
+    chatId,
+    messageId,
+    delayMs,
+    targetEndFloor,
+    strategy,
   });
-
-  return {
-    scheduled: true,
-    chatId: normalizedChatId,
-    messageId: pendingAutoExtraction.messageId,
-    reason: pendingAutoExtraction.reason,
-    targetEndFloor: pendingAutoExtraction.targetEndFloor,
-    strategy: pendingAutoExtraction.strategy,
-    attempts: nextAttempts,
-    delayMs: resolvedDelayMs,
-  };
 }
 
+function getPendingAutoExtraction() {
+  return autoExtractionDeferRuntime.getPendingAutoExtraction();
+}
+
+function maybeResumePendingAutoExtraction(source = "auto-extraction-resume") {
+  return autoExtractionDeferRuntime.maybeResumePendingAutoExtraction(source);
+}
 function resolveAutoExtractionPlan({
   chat = null,
   settings = null,
@@ -12886,194 +12812,6 @@ function resolveAutoExtractionPlan({
       lockedEndFloor,
     },
   );
-}
-
-function maybeResumePendingAutoExtraction(source = "auto-extraction-resume") {
-  const pendingChatId = normalizeChatIdCandidate(pendingAutoExtraction.chatId);
-  if (!pendingChatId) {
-    return {
-      resumed: false,
-      reason: "no-pending-auto-extraction",
-    };
-  }
-
-  if (isRestoreLockActive()) {
-    return {
-      resumed: false,
-      reason: "restore-lock-active",
-      restoreLock: cloneRuntimeDebugValue(
-        normalizeRestoreLockState(graphPersistenceState.restoreLock),
-        null,
-      ),
-    };
-  }
-
-  const currentChatId = normalizeChatIdCandidate(getCurrentChatId());
-  if (!currentChatId || currentChatId !== pendingChatId) {
-    clearPendingAutoExtraction();
-    return {
-      resumed: false,
-      reason: "chat-switched",
-      chatId: pendingChatId,
-      currentChatId,
-    };
-  }
-
-  if (isExtracting) {
-    return deferAutoExtraction("extracting", {
-      chatId: pendingChatId,
-      messageId: pendingAutoExtraction.messageId,
-      targetEndFloor: pendingAutoExtraction.targetEndFloor,
-      strategy: pendingAutoExtraction.strategy,
-    });
-  }
-
-  if (isHostGenerationRunning) {
-    return deferAutoExtraction("generation-running", {
-      chatId: pendingChatId,
-      messageId: pendingAutoExtraction.messageId,
-      targetEndFloor: pendingAutoExtraction.targetEndFloor,
-      strategy: pendingAutoExtraction.strategy,
-    });
-  }
-
-  const hostGenerationSettleRemainingMs =
-    lastHostGenerationEndedAt > 0
-      ? AUTO_EXTRACTION_HOST_SETTLE_MS -
-        (Date.now() - lastHostGenerationEndedAt)
-      : 0;
-  if (hostGenerationSettleRemainingMs > 0) {
-    return deferAutoExtraction("generation-settling", {
-      chatId: pendingChatId,
-      messageId: pendingAutoExtraction.messageId,
-      delayMs: hostGenerationSettleRemainingMs,
-      targetEndFloor: pendingAutoExtraction.targetEndFloor,
-      strategy: pendingAutoExtraction.strategy,
-    });
-  }
-
-  if (isRecoveringHistory) {
-    return deferAutoExtraction("history-recovering", {
-      chatId: pendingChatId,
-      messageId: pendingAutoExtraction.messageId,
-      targetEndFloor: pendingAutoExtraction.targetEndFloor,
-      strategy: pendingAutoExtraction.strategy,
-    });
-  }
-
-  if (!ensureGraphMutationReady("自动提取", { notify: false })) {
-    console.debug?.(
-      "[ST-BME] pending auto extraction resume blocked: graph-not-ready",
-      {
-        source,
-        chatId: pendingChatId,
-        attempts: pendingAutoExtraction.attempts || 0,
-        loadState: graphPersistenceState.loadState || "",
-      },
-    );
-    return deferAutoExtraction("graph-not-ready", {
-      chatId: pendingChatId,
-      messageId: pendingAutoExtraction.messageId,
-      targetEndFloor: pendingAutoExtraction.targetEndFloor,
-      strategy: pendingAutoExtraction.strategy,
-    });
-  }
-
-  const resumeContext = getContext();
-  const resumeChat = resumeContext?.chat;
-  const settings = getSettings();
-  let lockedEndFloor = Number.isFinite(Number(pendingAutoExtraction.targetEndFloor))
-    ? Math.floor(Number(pendingAutoExtraction.targetEndFloor))
-    : null;
-  if (
-    Array.isArray(resumeChat) &&
-    Number.isFinite(Number(pendingAutoExtraction.messageId))
-  ) {
-    const pendingMessageIndex = Math.floor(
-      Number(pendingAutoExtraction.messageId),
-    );
-    const pendingMessage = resumeChat[pendingMessageIndex];
-    if (
-      isAssistantChatMessage(pendingMessage, {
-        index: pendingMessageIndex,
-        chat: resumeChat,
-      }) &&
-      !String(pendingMessage?.mes ?? "").trim()
-    ) {
-      return deferAutoExtraction("assistant-message-empty", {
-        chatId: pendingChatId,
-        messageId: pendingMessageIndex,
-        delayMs: AUTO_EXTRACTION_HOST_SETTLE_MS,
-        targetEndFloor: pendingAutoExtraction.targetEndFloor,
-        strategy: pendingAutoExtraction.strategy,
-      });
-    }
-  }
-
-  if (Array.isArray(resumeChat) && resumeChat.length > 0 && lockedEndFloor != null) {
-    const lockedPlan = resolveAutoExtractionPlan({
-      chat: resumeChat,
-      settings,
-      lockedEndFloor,
-    });
-    if (
-      !lockedPlan.canRun &&
-      lockedPlan.candidateAssistantTurns.length === 0
-    ) {
-      const fallbackPlan = resolveAutoExtractionPlan({
-        chat: resumeChat,
-        settings,
-      });
-      lockedEndFloor = fallbackPlan.canRun
-        ? fallbackPlan.plannedBatchEndFloor
-        : null;
-    }
-  }
-
-  const pendingRequest = { ...pendingAutoExtraction };
-  clearPendingAutoExtraction();
-  if (lockedEndFloor == null) {
-    const currentPlan = resolveAutoExtractionPlan({
-      chat: resumeChat,
-      settings,
-    });
-    if (!currentPlan.canRun) {
-      return {
-        resumed: false,
-        reason: "no-runnable-auto-extraction",
-        source,
-        ...pendingRequest,
-      };
-    }
-    lockedEndFloor = currentPlan.plannedBatchEndFloor;
-  }
-  console.debug?.("[ST-BME] resuming pending auto extraction", {
-    source,
-    chatId: pendingRequest.chatId,
-    messageId: pendingRequest.messageId,
-    targetEndFloor: lockedEndFloor,
-    attempts: pendingRequest.attempts || 0,
-  });
-  const enqueueMicrotask =
-    typeof globalThis.queueMicrotask === "function"
-      ? globalThis.queueMicrotask.bind(globalThis)
-      : (task) => Promise.resolve().then(task);
-  enqueueMicrotask(() => {
-    void runExtraction({
-      lockedEndFloor,
-      triggerSource: source,
-    }).catch((error) => {
-      console.error("[ST-BME] 延迟自动提取失败:", error);
-      notifyExtractionIssue(error?.message || String(error) || "自动提取失败");
-    });
-  });
-
-  return {
-    resumed: true,
-    source,
-    lockedEndFloor,
-    ...pendingRequest,
-  };
 }
 
 function markDryRunPromptPreview(ttlMs = GENERATION_RECALL_HOOK_BRIDGE_MS) {

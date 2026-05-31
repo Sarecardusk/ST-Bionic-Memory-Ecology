@@ -66,6 +66,7 @@ import { createRecallInputState } from "../../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../../runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "../../runtime/final-recall-injection.js";
+import { createAutoExtractionDefer } from "../../runtime/auto-extraction-defer.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -126,6 +127,7 @@ export function createGenerationRecallHarness(options = {}) {
       createRerollRecallInput,
       createGenerationRecallTransactions,
       createFinalRecallInjection,
+      createAutoExtractionDefer,
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },
@@ -317,7 +319,7 @@ export function createGenerationRecallHarness(options = {}) {
     };
     vm.createContext(context);
     vm.runInContext(
-      `${snippet}\nresult = { hashRecallInput, buildPreGenerationRecallKey, buildGenerationAfterCommandsRecallInput, buildNormalGenerationRecallInput, cleanupGenerationRecallTransactions, buildGenerationRecallTransactionId, beginGenerationRecallTransaction, markGenerationRecallTransactionHookState, shouldRunRecallForTransaction, createGenerationRecallContext, onGenerationStarted, onGenerationEnded, onGenerationAfterCommands, onBeforeCombinePrompts, applyFinalRecallInjectionForGeneration, persistRecallInjectionRecord, ensurePersistedRecallRecordForGeneration, findRecentGenerationRecallTransactionForChat, getGenerationRecallTransactionResult, generationRecallTransactions, freezeHostGenerationInputSnapshot, consumeHostGenerationInputSnapshot, getPendingHostGenerationInputSnapshot, clearPendingHostGenerationInputSnapshot, prepareRerollRecallReuse, getPendingRerollRecallReuse, clearPendingRerollRecallReuse, recordRecallSendIntent, clearPendingRecallSendIntent, recordRecallSentUserMessage, getPendingRecallSendIntent: () => pendingRecallSendIntent, getLastRecallSentUserMessage: () => lastRecallSentUserMessage, getCurrentGenerationTrivialSkip, markCurrentGenerationTrivialSkip, clearCurrentGenerationTrivialSkip, consumeCurrentGenerationTrivialSkip, deferAutoExtraction, maybeResumePendingAutoExtraction, clearPendingAutoExtraction, getPendingAutoExtraction: () => ({ ...pendingAutoExtraction }), getIsHostGenerationRunning: () => isHostGenerationRunning, preparePlannerRecallHandoff, runPlannerRecallForEna, getGraphPersistenceState: () => graphPersistenceState, setGraphPersistenceState: (value = {}) => { graphPersistenceState = { ...graphPersistenceState, ...(value || {}) }; return graphPersistenceState; } };`,
+      `${snippet}\nresult = { hashRecallInput, buildPreGenerationRecallKey, buildGenerationAfterCommandsRecallInput, buildNormalGenerationRecallInput, cleanupGenerationRecallTransactions, buildGenerationRecallTransactionId, beginGenerationRecallTransaction, markGenerationRecallTransactionHookState, shouldRunRecallForTransaction, createGenerationRecallContext, onGenerationStarted, onGenerationEnded, onGenerationAfterCommands, onBeforeCombinePrompts, applyFinalRecallInjectionForGeneration, persistRecallInjectionRecord, ensurePersistedRecallRecordForGeneration, findRecentGenerationRecallTransactionForChat, getGenerationRecallTransactionResult, generationRecallTransactions, freezeHostGenerationInputSnapshot, consumeHostGenerationInputSnapshot, getPendingHostGenerationInputSnapshot, clearPendingHostGenerationInputSnapshot, prepareRerollRecallReuse, getPendingRerollRecallReuse, clearPendingRerollRecallReuse, recordRecallSendIntent, clearPendingRecallSendIntent, recordRecallSentUserMessage, getPendingRecallSendIntent: () => pendingRecallSendIntent, getLastRecallSentUserMessage: () => lastRecallSentUserMessage, getCurrentGenerationTrivialSkip, markCurrentGenerationTrivialSkip, clearCurrentGenerationTrivialSkip, consumeCurrentGenerationTrivialSkip, deferAutoExtraction, maybeResumePendingAutoExtraction, clearPendingAutoExtraction, getPendingAutoExtraction, getIsHostGenerationRunning: () => isHostGenerationRunning, preparePlannerRecallHandoff, runPlannerRecallForEna, getGraphPersistenceState: () => graphPersistenceState, setGraphPersistenceState: (value = {}) => { graphPersistenceState = { ...graphPersistenceState, ...(value || {}) }; return graphPersistenceState; } };`,
       context,
       { filename: indexPath },
     );

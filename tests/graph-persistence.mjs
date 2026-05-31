@@ -168,6 +168,7 @@ import { createRecallInputState } from "../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "../runtime/final-recall-injection.js";
+import { createAutoExtractionDefer } from "../runtime/auto-extraction-defer.js";
 import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
@@ -797,6 +798,7 @@ async function createGraphPersistenceHarness({
     createRerollRecallInput,
     createGenerationRecallTransactions,
     createFinalRecallInjection,
+    createAutoExtractionDefer,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {
