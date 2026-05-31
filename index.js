@@ -156,12 +156,9 @@ import {
   resolvePersistenceChatIdCore,
   resolveRuntimeGraphFallbackIdentityCore,
 } from "./runtime/identity-resolver.js";
-import {
-  consumeRerollRecallReuseMarker,
-  createRerollRecallReuseMarker,
-} from "./runtime/reroll-transaction-boundary.js";
 import { createRecallInputState } from "./runtime/recall-input-state.js";
 import { createRerollRecallInput } from "./runtime/reroll-recall-input.js";
+import { createGenerationContextTracker } from "./runtime/generation-context.js";
 import { createGenerationRecallTransactions } from "./runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "./runtime/final-recall-injection.js";
 import { createAutoExtractionDefer } from "./runtime/auto-extraction-defer.js";
@@ -1665,8 +1662,6 @@ const rerollRecallInput = createRerollRecallInput({
     clearPendingHostGenerationInputSnapshot(...args),
   clearPendingRecallSendIntent: (...args) => clearPendingRecallSendIntent(...args),
   console,
-  consumeRerollRecallReuseMarker,
-  createRerollRecallReuseMarker,
   createTrivialRecallSkipSentinel: (...args) =>
     createTrivialRecallSkipSentinel(...args),
   findLatestUserChatMessageWithIndex: (...args) =>
@@ -1706,6 +1701,8 @@ let sendIntentHookRetryTimer = null;
 let pendingHistoryRecoveryTimer = null;
 let pendingHistoryRecoveryTrigger = "";
 let pendingHistoryMutationCheckTimers = [];
+let pendingDeferredHistoryMutationRecheckTimer = null;
+let pendingDeferredHistoryMutationRecheckPayload = null;
 let pendingGraphLoadRetryTimer = null;
 let pendingGraphLoadRetryChatId = "";
 let pendingGraphPersistRetryTimer = null;
@@ -1739,6 +1736,10 @@ const generationRecallTransactionRuntime = createGenerationRecallTransactions({
 });
 const generationRecallTransactions =
   generationRecallTransactionRuntime.generationRecallTransactions;
+const generationContextTracker = createGenerationContextTracker({
+  getCurrentChatId,
+  ttlMs: GENERATION_RECALL_TRANSACTION_TTL_MS,
+});
 const finalRecallInjectionRuntime = createFinalRecallInjection({
   applyModuleInjectionPrompt: (...args) => applyModuleInjectionPrompt(...args),
   areRecallNodeIdListsEqual: (...args) => areRecallNodeIdListsEqual(...args),
@@ -14576,20 +14577,8 @@ function getLastNonSystemChatMessage(chat) {
   return null;
 }
 
-function getPendingRerollRecallReuse() {
-  return rerollRecallInput.getPendingRerollRecallReuse();
-}
-
 function clearPendingRerollRecallReuse(reason = "") {
   return rerollRecallInput.clearPendingRerollRecallReuse(reason);
-}
-
-function prepareRerollRecallReuse({ fromFloor = null, meta = null } = {}) {
-  return rerollRecallInput.prepareRerollRecallReuse({ fromFloor, meta });
-}
-
-function consumePendingRerollRecallReuse(chat = getContext()?.chat) {
-  return rerollRecallInput.consumePendingRerollRecallReuse(chat);
 }
 
 function buildRecallRecentMessages(chat, limit, syntheticUserMessage = "") {
@@ -15056,6 +15045,39 @@ function scheduleHistoryMutationRecheck(
 
     pendingHistoryMutationCheckTimers.push(timer);
   }
+}
+
+function clearDeferredHistoryMutationRecheck() {
+  if (pendingDeferredHistoryMutationRecheckTimer) {
+    clearTimeout(pendingDeferredHistoryMutationRecheckTimer);
+  }
+  pendingDeferredHistoryMutationRecheckTimer = null;
+  pendingDeferredHistoryMutationRecheckPayload = null;
+}
+
+function scheduleDeferredHistoryMutationRecheck(
+  trigger = "history-change-deferred",
+  primaryArg = null,
+  meta = null,
+  delayMs = 2500,
+) {
+  if (!getSettings().enabled) return;
+  clearDeferredHistoryMutationRecheck();
+  pendingDeferredHistoryMutationRecheckPayload = { trigger, primaryArg, meta };
+  pendingDeferredHistoryMutationRecheckTimer = setTimeout(() => {
+    const payload = pendingDeferredHistoryMutationRecheckPayload;
+    clearDeferredHistoryMutationRecheck();
+    if (!payload) return;
+    scheduleHistoryMutationRecheck(payload.trigger, payload.primaryArg, payload.meta);
+  }, Math.max(250, Math.floor(Number(delayMs) || 2500)));
+}
+
+function flushDeferredHistoryMutationRecheck(reason = "generation-boundary") {
+  const payload = pendingDeferredHistoryMutationRecheckPayload;
+  if (!payload) return false;
+  clearDeferredHistoryMutationRecheck();
+  scheduleHistoryMutationRecheck(`${payload.trigger}:${reason}`, payload.primaryArg, payload.meta);
+  return true;
 }
 
 function inspectHistoryMutation(
@@ -15860,6 +15882,8 @@ async function runRecall(options = {}) {
 function onChatChanged() {
   isHostGenerationRunning = false;
   lastHostGenerationEndedAt = 0;
+  generationContextTracker.clear("chat-changed");
+  clearDeferredHistoryMutationRecheck();
   const { target, lightweightHostMode, adapter } = syncBmeHostRuntimeFlags(getContext());
   updateGraphPersistenceState({
     hostProfile: adapter.hostProfile,
@@ -15998,8 +16022,15 @@ function onCharacterMessageRendered(messageId = null, type = "") {
 function onMessageDeleted(chatLengthOrMessageId, meta = null) {
   const result = onMessageDeletedController(
     {
+      getGenerationContext: (...args) => generationContextTracker.get(...args),
+      getContext,
       invalidateRecallAfterHistoryMutation,
+      markGenerationContextExpectedMutation: (...args) =>
+        generationContextTracker.markExpectedMutation(...args),
+      noteAssistantTailDelete: (...args) =>
+        generationContextTracker.noteAssistantTailDelete(...args),
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
+      scheduleDeferredHistoryMutationRecheck,
       scheduleHistoryMutationRecheck,
     },
     chatLengthOrMessageId,
@@ -16042,12 +16073,11 @@ function onMessageUpdated(messageId, meta = null) {
 }
 
 async function onMessageSwiped(messageId, meta = null) {
+  generationContextTracker.noteSwipe(messageId, meta);
   const result = await onMessageSwipedController(
     {
       invalidateRecallAfterHistoryMutation,
       onReroll,
-      prepareRerollRecallReuse,
-      clearPendingRerollRecallReuse,
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
       scheduleHistoryMutationRecheck,
     },
@@ -16155,6 +16185,20 @@ function onGenerationBeforeApiRequest(payload = {}) {
 
 function onGenerationStarted(type, params = {}, dryRun = false) {
   const generationType = String(type || "normal").trim() || "normal";
+  const freshInputHint = Boolean(
+    pendingRecallSendIntent?.text || pendingRecallSendIntent?.rawText,
+  );
+  generationContextTracker.begin(
+    generationType,
+    {
+      ...params,
+      __stBmeFreshInputHint: freshInputHint,
+    },
+    {
+    dryRun,
+    phase: "GENERATION_STARTED",
+    },
+  );
   if (
     !dryRun &&
     !params?.automatic_trigger &&
@@ -16218,9 +16262,15 @@ function onGenerationEnded(_chatLength = null) {
   if (typeof scheduleMessageHideApply === "function") {
     scheduleMessageHideApply("generation-ended", 180);
   }
+  flushDeferredHistoryMutationRecheck("generation-ended");
+  generationContextTracker.clear("generation-ended");
 }
 
 async function onGenerationAfterCommands(type, params = {}, dryRun = false) {
+  generationContextTracker.update(type, params, {
+    dryRun,
+    phase: "GENERATION_AFTER_COMMANDS",
+  });
   return await onGenerationAfterCommandsController(
     {
       applyFinalRecallInjectionForGeneration,
@@ -16231,6 +16281,7 @@ async function onGenerationAfterCommands(type, params = {}, dryRun = false) {
       consumeHostGenerationInputSnapshot,
       createGenerationRecallContext,
       ensurePersistedRecallRecordForGeneration,
+      getGenerationContext: (...args) => generationContextTracker.get(...args),
       getContext,
       getGenerationRecallHookStateFromResult,
       getGenerationRecallTransactionResult,
@@ -16255,6 +16306,7 @@ async function onBeforeCombinePrompts(promptData = null) {
   return await onBeforeCombinePromptsController(
     {
       applyFinalRecallInjectionForGeneration,
+      buildGenerationAfterCommandsRecallInput,
       buildHistoryGenerationRecallInput,
       buildNormalGenerationRecallInput,
       clearPendingHostGenerationInputSnapshot,
@@ -16263,6 +16315,7 @@ async function onBeforeCombinePrompts(promptData = null) {
       consumeDryRunPromptPreview,
       consumeHostGenerationInputSnapshot,
       createGenerationRecallContext,
+      getGenerationContext: (...args) => generationContextTracker.get(...args),
       getContext,
       getGenerationRecallHookStateFromResult,
       getGenerationRecallTransactionResult,

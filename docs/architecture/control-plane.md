@@ -75,16 +75,19 @@
 - `assertRecoveryChatStillActive` — 异步恢复过程中，校验聊天没被切走（切走则抛 abort）
 - `getGraphPersistenceLiveState` — 把内部状态投影成面板/调试可读形态
 
-## 向量门禁与 reroll 边界
+## 向量门禁与 reroll 代际上下文
 
 - `vector/vector-gate.js` — 向量准备/修复前置门禁，决定 skip / repair / blocked / sync。
-- `runtime/reroll-transaction-boundary.js` — reroll 召回复用事务边界。
+- `runtime/generation-context.js` — 记录宿主本轮生成的 `type`（`normal` / `swipe` / `regenerate` / `continue` 等），并解析本轮应绑定的父 user 楼层。
+- `runtime/reroll-recall-input.js` — 基于代际上下文构造召回输入；不再用一次性 marker 猜测 reroll。
 
 **reroll 不变量：**
 
 > reroll 助手楼层时，若上方用户楼层未变且存在可复用的持久召回记录，则跳过预召回历史恢复和新向量检索；但被 reroll 的助手楼层的**图谱回滚必须保留**（走既有 `onReroll` 路径）。
 
 换句话说：召回注入可以复用，但图谱状态该回滚还得回滚。两者不能混为一谈——这是"reroll 乱召回"修复的核心。
+
+设计纪律：**信任宿主生成类型，不用输入源猜 reroll**。`GENERATION_STARTED` / `GENERATION_AFTER_COMMANDS` 传入的 `type` 是权威信号：`swipe`、`regenerate`、`continue` 属于 no-new-user 生成，优先绑定上方可见 user 楼层的持久召回；`normal` 才代表新输入，需要 fresh recall。`MESSAGE_DELETED` 在 regenerate 代际中只作为预期删除处理，不会擦掉本轮召回事务。
 
 ## 副本一致性模型
 

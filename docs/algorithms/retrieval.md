@@ -28,7 +28,7 @@
 
 召回输入按优先级解析（`resolveRecallInputController`）：override → 待发送意图（send intent）→ 聊天尾部用户楼层 → 已发送用户 → 最新用户楼层。
 
-**持久召回复用**（`resolveReusablePersistedRecallRecord`）：如果当前输入匹配某条已持久化的用户楼层召回记录，可直接复用已存的注入内容，**跳过全部新检索**，返回 `llm.status="persisted"`。这是 reroll 场景的关键优化（见 [`../architecture/control-plane.md`](../architecture/control-plane.md) 的 reroll 不变量）。
+**持久召回复用**（`resolveReusablePersistedRecallRecord`）：如果当前输入匹配某条已持久化的用户楼层召回记录，可直接复用已存的注入内容，**跳过全部新检索**，返回 `llm.status="persisted"`。reroll / regenerate / continue 场景由宿主 `type` 判定为 no-new-user 生成后，会绑定父 user 楼层的持久召回，而不是根据 textarea / send-intent 等输入源猜测（见 [`../architecture/control-plane.md`](../architecture/control-plane.md) 的 reroll 不变量）。
 
 ## 5. 向量预筛
 

@@ -1,5 +1,7 @@
 // ST-BME: 持久化召回记录纯函数
 
+import { resolveGenerationParentUserFloor } from "../runtime/generation-context.js";
+
 export const BME_RECALL_EXTRA_KEY = "bme_recall";
 export const BME_RECALL_VERSION = 1;
 
@@ -132,28 +134,15 @@ export function bumpPersistedRecallGenerationCount(chat, userMessageIndex) {
 
 export function resolveGenerationTargetUserMessageIndex(
   chat,
-  { generationType = "normal" } = {},
+  { generationType = "normal", generationContext = null } = {},
 ) {
   if (!Array.isArray(chat) || chat.length === 0) return null;
-
-  const normalizedType = String(generationType || "normal").trim() || "normal";
-
-  // normal：取「最后一条非系统用户楼层」。若直接 return 末条非 user（常见为刚追加的助手回合），
-  // 会得到 null，导致持久化无法回绑到本轮 user，`hasRecordForLatest` 长期为 false。
-  if (normalizedType === "normal") {
-    for (let index = chat.length - 1; index >= 0; index--) {
-      const message = chat[index];
-      if (message?.is_system) continue;
-      if (message?.is_user) return index;
-    }
-    return null;
-  }
-
-  for (let index = chat.length - 1; index >= 0; index--) {
-    if (chat[index]?.is_user) return index;
-  }
-
-  return null;
+  return resolveGenerationParentUserFloor(
+    chat,
+    generationContext && typeof generationContext === "object"
+      ? { ...generationContext, type: generationContext.type || generationType }
+      : { type: generationType },
+  );
 }
 
 export function resolveFinalRecallInjectionSource({

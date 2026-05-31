@@ -118,7 +118,14 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
     "planner-handoff",
   ]);
   const isActiveInputSource = activeInputSources.has(recallSource);
-  if (isActiveInputSource) {
+  const noNewUserGenerationTypes = new Set([
+    "swipe",
+    "regenerate",
+    "continue",
+    "history",
+  ]);
+  const isNoNewUserGeneration = noNewUserGenerationTypes.has(generationType);
+  if (isActiveInputSource && !isNoNewUserGeneration) {
     return null;
   }
 
@@ -181,6 +188,12 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
       boundUserFloorText &&
       currentUserFloorText === boundUserFloorText,
   );
+  const recordRecallInputMismatch = Boolean(
+    recordRecallInput &&
+      currentUserFloorText &&
+      currentUserFloorText !== recordRecallInput &&
+      currentRecallInputText !== recordRecallInput,
+  );
   const boundUserFloorMismatch = Boolean(
     boundUserFloorText && currentUserFloorText !== boundUserFloorText,
   );
@@ -192,6 +205,7 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
   const canReuseUnboundTargetRecord = Boolean(
     currentUserFloorText &&
       !boundUserFloorText &&
+      !recordRecallInput &&
       !isActiveInputSource &&
       String(record?.injectionText || "").trim(),
   );
@@ -203,8 +217,9 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
     "persisted-user-floor",
   ]);
   const canTrustUserFloorRecord = Boolean(
-    !isActiveInputSource &&
+    (!isActiveInputSource || isNoNewUserGeneration) &&
       !boundUserFloorText &&
+      !recordRecallInputMismatch &&
       (generationType !== "normal" || userFloorSources.has(recallSource)),
   );
 

@@ -34,10 +34,6 @@ import {
   shouldRunRecallForTransaction,
 } from "../../ui/ui-status.js";
 import { defaultSettings, mergePersistedSettings } from "../../runtime/settings-defaults.js";
-import {
-  consumeRerollRecallReuseMarker,
-  createRerollRecallReuseMarker,
-} from "../../runtime/reroll-transaction-boundary.js";
 import { createRecallInputState } from "../../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../../runtime/generation-recall-transactions.js";
@@ -487,8 +483,6 @@ export async function createGenerationRecallHarness(options = {}) {
     clearPendingRecallSendIntent: (...args) =>
       recallInputState.clearPendingRecallSendIntent(...args),
     console,
-    consumeRerollRecallReuseMarker,
-    createRerollRecallReuseMarker,
     createTrivialRecallSkipSentinel,
     findLatestUserChatMessageWithIndex,
     formatInjection,
@@ -840,10 +834,6 @@ export async function createGenerationRecallHarness(options = {}) {
       recallInputState.getPendingHostGenerationInputSnapshot(...args),
     clearPendingHostGenerationInputSnapshot: (...args) =>
       recallInputState.clearPendingHostGenerationInputSnapshot(...args),
-    prepareRerollRecallReuse: (...args) =>
-      rerollRecallInput.prepareRerollRecallReuse(...args),
-    getPendingRerollRecallReuse: (...args) =>
-      rerollRecallInput.getPendingRerollRecallReuse(...args),
     clearPendingRerollRecallReuse,
     recordRecallSendIntent: (...args) =>
       recallInputState.recordRecallSendIntent(...args),
