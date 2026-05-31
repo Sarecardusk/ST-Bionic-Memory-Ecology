@@ -192,7 +192,9 @@ import {
   buildBmeSyncRuntimeOptionsImpl,
   loadGraphFromChatImpl,
   maybeCaptureGraphShadowSnapshotImpl,
+  onRebuildLocalCacheFromLukerSidecarImpl,
   persistExtractionBatchResultImpl,
+  saveGraphToChatImpl,
   shouldUseAuthorityGraphStoreImpl,
   shouldUseAuthorityJobsImpl,
   syncGraphLoadFromLiveContextImpl,
@@ -860,7 +862,9 @@ async function createGraphPersistenceHarness({
     buildBmeSyncRuntimeOptionsImpl,
     loadGraphFromChatImpl,
     maybeCaptureGraphShadowSnapshotImpl,
+    onRebuildLocalCacheFromLukerSidecarImpl,
     persistExtractionBatchResultImpl,
+    saveGraphToChatImpl,
     shouldUseAuthorityGraphStoreImpl,
     shouldUseAuthorityJobsImpl,
     syncGraphLoadFromLiveContextImpl,
@@ -1367,6 +1371,39 @@ async function createGraphPersistenceHarness({
     recordAuthorityBlobSnapshot() {},
     recordLocalPersistEarlyFailure(reason = "") {
       runtimeContext.__lastLocalPersistEarlyFailure = String(reason || "");
+    },
+    isGraphLoadStateDbReady(loadState = runtimeContext.graphPersistenceState?.loadState) {
+      return loadState === GRAPH_LOAD_STATES.LOADED || loadState === GRAPH_LOAD_STATES.EMPTY_CONFIRMED;
+    },
+    isGraphMetadataWriteAllowed() {
+      return true;
+    },
+    isLukerPrimaryPersistenceHost(context = runtimeContext.getContext?.()) {
+      return resolveBmeHostProfile(context) === "luker";
+    },
+    async loadGraphFromLukerSidecarV2(chatId, options = {}) {
+      runtimeContext.__lastLukerSidecarLoad = { chatId, options };
+      return { loaded: Boolean(runtimeContext.currentGraph), reason: "test-luker-sidecar" };
+    },
+    normalizeIndexedDbRevision(value, fallbackValue = 0) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric);
+      const fallback = Number(fallbackValue);
+      return Number.isFinite(fallback) && fallback > 0 ? Math.floor(fallback) : 0;
+    },
+    resolvePersistRevisionFloor(baseRevision = 0, graph = runtimeContext.currentGraph) {
+      return Math.max(
+        0,
+        Math.floor(Number(baseRevision || 0)),
+        Math.floor(Number(graph?.meta?.revision || 0)),
+        Math.floor(Number(getGraphPersistedRevision(graph) || 0)),
+      );
+    },
+    resolveCurrentChatStateTarget(context = runtimeContext.getContext?.()) {
+      return resolveCurrentBmeChatStateTarget(context);
+    },
+    scheduleBmeIndexedDbTask(task) {
+      return Promise.resolve().then(() => task());
     },
     __syncNowCalls: [],
     async syncNow(chatId, options = {}) {

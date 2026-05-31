@@ -1838,3 +1838,309 @@ export function loadGraphFromChatImpl(runtime, options = {}) {
   };
 
 }
+
+export function saveGraphToChatImpl(runtime, options = {}) {
+  const graphPersistenceState = new Proxy({}, {
+    get(_target, key) {
+      return (runtime.getGraphPersistenceState?.() || {})[key];
+    },
+    set(_target, key, value) {
+      const state = runtime.getGraphPersistenceState?.() || {};
+      state[key] = value;
+      return true;
+    },
+  });
+  let currentGraph = runtime.getCurrentGraph?.() || null;
+  const GRAPH_LOAD_STATES = runtime.GRAPH_LOAD_STATES;
+  const allocateRequestedPersistRevision = runtime.allocateRequestedPersistRevision;
+  const buildGraphPersistResult = runtime.buildGraphPersistResult;
+  const buildPersistenceEnvironment = runtime.buildPersistenceEnvironment;
+  const canPersistGraphToMetadataFallback = runtime.canPersistGraphToMetadataFallback;
+  const cloneGraphForPersistence = runtime.cloneGraphForPersistence;
+  const ensureBmeChatManager = runtime.ensureBmeChatManager;
+  const ensureCurrentGraphRuntimeState = runtime.ensureCurrentGraphRuntimeState;
+  const getContext = runtime.getContext;
+  const getGraphPersistedRevision = runtime.getGraphPersistedRevision;
+  const getPreferredGraphLocalStorePresentationSync = runtime.getPreferredGraphLocalStorePresentationSync;
+  const isGraphEffectivelyEmpty = runtime.isGraphEffectivelyEmpty;
+  const isGraphLoadStateDbReady = runtime.isGraphLoadStateDbReady;
+  const isGraphMetadataWriteAllowed = runtime.isGraphMetadataWriteAllowed;
+  const normalizeIndexedDbRevision = runtime.normalizeIndexedDbRevision;
+  const persistGraphToChatMetadata = runtime.persistGraphToChatMetadata;
+  const persistGraphToConfiguredDurableTier = runtime.persistGraphToConfiguredDurableTier;
+  const queueGraphPersist = runtime.queueGraphPersist;
+  const queueGraphPersistToIndexedDb = runtime.queueGraphPersistToIndexedDb;
+  const recordLocalPersistEarlyFailure = runtime.recordLocalPersistEarlyFailure;
+  const refreshPanelLiveState = runtime.refreshPanelLiveState;
+  const resolveCurrentChatStateTarget = runtime.resolveCurrentChatStateTarget;
+  const resolvePersistRevisionFloor = runtime.resolvePersistRevisionFloor;
+  const resolvePersistenceChatId = runtime.resolvePersistenceChatId;
+  const scheduleBmeIndexedDbTask = runtime.scheduleBmeIndexedDbTask;
+  const updateGraphPersistenceState = runtime.updateGraphPersistenceState;
+  const console = runtime.console || globalThis.console;
+
+  const context = getContext();
+  if (!context || !currentGraph) {
+    return buildGraphPersistResult({
+      saved: false,
+      blocked: true,
+      reason: "missing-context-or-graph",
+    });
+  }
+  const chatId = resolvePersistenceChatId(context, currentGraph);
+  const {
+    reason = "graph-save",
+    markMutation = true,
+    persistMetadata = false,
+    captureShadow = Boolean(persistMetadata),
+    immediate = markMutation,
+  } = options;
+
+  ensureCurrentGraphRuntimeState();
+  currentGraph = runtime.getCurrentGraph?.() || null;
+  currentGraph.historyState.extractionCount = runtime.getExtractionCount?.() || 0;
+  if (!chatId) {
+    recordLocalPersistEarlyFailure("missing-chat-id", {
+      chatId,
+      revision: 0,
+    });
+    return buildGraphPersistResult({
+      saved: false,
+      blocked: true,
+      reason: "missing-chat-id",
+    });
+  }
+
+  const revision = markMutation
+    ? allocateRequestedPersistRevision(0, currentGraph)
+    : resolvePersistRevisionFloor(0, currentGraph);
+  const persistenceEnvironment = buildPersistenceEnvironment(
+    context,
+    getPreferredGraphLocalStorePresentationSync(),
+  );
+
+  if (captureShadow) {
+    maybeCaptureGraphShadowSnapshotImpl(runtime, reason);
+  }
+
+  const shouldQueueIndexedDbPersist =
+    (persistenceEnvironment.hostProfile !== "luker" ||
+      persistenceEnvironment.primaryStorageTier === "authority-sql") &&
+    (markMutation || !isGraphEffectivelyEmpty(currentGraph));
+  if (shouldQueueIndexedDbPersist) {
+    queueGraphPersistToIndexedDb(chatId, currentGraph, {
+      revision,
+      reason,
+    });
+  }
+
+  const metadataFallbackEnabled =
+    Boolean(persistMetadata) || !ensureBmeChatManager();
+
+  if (!markMutation) {
+    const hasMeaningfulGraphData = !isGraphEffectivelyEmpty(currentGraph);
+    if (
+      !hasMeaningfulGraphData ||
+      graphPersistenceState.loadState === GRAPH_LOAD_STATES.EMPTY_CONFIRMED
+    ) {
+      return buildGraphPersistResult({
+        saved: false,
+        blocked: false,
+        reason: hasMeaningfulGraphData
+          ? "passive-empty-confirmed-skipped"
+          : "passive-empty-graph-skipped",
+        revision,
+      });
+    }
+  }
+
+  if (persistenceEnvironment.primaryStorageTier === "luker-chat-state") {
+    const persistGraph = cloneGraphForPersistence(currentGraph, chatId);
+    const chatStateTarget = resolveCurrentChatStateTarget(context);
+    const lastProcessedAssistantFloor = Number.isFinite(
+      Number(persistGraph?.historyState?.lastProcessedAssistantFloor),
+    )
+      ? Number(persistGraph.historyState.lastProcessedAssistantFloor)
+      : null;
+    scheduleBmeIndexedDbTask(async () => {
+      const persistResult = await persistGraphToConfiguredDurableTier(
+        context,
+        persistGraph,
+        {
+          chatId,
+          revision,
+          reason,
+          lastProcessedAssistantFloor,
+          chatStateTarget,
+          graphDetached: true,
+        },
+      );
+      if (!persistResult?.accepted) {
+        queueGraphPersist(reason, revision, {
+          immediate,
+          graph: persistGraph,
+          chatId,
+          captureShadow,
+        });
+      }
+      refreshPanelLiveState();
+    });
+    updateGraphPersistenceState({
+      hostProfile: persistenceEnvironment.hostProfile,
+      primaryStorageTier: persistenceEnvironment.primaryStorageTier,
+      cacheStorageTier: persistenceEnvironment.cacheStorageTier,
+      lastPersistReason: String(reason || "graph-save"),
+      lastPersistMode: "luker-chat-state-queued",
+    });
+    return buildGraphPersistResult({
+      saved: false,
+      queued: true,
+      blocked: false,
+      accepted: false,
+      reason: "luker-chat-state-queued",
+      revision,
+      saveMode: "luker-chat-state-queued",
+      storageTier: "luker-chat-state",
+      primaryTier: persistenceEnvironment.primaryStorageTier,
+      cacheTier: persistenceEnvironment.cacheStorageTier,
+    });
+  }
+
+  if (!metadataFallbackEnabled) {
+    const preferredLocalStore = getPreferredGraphLocalStorePresentationSync();
+    const saveMode = shouldQueueIndexedDbPersist
+      ? `${preferredLocalStore.reasonPrefix}-queued`
+      : `${preferredLocalStore.reasonPrefix}-skip`;
+    updateGraphPersistenceState({
+      storagePrimary: preferredLocalStore.storagePrimary,
+      storageMode: preferredLocalStore.storageMode,
+      dbReady:
+        graphPersistenceState.dbReady ??
+        isGraphLoadStateDbReady(graphPersistenceState.loadState),
+      lastPersistReason: String(reason || "graph-save"),
+      lastPersistMode: saveMode,
+      pendingPersist: false,
+      queuedPersistChatId: "",
+      queuedPersistMode: "",
+      queuedPersistReason: "",
+      queuedPersistRotateIntegrity: false,
+      dualWriteLastResult: {
+        action: "save",
+        target: preferredLocalStore.storagePrimary,
+        queued: Boolean(shouldQueueIndexedDbPersist),
+        success: true,
+        chatId,
+        revision: normalizeIndexedDbRevision(revision),
+        reason: String(reason || "graph-save"),
+        at: Date.now(),
+      },
+    });
+    return buildGraphPersistResult({
+      saved: false,
+      queued: Boolean(shouldQueueIndexedDbPersist),
+      blocked: false,
+      accepted: false,
+      reason: shouldQueueIndexedDbPersist
+        ? `${preferredLocalStore.reasonPrefix}-queued`
+        : `${preferredLocalStore.reasonPrefix}-empty-skip`,
+      revision,
+      saveMode,
+      storageTier: shouldQueueIndexedDbPersist
+        ? preferredLocalStore.storagePrimary
+        : "none",
+    });
+  }
+
+  if (!isGraphMetadataWriteAllowed()) {
+    console.warn(
+      `[ST-BME] 图谱写回已被安全保护拦截（chat=${chatId}，state=${graphPersistenceState.loadState}，reason=${reason}）`,
+    );
+    return queueGraphPersist(reason, revision, { immediate });
+  }
+
+  const metadataPersistResult = persistGraphToChatMetadata(context, {
+    reason,
+    revision,
+    immediate,
+  });
+  updateGraphPersistenceState({
+    storageMode: "metadata-full",
+    dualWriteLastResult: {
+      action: "save",
+      target: "metadata",
+      success: Boolean(metadataPersistResult?.saved),
+      queued: Boolean(metadataPersistResult?.queued),
+      blocked: Boolean(metadataPersistResult?.blocked),
+      chatId,
+      revision: normalizeIndexedDbRevision(revision),
+      reason: String(reason || "graph-save"),
+      at: Date.now(),
+    },
+  });
+
+  return metadataPersistResult;
+}
+
+export async function onRebuildLocalCacheFromLukerSidecarImpl(runtime) {
+  const graphPersistenceState = new Proxy({}, {
+    get(_target, key) {
+      return (runtime.getGraphPersistenceState?.() || {})[key];
+    },
+    set(_target, key, value) {
+      const state = runtime.getGraphPersistenceState?.() || {};
+      state[key] = value;
+      return true;
+    },
+  });
+  let currentGraph = runtime.getCurrentGraph?.() || null;
+  const cloneGraphForPersistence = runtime.cloneGraphForPersistence;
+  const getContext = runtime.getContext;
+  const getCurrentChatId = runtime.getCurrentChatId;
+  const getGraphPersistedRevision = runtime.getGraphPersistedRevision;
+  const isLukerPrimaryPersistenceHost = runtime.isLukerPrimaryPersistenceHost;
+  const loadGraphFromLukerSidecarV2 = runtime.loadGraphFromLukerSidecarV2;
+  const queueGraphPersistToIndexedDb = runtime.queueGraphPersistToIndexedDb;
+  const refreshPanelLiveState = runtime.refreshPanelLiveState;
+  const resolveCurrentChatStateTarget = runtime.resolveCurrentChatStateTarget;
+  const toastr = runtime.toastr;
+
+  const context = getContext();
+  const chatStateTarget = resolveCurrentChatStateTarget(context);
+  if (!isLukerPrimaryPersistenceHost(context)) {
+    toastr.info("当前宿主不是 Luker，无需从主 sidecar 重建本地缓存");
+    return { handledToast: true, reason: "not-luker" };
+  }
+  const chatId = getCurrentChatId(context);
+  if (!chatId) {
+    toastr.warning("当前没有聊天上下文");
+    return { handledToast: true, reason: "missing-chat-id" };
+  }
+
+  const loadResult = await loadGraphFromLukerSidecarV2(chatId, {
+    source: "panel-manual-luker-cache-rebuild",
+    allowOverride: true,
+    chatStateTarget,
+  });
+  currentGraph = runtime.getCurrentGraph?.() || null;
+  if (!loadResult?.loaded || !currentGraph) {
+    toastr.warning(
+      `无法从 Luker 主 sidecar 重建本地缓存: ${loadResult?.reason || "sidecar not available"}`,
+    );
+    return { handledToast: true, result: loadResult };
+  }
+
+  queueGraphPersistToIndexedDb(chatId, cloneGraphForPersistence(currentGraph, chatId), {
+    revision: Math.max(
+      Number(graphPersistenceState.lukerManifestRevision || 0),
+      Number(getGraphPersistedRevision(currentGraph) || 0),
+      Number(graphPersistenceState.revision || 0),
+    ),
+    reason: "panel-manual-luker-cache-rebuild",
+    persistRole: "cache-mirror",
+    scheduleCloudUpload: false,
+    graphDetached: true,
+  });
+  refreshPanelLiveState();
+  toastr.success("已开始从 Luker 主 sidecar 重建本地缓存");
+  return { handledToast: true, result: loadResult };
+}

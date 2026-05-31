@@ -354,7 +354,9 @@ import {
   buildBmeSyncRuntimeOptionsImpl,
   loadGraphFromChatImpl,
   maybeCaptureGraphShadowSnapshotImpl,
+  onRebuildLocalCacheFromLukerSidecarImpl,
   persistExtractionBatchResultImpl,
+  saveGraphToChatImpl,
   shouldUseAuthorityGraphStoreImpl,
   shouldUseAuthorityJobsImpl,
   syncGraphLoadFromLiveContextImpl,
@@ -1392,9 +1394,14 @@ function createGraphLoadPersistRuntime() {
     isAuthorityJobTypeSupported,
     isAuthorityVectorConfig,
     isGraphEffectivelyEmpty,
+    isGraphLoadStateDbReady,
+    isGraphMetadataWriteAllowed,
     isIndexedDbSnapshotMeaningful,
+    isLukerPrimaryPersistenceHost,
+    loadGraphFromLukerSidecarV2,
     loadGraphFromChat,
     loadGraphFromIndexedDb,
+    normalizeIndexedDbRevision,
     normalizeAuthorityCapabilityState,
     normalizeAuthorityJobConfig,
     normalizeAuthoritySettings,
@@ -1403,6 +1410,7 @@ function createGraphLoadPersistRuntime() {
     persistGraphToChatMetadata,
     persistGraphToConfiguredDurableTier,
     queueGraphPersist,
+    queueGraphPersistToIndexedDb,
     readCachedIndexedDbSnapshot,
     recordLocalPersistEarlyFailure,
     recordAuthorityBlobSnapshot,
@@ -1412,11 +1420,14 @@ function createGraphLoadPersistRuntime() {
     rememberResolvedGraphIdentityAlias,
     resolveCompatibleGraphShadowSnapshot,
     resolveCurrentChatIdentity,
+    resolveCurrentChatStateTarget,
+    resolvePersistRevisionFloor,
     resolvePersistenceChatId,
     resolvePreferredGraphLocalStorePresentation,
     resolveSnapshotGraphStorePresentation,
     restoreRecallUiStateFromPersistence,
     runAuthorityConsistencyAudit,
+    scheduleBmeIndexedDbTask,
     scheduleGraphChatStateProbe,
     scheduleIndexedDbGraphProbe,
     schedulePersistedRecallMessageUiRefresh,
@@ -1427,6 +1438,7 @@ function createGraphLoadPersistRuntime() {
     stampGraphPersistenceMeta,
     syncCommitMarkerToPersistenceState,
     updateGraphPersistenceState,
+    toastr,
     writeAuthorityLukerCheckpointBlob,
     writeGraphShadowSnapshot,
   };
@@ -14505,205 +14517,7 @@ function queueGraphPersistToIndexedDb(
 }
 
 function saveGraphToChat(options = {}) {
-  const context = getContext();
-  if (!context || !currentGraph) {
-    return buildGraphPersistResult({
-      saved: false,
-      blocked: true,
-      reason: "missing-context-or-graph",
-    });
-  }
-  const chatId = resolvePersistenceChatId(context, currentGraph);
-  const {
-    reason = "graph-save",
-    markMutation = true,
-    persistMetadata = false,
-    captureShadow = Boolean(persistMetadata),
-    immediate = markMutation,
-  } = options;
-
-  ensureCurrentGraphRuntimeState();
-  currentGraph.historyState.extractionCount = extractionCount;
-  if (!chatId) {
-    recordLocalPersistEarlyFailure("missing-chat-id", {
-      chatId,
-      revision: 0,
-    });
-    return buildGraphPersistResult({
-      saved: false,
-      blocked: true,
-      reason: "missing-chat-id",
-    });
-  }
-
-  const revision = markMutation
-    ? allocateRequestedPersistRevision(0, currentGraph)
-    : resolvePersistRevisionFloor(0, currentGraph);
-  const persistenceEnvironment = buildPersistenceEnvironment(
-    context,
-    getPreferredGraphLocalStorePresentationSync(),
-  );
-
-  if (captureShadow) {
-    maybeCaptureGraphShadowSnapshot(reason);
-  }
-
-  const shouldQueueIndexedDbPersist =
-    (persistenceEnvironment.hostProfile !== "luker" ||
-      persistenceEnvironment.primaryStorageTier === "authority-sql") &&
-    (markMutation || !isGraphEffectivelyEmpty(currentGraph));
-  if (shouldQueueIndexedDbPersist) {
-    queueGraphPersistToIndexedDb(chatId, currentGraph, {
-      revision,
-      reason,
-    });
-  }
-
-  const metadataFallbackEnabled =
-    Boolean(persistMetadata) || !ensureBmeChatManager();
-
-  if (!markMutation) {
-    const hasMeaningfulGraphData = !isGraphEffectivelyEmpty(currentGraph);
-    if (
-      !hasMeaningfulGraphData ||
-      graphPersistenceState.loadState === GRAPH_LOAD_STATES.EMPTY_CONFIRMED
-    ) {
-      return buildGraphPersistResult({
-        saved: false,
-        blocked: false,
-        reason: hasMeaningfulGraphData
-          ? "passive-empty-confirmed-skipped"
-          : "passive-empty-graph-skipped",
-        revision,
-      });
-    }
-  }
-
-  if (persistenceEnvironment.primaryStorageTier === "luker-chat-state") {
-    const persistGraph = cloneGraphForPersistence(currentGraph, chatId);
-    const chatStateTarget = resolveCurrentChatStateTarget(context);
-    const lastProcessedAssistantFloor = Number.isFinite(
-      Number(persistGraph?.historyState?.lastProcessedAssistantFloor),
-    )
-      ? Number(persistGraph.historyState.lastProcessedAssistantFloor)
-      : null;
-    scheduleBmeIndexedDbTask(async () => {
-      const persistResult = await persistGraphToConfiguredDurableTier(
-        context,
-        persistGraph,
-        {
-          chatId,
-          revision,
-          reason,
-          lastProcessedAssistantFloor,
-          chatStateTarget,
-          graphDetached: true,
-        },
-      );
-      if (!persistResult?.accepted) {
-        queueGraphPersist(reason, revision, {
-          immediate,
-          graph: persistGraph,
-          chatId,
-          captureShadow,
-        });
-      }
-      refreshPanelLiveState();
-    });
-    updateGraphPersistenceState({
-      hostProfile: persistenceEnvironment.hostProfile,
-      primaryStorageTier: persistenceEnvironment.primaryStorageTier,
-      cacheStorageTier: persistenceEnvironment.cacheStorageTier,
-      lastPersistReason: String(reason || "graph-save"),
-      lastPersistMode: "luker-chat-state-queued",
-    });
-    return buildGraphPersistResult({
-      saved: false,
-      queued: true,
-      blocked: false,
-      accepted: false,
-      reason: "luker-chat-state-queued",
-      revision,
-      saveMode: "luker-chat-state-queued",
-      storageTier: "luker-chat-state",
-      primaryTier: persistenceEnvironment.primaryStorageTier,
-      cacheTier: persistenceEnvironment.cacheStorageTier,
-    });
-  }
-
-  if (!metadataFallbackEnabled) {
-    const preferredLocalStore = getPreferredGraphLocalStorePresentationSync();
-    const saveMode = shouldQueueIndexedDbPersist
-      ? `${preferredLocalStore.reasonPrefix}-queued`
-      : `${preferredLocalStore.reasonPrefix}-skip`;
-    updateGraphPersistenceState({
-      storagePrimary: preferredLocalStore.storagePrimary,
-      storageMode: preferredLocalStore.storageMode,
-      dbReady:
-        graphPersistenceState.dbReady ??
-        isGraphLoadStateDbReady(graphPersistenceState.loadState),
-      lastPersistReason: String(reason || "graph-save"),
-      lastPersistMode: saveMode,
-      pendingPersist: false,
-      queuedPersistChatId: "",
-      queuedPersistMode: "",
-      queuedPersistReason: "",
-      queuedPersistRotateIntegrity: false,
-      dualWriteLastResult: {
-        action: "save",
-        target: preferredLocalStore.storagePrimary,
-        queued: Boolean(shouldQueueIndexedDbPersist),
-        success: true,
-        chatId,
-        revision: normalizeIndexedDbRevision(revision),
-        reason: String(reason || "graph-save"),
-        at: Date.now(),
-      },
-    });
-    return buildGraphPersistResult({
-      saved: false,
-      queued: Boolean(shouldQueueIndexedDbPersist),
-      blocked: false,
-      accepted: false,
-      reason: shouldQueueIndexedDbPersist
-        ? `${preferredLocalStore.reasonPrefix}-queued`
-        : `${preferredLocalStore.reasonPrefix}-empty-skip`,
-      revision,
-      saveMode,
-      storageTier: shouldQueueIndexedDbPersist
-        ? preferredLocalStore.storagePrimary
-        : "none",
-    });
-  }
-
-  if (!isGraphMetadataWriteAllowed()) {
-    console.warn(
-      `[ST-BME] 图谱写回已被安全保护拦截（chat=${chatId}，state=${graphPersistenceState.loadState}，reason=${reason}）`,
-    );
-    return queueGraphPersist(reason, revision, { immediate });
-  }
-
-  const metadataPersistResult = persistGraphToChatMetadata(context, {
-    reason,
-    revision,
-    immediate,
-  });
-  updateGraphPersistenceState({
-    storageMode: "metadata-full",
-    dualWriteLastResult: {
-      action: "save",
-      target: "metadata",
-      success: Boolean(metadataPersistResult?.saved),
-      queued: Boolean(metadataPersistResult?.queued),
-      blocked: Boolean(metadataPersistResult?.blocked),
-      chatId,
-      revision: normalizeIndexedDbRevision(revision),
-      reason: String(reason || "graph-save"),
-      at: Date.now(),
-    },
-  });
-
-  return metadataPersistResult;
+  return saveGraphToChatImpl(createGraphLoadPersistRuntime(), options);
 }
 
 function handleGraphShadowSnapshotPageHide() {
@@ -17677,44 +17491,7 @@ async function onProbeGraphLoad() {
 }
 
 async function onRebuildLocalCacheFromLukerSidecar() {
-  const context = getContext();
-  const chatStateTarget = resolveCurrentChatStateTarget(context);
-  if (!isLukerPrimaryPersistenceHost(context)) {
-    toastr.info("当前宿主不是 Luker，无需从主 sidecar 重建本地缓存");
-    return { handledToast: true, reason: "not-luker" };
-  }
-  const chatId = getCurrentChatId(context);
-  if (!chatId) {
-    toastr.warning("当前没有聊天上下文");
-    return { handledToast: true, reason: "missing-chat-id" };
-  }
-
-  const loadResult = await loadGraphFromLukerSidecarV2(chatId, {
-    source: "panel-manual-luker-cache-rebuild",
-    allowOverride: true,
-    chatStateTarget,
-  });
-  if (!loadResult?.loaded || !currentGraph) {
-    toastr.warning(
-      `无法从 Luker 主 sidecar 重建本地缓存: ${loadResult?.reason || "sidecar not available"}`,
-    );
-    return { handledToast: true, result: loadResult };
-  }
-
-  queueGraphPersistToIndexedDb(chatId, cloneGraphForPersistence(currentGraph, chatId), {
-    revision: Math.max(
-      Number(graphPersistenceState.lukerManifestRevision || 0),
-      Number(getGraphPersistedRevision(currentGraph) || 0),
-      Number(graphPersistenceState.revision || 0),
-    ),
-    reason: "panel-manual-luker-cache-rebuild",
-    persistRole: "cache-mirror",
-    scheduleCloudUpload: false,
-    graphDetached: true,
-  });
-  refreshPanelLiveState();
-  toastr.success("已开始从 Luker 主 sidecar 重建本地缓存");
-  return { handledToast: true, result: loadResult };
+  return await onRebuildLocalCacheFromLukerSidecarImpl(createGraphLoadPersistRuntime());
 }
 
 async function onRepairLukerSidecar() {
