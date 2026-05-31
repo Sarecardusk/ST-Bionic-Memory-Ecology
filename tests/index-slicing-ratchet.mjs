@@ -29,7 +29,6 @@ const SELF_RELATIVE = "tests/index-slicing-ratchet.mjs";
 const ALLOWLIST = Object.freeze({
   "tests/graph-persistence.mjs": { maxMarkerCalls: 7, stage: "Phase 5" },
   "tests/p0-regressions.mjs": { maxMarkerCalls: 13, stage: "Phase 3" },
-  "tests/mobile-status-regressions.mjs": { maxMarkerCalls: 7, stage: "Phase 1" },
   "tests/helpers/generation-recall-harness.mjs": { maxMarkerCalls: 3, stage: "Phase 4" },
   "tests/message-render-limit.mjs": { maxMarkerCalls: 4, stage: "Phase 2" },
   "tests/index-esm-entry-smoke.mjs": { maxMarkerCalls: 4, stage: "Phase 5" },

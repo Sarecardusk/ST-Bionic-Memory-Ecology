@@ -410,6 +410,7 @@ import {
   validateVectorConfig,
 } from "./vector/vector-index.js";
 import { planVectorReadyCheck } from "./vector/vector-gate.js";
+import { syncVectorStateController } from "./vector/vector-sync-controller.js";
 import { createAuthorityTriviumClient } from "./vector/authority-vector-primary-adapter.js";
 import {
   buildAuthorityJobIdempotencyKey,
@@ -17089,87 +17090,26 @@ function computePostProcessArtifacts(
   return [...tags];
 }
 
-async function syncVectorState({
-  force = false,
-  purge = false,
-  range = null,
-  signal = undefined,
-} = {}) {
-  ensureCurrentGraphRuntimeState();
-  const scopeLabel =
-    range && Number.isFinite(range.start) && Number.isFinite(range.end)
-      ? `范围 ${Math.min(range.start, range.end)}-${Math.max(range.start, range.end)}`
-      : "当前聊天";
-  setLastVectorStatus(
-    "向量处理中",
-    `${scopeLabel} · ${force ? "强制同步" : "增量同步"}`,
-    "running",
-    { syncRuntime: true },
+async function syncVectorState(options = {}) {
+  return await syncVectorStateController(
+    {
+      ensureCurrentGraphRuntimeState,
+      getCurrentGraph: () => currentGraph,
+      setLastVectorStatus,
+      getEmbeddingConfig,
+      validateVectorConfig,
+      getVectorIndexStats,
+      syncGraphVectorIndex,
+      resolveOperationalChatId,
+      getContext,
+      markVectorStateDirty,
+      isAbortError,
+      getRequestHeaders:
+        typeof getRequestHeaders === "function" ? getRequestHeaders : undefined,
+      console,
+    },
+    options,
   );
-  const config = getEmbeddingConfig();
-  const validation = validateVectorConfig(config);
-
-  if (!validation.valid) {
-    currentGraph.vectorIndexState.lastWarning = validation.error;
-    currentGraph.vectorIndexState.dirty = true;
-    setLastVectorStatus("向量不可用", validation.error, "warning", {
-      syncRuntime: true,
-    });
-    return {
-      insertedHashes: [],
-      stats: getVectorIndexStats(currentGraph),
-      error: validation.error,
-    };
-  }
-
-  try {
-    const result = await syncGraphVectorIndex(currentGraph, config, {
-      chatId: resolveOperationalChatId(getContext(), currentGraph),
-      force,
-      purge,
-      range,
-      signal,
-      headerProvider:
-        typeof getRequestHeaders === "function" ? () => getRequestHeaders() : null,
-    });
-    if (result?.error) {
-      setLastVectorStatus("向量待修复", result.error, "warning", {
-        syncRuntime: true,
-      });
-      return result;
-    }
-    setLastVectorStatus(
-      "向量完成",
-      `${scopeLabel} · indexed ${result.stats?.indexed ?? 0} · pending ${result.stats?.pending ?? 0}`,
-      "success",
-      { syncRuntime: true },
-    );
-    return result;
-  } catch (error) {
-    if (isAbortError(error)) {
-      setLastVectorStatus("向量已终止", scopeLabel, "warning", {
-        syncRuntime: true,
-      });
-      return {
-        insertedHashes: [],
-        stats: getVectorIndexStats(currentGraph),
-        error: error?.message || "向量任务已终止",
-        aborted: true,
-      };
-    }
-    const message = error?.message || String(error) || "向量同步失败";
-    markVectorStateDirty(message);
-    console.error("[ST-BME] 向量同步失败:", error);
-    setLastVectorStatus("向量失败", message, "error", {
-      syncRuntime: true,
-      toastKind: "error",
-    });
-    return {
-      insertedHashes: [],
-      stats: getVectorIndexStats(currentGraph),
-      error: message,
-    };
-  }
 }
 
 function scheduleBackgroundVectorSync(task = null, settings = {}) {
