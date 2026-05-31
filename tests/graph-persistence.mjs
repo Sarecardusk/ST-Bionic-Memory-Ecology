@@ -171,6 +171,13 @@ import { createFinalRecallInjection } from "../runtime/final-recall-injection.js
 import { createAutoExtractionDefer } from "../runtime/auto-extraction-defer.js";
 import { runPlannerRecallForEnaController } from "../runtime/planner-recall-controller.js";
 import {
+  loadGraphFromIndexedDbImpl,
+  maybeFlushQueuedGraphPersistImpl,
+  queueGraphPersistToIndexedDbImpl,
+  retryPendingGraphPersistImpl,
+  saveGraphToIndexedDbImpl,
+} from "../sync/graph-persistence-io.js";
+import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
 } from "../runtime/reroll-transaction-boundary.js";
@@ -801,6 +808,11 @@ async function createGraphPersistenceHarness({
     createFinalRecallInjection,
     createAutoExtractionDefer,
     runPlannerRecallForEnaController,
+    loadGraphFromIndexedDbImpl,
+    maybeFlushQueuedGraphPersistImpl,
+    queueGraphPersistToIndexedDbImpl,
+    retryPendingGraphPersistImpl,
+    saveGraphToIndexedDbImpl,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {

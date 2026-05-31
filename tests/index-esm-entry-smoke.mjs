@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { saveGraphToIndexedDbImpl } from "../sync/graph-persistence-io.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../index.js");
@@ -18,7 +19,7 @@ function extractSnippet(startMarker, endMarker) {
 
 const saveGraphSnippet = extractSnippet(
   "async function saveGraphToIndexedDb(",
-  "function queueGraphPersistToIndexedDb(",
+  "function normalizePersistObservabilityKey(",
 );
 
 const tempModulePath = path.resolve(
@@ -31,6 +32,7 @@ await fs.writeFile(
   `
 const GRAPH_LOAD_STATES = { SHADOW_RESTORED: "shadow-restored", LOADED: "loaded" };
 const AUTHORITY_GRAPH_STORE_KIND = "authority";
+const BME_INDEXEDDB_FALLBACK_LOAD_STATE_SET = new Set(["idle", "loading", "blocked", "shadow-restored"]);
 let currentGraph = null;
 let graphPersistenceState = {
   metadataIntegrity: "",
@@ -47,6 +49,11 @@ let graphPersistenceState = {
   shadowSnapshotUpdatedAt: "",
   shadowSnapshotReason: "",
 };
+let nativePersistDeltaInstallPromise = null;
+let nativeHydrateInstallPromise = null;
+const bmeIndexedDbLatestQueuedRevisionByChatId = new Map();
+const bmeIndexedDbWriteInFlightByChatId = new Map();
+const saveGraphToIndexedDbImpl = globalThis.__saveGraphToIndexedDbImpl;
 function normalizeChatIdCandidate(value = "") { return String(value ?? "").trim(); }
 function normalizeIndexedDbRevision(value, fallbackValue = 0) {
   const parsed = Number(value);
@@ -128,6 +135,7 @@ function evaluatePersistNativeDeltaGate() {
 function readPersistDeltaDiagnosticsNow() { return Date.now(); }
 function normalizePersistDeltaDiagnosticsMs(value = 0) { return Math.round((Number(value) || 0) * 10) / 10; }
 function updatePersistDeltaDiagnostics() {}
+function buildPersistObservabilitySummary() { return { totalSamples: 1 }; }
 function buildPersistDelta() {
   return {
     upsertNodes: [],
@@ -150,6 +158,66 @@ function applyGraphLoadState() {}
 function rememberResolvedGraphIdentityAlias() {}
 function resolveLocalStoreTierFromPresentation() { return "indexeddb"; }
 function updateGraphPersistenceState(patch = {}) { graphPersistenceState = { ...graphPersistenceState, ...(patch || {}) }; return graphPersistenceState; }
+function getCurrentGraph() { return currentGraph; }
+function setCurrentGraph(graph) { currentGraph = graph; return currentGraph; }
+function getGraphPersistenceState() { return graphPersistenceState; }
+function setGraphPersistenceState(patch = {}) { graphPersistenceState = { ...graphPersistenceState, ...(patch || {}) }; return graphPersistenceState; }
+function getNativePersistDeltaInstallPromise() { return nativePersistDeltaInstallPromise; }
+function setNativePersistDeltaInstallPromise(promise) { nativePersistDeltaInstallPromise = promise; }
+function getNativeHydrateInstallPromise() { return nativeHydrateInstallPromise; }
+function setNativeHydrateInstallPromise(promise) { nativeHydrateInstallPromise = promise; }
+function createGraphPersistenceIoRuntime() {
+  return {
+    AUTHORITY_GRAPH_STORE_KIND,
+    BME_INDEXEDDB_FALLBACK_LOAD_STATE_SET,
+    GRAPH_LOAD_STATES,
+    applyGraphLoadState,
+    areChatIdsEquivalentForResolvedIdentity,
+    bmeIndexedDbLatestQueuedRevisionByChatId,
+    bmeIndexedDbWriteInFlightByChatId,
+    buildBmeSyncRuntimeOptions,
+    buildPersistDelta,
+    buildPersistDeltaFromGraphDirtyState,
+    buildPersistObservabilitySummary,
+    buildPersistenceEnvironment,
+    buildSnapshotFromGraph,
+    cacheIndexedDbSnapshot,
+    clearPendingGraphPersistRetry,
+    cloneRuntimeDebugValue,
+    console,
+    ensureBmeChatManager,
+    evaluatePersistNativeDeltaGate,
+    getChatMetadataIntegrity,
+    getContext,
+    getCurrentChatId: () => "chat-esm",
+    getCurrentGraph,
+    getGraphPersistenceState,
+    getNativeHydrateInstallPromise,
+    getNativePersistDeltaInstallPromise,
+    getPreferredGraphLocalStorePresentationSync,
+    getSettings,
+    normalizeChatIdCandidate,
+    normalizeIndexedDbRevision,
+    normalizePersistDeltaDiagnosticsMs,
+    pruneGraphPersistDirtyState,
+    readCachedIndexedDbSnapshot,
+    readPersistDeltaDiagnosticsNow,
+    recordLocalPersistEarlyFailure: () => {},
+    rememberResolvedGraphIdentityAlias,
+    resolveCurrentChatIdentity,
+    resolveDbGraphStorePresentation,
+    resolveLocalStoreTierFromPresentation,
+    resolvePersistRevisionFloor,
+    scheduleUpload,
+    setCurrentGraph,
+    setGraphPersistenceState,
+    setNativeHydrateInstallPromise,
+    setNativePersistDeltaInstallPromise,
+    stampGraphPersistenceMeta,
+    updateGraphPersistenceState,
+    updatePersistDeltaDiagnostics,
+  };
+}
 ${saveGraphSnippet}
 export { saveGraphToIndexedDb };
 `,
@@ -157,6 +225,7 @@ export { saveGraphToIndexedDb };
 );
 
 try {
+  globalThis.__saveGraphToIndexedDbImpl = saveGraphToIndexedDbImpl;
   const smokeModule = await import(
     `${pathToFileURL(tempModulePath).href}?t=${Date.now()}`
   );
@@ -178,6 +247,7 @@ try {
   assert.equal(failed.reason, "indexeddb-write-failed");
 } finally {
   delete globalThis.__testCommitShouldThrow;
+  delete globalThis.__saveGraphToIndexedDbImpl;
   await fs.unlink(tempModulePath).catch(() => {});
 }
 
