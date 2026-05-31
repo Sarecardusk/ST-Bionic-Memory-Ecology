@@ -14,20 +14,28 @@
 
 聊天身份是一切持久化的主键。问题从来不是"chatId 这个键选错了"，而是"有好几个来源都自称是当前身份，还互相偷偷顶替"。
 
-身份核心在 `runtime/identity-resolver.js`，把身份明确拆成**四条独立通道**，绝不互相顶替：
+身份核心在 `runtime/identity-resolver.js`，把身份明确按**四类语义**区分对待，绝不互相顶替：
 
-| 通道 | 含义 | 唯一来源 |
+| 类别 | 含义 | 来源 |
 | --- | --- | --- |
-| **active identity** | 当前宿主活动聊天 | 只来自宿主上下文（context integrity / hostChatId 的已知别名 / hostChatId） |
+| **active / current identity** | 当前宿主活动聊天 | 只来自宿主上下文（context integrity / hostChatId 的已知别名 / hostChatId） |
 | **graph-owner identity** | 图谱自带的所属身份 | 图谱 meta，只用于校验/恢复 |
-| **queued identity** | 排队持久化的身份 | 持久化队列状态，只用于校验 |
+| **queued identity** | 排队持久化的身份 | 持久化状态，只用于校验/恢复 |
 | **marker identity** | commit marker 的身份 | commit marker，只用于校验/恢复 |
+
+实现上：
+
+- **active/current** 由独立入口 `resolveCurrentChatIdentityCore()` 解析，只认宿主上下文来源。
+- **graph-owner** 由 `resolveGraphOwnerIdentityCore()` 解析。
+- **queued / marker** 没有各自独立的解析入口——它们和 graph-owner 一起，在 `resolveRuntimeGraphFallbackIdentityCore()` / `resolvePersistenceChatIdCore()` 这类**恢复/兜底**聚合里被读取（含 `persistenceState.queuedPersistChatId` 和 `persistenceState.commitMarker.chatId`），并配合调用方的身份等值校验使用。
+
+关键不在于"每类都有独立函数"，而在于**只有 active/current 这条通道能产出"当前聊天"，其余通道一律只进校验/恢复,不能升格为活动身份**。
 
 **核心不变量：**
 
 > active identity 只能来自宿主上下文。graph-owner / queued / marker 身份只能用于校验和恢复，**绝不能"偷偷"变成当前聊天**。
 
-这正是"未进入聊天"那类 bug 的根：旧代码用一个"优先级抽奖"函数接受十几个竞争来源，结果某个非活动身份被当成了活动聊天。现在 `resolveActiveIdentity` / `resolveGraphOwnerIdentity` / `resolveQueuedIdentity` / `resolveMarkerIdentity` 是分开的入口，不给聚合入口诱导污染。
+这正是"未进入聊天"那类 bug 的根：旧代码用一个"优先级抽奖"函数接受十几个竞争来源，结果某个非活动身份被当成了活动聊天。现在 active/current 有专门入口，恢复/兜底身份走单独的 fallback 聚合，不给"非活动身份污染活动身份"留口子。
 
 > 身份是每次操作解析一次、显式传递的，不是从全局随用随取。
 
@@ -35,7 +43,7 @@
 
 持久化确认逻辑收敛在 `sync/persistence-reducer.js`，是**纯函数**：无 IO、无图谱变更、无 UI 副作用。
 
-它把"这批记忆到底存好了没"变成 `(身份, 存储层 tier, 版本 revision, 证据)` 的纯函数。核心不变量写死进 reducer，而不是到处打补丁：
+它把"这批记忆到底存好了没"变成关于 `(身份, 存储层 tier, 版本 revision, 证据)` 的纯计算。核心不变量：
 
 ```
 已确认版本 >= 排队版本
@@ -43,6 +51,8 @@
   且 是规范 tier（canonical：authority-sql / indexeddb / opfs / luker-chat-state）
   ⟹ pendingPersist 必须为 false
 ```
+
+> 实现说明：这条不变量**不是**某个单一 reducer 事件全包的。`reducePersistenceStatePatch()` 处理通用 `ACCEPTED` / `QUEUED` 事件；`buildAcceptedPersistenceStatePatch()` 在规范 tier 被接受时清 `pendingPersist`（但它本身不查排队版本/身份）；"陈旧 pending 自动清除"的规划逻辑在纯函数 `planAcceptedPendingClear()`（`sync/legacy-persistence-repair.js`，经 reducer re-export）；**身份等值校验在调用方**（`index.js` 接受路径）完成后才调用应用函数。所以这条不变量 = 纯规划器 + 调用方身份门禁的合成，而非单个事件转换。
 
 **派生不变量：**
 

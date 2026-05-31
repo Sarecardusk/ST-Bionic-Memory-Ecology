@@ -5,7 +5,7 @@ ST-BME 可以独立运行（纯前端），也可以在检测到 st-doa/Authorit
 ## 核心原则
 
 1. **BME 独立运行是第一公民。** 没有 st-doa 时，BME 必须完整可用，优雅降级，不报错。纯前端模式显示"纯前端模式"，不是错误状态。
-2. **第三方自定义 URL embedding 是主流路径。** OpenAI 兼容 `/v1/embeddings`、one-api、new-api、litellm、vLLM、llama.cpp、Ollama 桥接等，都是一等公民。embedding 默认在客户端执行（`embeddingExecution` 默认 `client`）。
+2. **第三方自定义 URL embedding 是主流路径。** OpenAI 兼容 `/v1/embeddings`、one-api、new-api、litellm、vLLM、llama.cpp、Ollama 桥接等，都是一等公民。embedding 默认在客户端执行（`embeddingTransportMode` 默认 `"direct"`，直连第三方 URL）。
 3. **集成是自动的，不需要用户配置。** 能力探测驱动的升级/降级，没有面向用户的"服务器模式"开关。既要优雅降级（无 st-doa），也要优雅升级（有 st-doa），全程零用户干预。
 
 > Authority 是**增强层**，不是硬依赖。它不生成 embedding——只通过 Trivium 存储/搜索向量，并要求调用方提供向量。

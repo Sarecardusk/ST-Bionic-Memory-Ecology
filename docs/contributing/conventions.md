@@ -51,7 +51,7 @@ const graphPersistenceState = new Proxy({}, {
 这些在 [`../architecture/control-plane.md`](../architecture/control-plane.md) 有完整说明，这里列出最易被无意破坏的：
 
 1. **active identity 只来自宿主上下文**；graph-owner/queued/marker 身份只用于校验/恢复，绝不变成当前聊天。
-2. **`已确认版本 >= 排队版本 && 同身份 && 规范 tier ⟹ pendingPersist === false`**——写在 reducer 里，不要在外面打补丁绕过。
+2. **`已确认版本 >= 排队版本 && 同身份 && 规范 tier ⟹ pendingPersist === false`**——由纯规划器（`planAcceptedPendingClear` / `buildAcceptedPersistenceStatePatch`）加调用方身份门禁合成，不要在外面另起一套绕过它。
 3. **recovery-only tier（shadow/metadata）永远不能推进确认状态。**
 4. **reroll 复用召回时，被 reroll 助手楼层的图谱回滚必须保留**——召回复用和图谱回滚是两件事。
 5. **向量空间不兼容时返回空向量结果回退图/词法召回**，绝不静默复用旧向量。

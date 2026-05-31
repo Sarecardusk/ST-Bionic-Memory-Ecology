@@ -57,7 +57,7 @@
 
 ## 9. 可选增强
 
-默认全部关闭，按需启用：
+默认全部按需启用（注意：`enableCrossRecall` 在应用设置里默认**开**，其余增强项默认关，以代码为准）：
 
 - **交叉召回**（`enableCrossRecall`）：精确实体锚点存在时，把相连的 `event` 邻居作为扩散种子加入（能量 `1.5 × edge.strength`）。范围比"双记忆交叉检索"窄，只走"精确锚点 → 相连事件邻居"。
 - **共现增强**（`enableCooccurrenceBoost`）：用精确锚点和补充向量锚点构建共现索引，给图分加 bonus。
@@ -96,15 +96,20 @@
 
 ## 关键默认参数
 
-| 参数 | 默认 | 含义 |
-| --- | --- | --- |
-| `topK` | 20 | 排序候选数 |
-| `maxRecallNodes` | 8 | 最终注入节点上限 |
-| `diffusionTopK` | 100 | 扩散保留节点数 |
-| `llmCandidatePool` | 30 | LLM 精排候选池 |
-| `enableLLMRecall` | true | LLM 精排 |
-| `enableVectorPrefilter` | true | 向量预筛 |
-| `enableGraphDiffusion` | true | 图扩散 |
-| `enableCrossRecall` | false | 交叉召回 |
-| `enableProbRecall` | false | 概率召回 |
-| `enableDiversitySampling` | true | DPP 多样性 |
+> 注意两套默认值的区别：下表"retrieve() 回退"是当调用方省略选项时 `retriever.js` 内部的兜底值；"应用设置"是 `runtime/settings-defaults.js` 里正常召回实际使用的默认，由 `index.js` 映射进 `retrieve()`。两者不同时，**正常召回看应用设置那一列**。
+
+| 参数 | retrieve() 回退 | 应用设置（正常召回） | 含义 |
+| --- | --- | --- | --- |
+| topK | 20 | `recallTopK` 20 | 排序候选数 |
+| maxRecallNodes | 8 | `recallMaxNodes` **12** | 最终注入节点上限 |
+| diffusionTopK | 100 | 100 | 扩散保留节点数 |
+| llmCandidatePool | 30 | 30 | LLM 精排候选池 |
+| enableLLMRecall | true | true | LLM 精排 |
+| enableVectorPrefilter | true | true | 向量预筛 |
+| enableGraphDiffusion | true | true | 图扩散 |
+| enableVisibility | （未设即关） | **true** | 可见性过滤 |
+| enableCrossRecall | false | **true** | 交叉召回 |
+| enableProbRecall | false | false | 概率召回 |
+| enableDiversitySampling | true | true | DPP 多样性 |
+
+> 所以正常召回的实际最终注入上限是 **12**（不是 8），且交叉召回和可见性过滤默认**开启**——除非用户改设置。
