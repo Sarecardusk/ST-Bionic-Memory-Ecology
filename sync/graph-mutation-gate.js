@@ -620,6 +620,80 @@ export function getGraphMutationBlockReasonImpl(runtime, operationLabel = "当�
 
 }
 
+export function applyGraphLoadStateImpl(runtime, loadState, {
+    chatId = runtime.getCurrentChatId(),
+    reason = "",
+    attemptIndex = 0,
+    shadowSnapshotUsed = false,
+    shadowSnapshotRevision = 0,
+    shadowSnapshotUpdatedAt = "",
+    shadowSnapshotReason = "",
+    revision = (runtime.getGraphPersistenceState?.() || {}).revision,
+    lastPersistedRevision = (runtime.getGraphPersistenceState?.() || {}).lastPersistedRevision,
+    queuedPersistRevision = (runtime.getGraphPersistenceState?.() || {}).queuedPersistRevision,
+    pendingPersist = (runtime.getGraphPersistenceState?.() || {}).pendingPersist,
+    dbReady = runtime.isGraphLoadStateDbReady(loadState),
+    writesBlocked = !runtime.isGraphMetadataWriteAllowed(loadState),
+    storagePrimary = (runtime.getGraphPersistenceState?.() || {}).storagePrimary || "indexeddb",
+    storageMode =
+      (runtime.getGraphPersistenceState?.() || {}).storageMode || runtime.BME_GRAPH_LOCAL_STORAGE_MODE_INDEXEDDB,
+    hostProfile = (runtime.getGraphPersistenceState?.() || {}).hostProfile || runtime.resolvePersistenceHostProfile(),
+    primaryStorageTier =
+      (runtime.getGraphPersistenceState?.() || {}).primaryStorageTier ||
+      runtime.buildPersistenceEnvironment(runtime.getContext(), {
+        storagePrimary,
+        storageMode,
+      }).primaryStorageTier,
+    cacheStorageTier =
+      (runtime.getGraphPersistenceState?.() || {}).cacheStorageTier ||
+      runtime.buildPersistenceEnvironment(runtime.getContext(), {
+        storagePrimary,
+        storageMode,
+      }).cacheStorageTier,
+  } = {},
+) {
+  const graphPersistenceState = new Proxy({}, {
+    get(_target, key) { return (runtime.getGraphPersistenceState?.() || {})[key]; },
+    set(_target, key, value) { const state = runtime.getGraphPersistenceState?.() || {}; state[key] = value; return true; },
+  });
+  const updateGraphPersistenceState = runtime.updateGraphPersistenceState;
+  const isGraphLoadStateDbReady = runtime.isGraphLoadStateDbReady;
+  const maybeResumePendingAutoExtraction = runtime.maybeResumePendingAutoExtraction;
+  updateGraphPersistenceState({
+    loadState,
+    chatId: String(chatId || ""),
+    reason: String(reason || ""),
+    attemptIndex,
+    revision,
+    lastPersistedRevision,
+    queuedPersistRevision,
+    shadowSnapshotUsed,
+    shadowSnapshotRevision,
+    shadowSnapshotUpdatedAt,
+    shadowSnapshotReason,
+    pendingPersist,
+    writesBlocked,
+    dbReady,
+    storagePrimary,
+    storageMode,
+    hostProfile,
+    primaryStorageTier,
+    cacheStorageTier,
+  });
+
+  if (dbReady && isGraphLoadStateDbReady(loadState)) {
+    const enqueueMicrotask =
+      typeof globalThis.queueMicrotask === "function"
+        ? globalThis.queueMicrotask.bind(globalThis)
+        : (task) => Promise.resolve().then(task);
+    enqueueMicrotask(() => {
+      if (typeof maybeResumePendingAutoExtraction === "function") {
+        void maybeResumePendingAutoExtraction(`graph-ready:${loadState}`);
+      }
+    });
+  }
+}
+
 export function ensureGraphMutationReadyImpl(runtime, 
   operationLabel = "当前操作",
   { notify = true, ignoreRestoreLock = false, allowRuntimeGraphFallback = false } = {},

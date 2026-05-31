@@ -342,6 +342,7 @@ import {
 
 import {
   assertRecoveryChatStillActiveImpl,
+  applyGraphLoadStateImpl,
   buildPanelOpenLocalStoreRefreshPlanImpl,
   ensureGraphMutationReadyImpl,
   getGraphMutationBlockReasonImpl,
@@ -1285,6 +1286,7 @@ let nativeHydrateInstallPromise = null;
 function createGraphMutationGateRuntime() {
   return {
     AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT,
+    BME_GRAPH_LOCAL_STORAGE_MODE_INDEXEDDB,
     GRAPH_LOAD_STATES,
     buildGraphLocalStoreSelectorKey,
     buildPersistenceEnvironment,
@@ -1317,10 +1319,13 @@ function createGraphMutationGateRuntime() {
     normalizePersistenceHostProfile,
     normalizePersistenceStorageTier,
     normalizeRestoreLockState,
+    resolvePersistenceHostProfile,
     readGraphCommitMarker,
     repairRuntimeGraphIdentityFromPersistence,
     resolveCurrentChatIdentity,
     syncBmeHostRuntimeFlags,
+    maybeResumePendingAutoExtraction,
+    updateGraphPersistenceState,
     toastr,
   };
 }
@@ -4560,40 +4565,30 @@ function applyGraphLoadState(
       }).cacheStorageTier,
   } = {},
 ) {
-  updateGraphPersistenceState({
+  return applyGraphLoadStateImpl(
+    createGraphMutationGateRuntime(),
     loadState,
-    chatId: String(chatId || ""),
-    reason: String(reason || ""),
-    attemptIndex,
-    revision,
-    lastPersistedRevision,
-    queuedPersistRevision,
-    shadowSnapshotUsed,
-    shadowSnapshotRevision,
-    shadowSnapshotUpdatedAt,
-    shadowSnapshotReason,
-    pendingPersist,
-    writesBlocked,
-    dbReady,
-    storagePrimary,
-    storageMode,
-    hostProfile,
-    primaryStorageTier,
-    cacheStorageTier,
-  });
-
-  if (dbReady && isGraphLoadStateDbReady(loadState)) {
-    const enqueueMicrotask =
-      typeof globalThis.queueMicrotask === "function"
-        ? globalThis.queueMicrotask.bind(globalThis)
-        : (task) => Promise.resolve().then(task);
-    enqueueMicrotask(() => {
-      if (typeof maybeResumePendingAutoExtraction === "function") {
-        void maybeResumePendingAutoExtraction(`graph-ready:${loadState}`);
-      }
-    });
-  }
-}
+    {
+      chatId,
+      reason,
+      attemptIndex,
+      shadowSnapshotUsed,
+      shadowSnapshotRevision,
+      shadowSnapshotUpdatedAt,
+      shadowSnapshotReason,
+      revision,
+      lastPersistedRevision,
+      queuedPersistRevision,
+      pendingPersist,
+      dbReady,
+      writesBlocked,
+      storagePrimary,
+      storageMode,
+      hostProfile,
+      primaryStorageTier,
+      cacheStorageTier,
+    },
+  );
 
 function createAbortError(message = "操作已终止") {
   const error = new Error(message);

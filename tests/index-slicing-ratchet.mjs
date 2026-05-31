@@ -26,9 +26,7 @@ const SELF_RELATIVE = "tests/index-slicing-ratchet.mjs";
 // Legacy offenders with their CURRENT marker-call budget (measured at ratchet
 // introduction). Budgets are an upper bound: migrations may only reduce them.
 // Remove the entry entirely once a file no longer reads index.js as text.
-const ALLOWLIST = Object.freeze({
-  "tests/graph-persistence.mjs": { maxMarkerCalls: 7, stage: "Phase 5" },
-});
+const ALLOWLIST = Object.freeze({});
 
 async function collectTestFiles(dir) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
