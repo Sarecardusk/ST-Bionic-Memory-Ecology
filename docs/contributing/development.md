@@ -30,7 +30,7 @@ npm run test:identity-resolver
 npm run test:persistence-reducer
 npm run test:runtime-deps
 npm run test:vector-gate
-npm run test:reroll-transaction-boundary
+npm run test:generation-context
 npm run test:graph-snapshot-schema
 npm run test:graph-snapshot-upgrade
 npm run test:snapshot-forward-compat

@@ -99,6 +99,7 @@ function clonePlain(value, fallback = null) {
 export function createGenerationContextTracker(deps = {}) {
   let current = null;
   let pendingSwipe = null;
+  let recentAssistantTailDelete = null;
   let sequence = 0;
 
   const now = () =>
@@ -123,11 +124,24 @@ export function createGenerationContextTracker(deps = {}) {
   function begin(type = "normal", params = {}, { dryRun = false, phase = "" } = {}) {
     if (dryRun) return null;
     const at = now();
-    const generationType = normalizeGenerationType(type);
-    const kind = classifyGenerationKind(generationType, params);
+    const rawType = normalizeGenerationType(type);
+    const activeChatId = getChatId();
+    const freshInput = Boolean(params?.__stBmeFreshInputHint);
+    const canInferRerollFromDelete = Boolean(
+      rawType === "normal" &&
+        !freshInput &&
+        recentAssistantTailDelete &&
+        recentAssistantTailDelete.chatId === activeChatId &&
+        at - Number(recentAssistantTailDelete.at || 0) <= ttlMs(),
+    );
+    const generationType = canInferRerollFromDelete ? "regenerate" : rawType;
+    const kind = canInferRerollFromDelete
+      ? "no-new-user"
+      : classifyGenerationKind(generationType, params);
     const context = {
       id: `${at}:${++sequence}`,
       type: generationType,
+      rawType,
       kind,
       chatId: getChatId(),
       params: clonePlain(params, {}),
@@ -142,8 +156,12 @@ export function createGenerationContextTracker(deps = {}) {
       swipeMeta: generationType === "swipe" ? clonePlain(pendingSwipe?.meta, null) : null,
       expectedMutation: "",
       expectedMutationAt: 0,
+      inferredFrom: canInferRerollFromDelete
+        ? "assistant-tail-delete-without-fresh-input"
+        : "",
     };
     pendingSwipe = null;
+    recentAssistantTailDelete = null;
     current = context;
     return { ...context };
   }
@@ -151,7 +169,26 @@ export function createGenerationContextTracker(deps = {}) {
   function update(type = "normal", params = {}, { dryRun = false, phase = "" } = {}) {
     if (dryRun) return null;
     const at = now();
-    const generationType = normalizeGenerationType(type);
+    const rawType = normalizeGenerationType(type);
+    if (
+      current?.inferredFrom &&
+      current.rawType === rawType &&
+      current.chatId === getChatId()
+    ) {
+      current = {
+        ...current,
+        rawType,
+        params: clonePlain(params, current.params || {}),
+        updatedAt: at,
+        afterCommandsAt:
+          String(phase || "") === "GENERATION_AFTER_COMMANDS"
+            ? at
+            : current.afterCommandsAt || 0,
+        phase: String(phase || current.phase || ""),
+      };
+      return { ...current };
+    }
+    const generationType = rawType;
     const kind = classifyGenerationKind(generationType, params);
     if (!current || current.type !== generationType || current.chatId !== getChatId()) {
       return begin(generationType, params, { dryRun, phase });
@@ -202,7 +239,17 @@ export function createGenerationContextTracker(deps = {}) {
     const previous = current;
     current = null;
     pendingSwipe = null;
+    recentAssistantTailDelete = null;
     return previous ? { ...previous, clearReason: String(reason || "") } : null;
+  }
+
+  function noteAssistantTailDelete(payload = {}) {
+    recentAssistantTailDelete = {
+      chatId: getChatId(),
+      at: now(),
+      ...clonePlain(payload, {}),
+    };
+    return { ...recentAssistantTailDelete };
   }
 
   return {
@@ -211,6 +258,7 @@ export function createGenerationContextTracker(deps = {}) {
     get,
     clear,
     noteSwipe,
+    noteAssistantTailDelete,
     markExpectedMutation,
   };
 }

@@ -81,7 +81,7 @@ Restore Lock → 恢复期间阻断图谱变更
 
 这次重构的核心理念是把**"做决定"（控制平面）和"执行副作用"（数据平面）分开**：
 
-- **控制平面**：身份解析、持久化确认状态机、图谱可写性门禁、向量门禁、reroll 边界。这些是纯逻辑/策略，已抽成可独立测试的注入式模块。
+- **控制平面**：身份解析、持久化确认状态机、图谱可写性门禁、向量门禁、生成代际上下文 / reroll 召回复用。这些是纯逻辑/策略，已抽成可独立测试的注入式模块。
 - **数据平面**：实际的 IndexedDB/OPFS/Authority/Luker 读写。仍在编排层，由控制平面的决定驱动。
 
 这条分界是过去大量 bug（陈旧 pending、未进入聊天、reroll 乱召回、一致性漂移）的修复基础。详见 [`control-plane.md`](control-plane.md)。
@@ -152,9 +152,9 @@ ST-BME/
 ├── runtime/                       # 运行时状态和设置
 │   ├── identity-resolver.js        # 身份解析核心
 │   ├── runtime-state.js
-│   ├── reroll-transaction-boundary.js # reroll 召回复用事务边界
+│   ├── generation-context.js       # 宿主生成 type 跟踪 + 父 user 楼解析
 │   ├── recall-input-state.js       # 召回 input/intent/trivial-skip 状态工厂
-│   ├── reroll-recall-input.js      # reroll 复用 + planner handoff 输入工厂
+│   ├── reroll-recall-input.js      # reroll/continue 召回输入 + planner handoff 输入工厂
 │   ├── generation-recall-transactions.js # 生成召回事务生命周期工厂
 │   ├── final-recall-injection.js   # 最终召回注入解析工厂
 │   ├── auto-extraction-defer.js    # 自动提取 defer/resume 工厂

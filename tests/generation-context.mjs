@@ -70,6 +70,48 @@ assert.equal(classifyGenerationKind("normal", { quiet_prompt: true }), "skip");
 }
 
 {
+  let chatId = "chat-group-regenerate";
+  let now = 3200;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+    ttlMs: 1000,
+  });
+
+  tracker.noteAssistantTailDelete({ chatLengthOrMessageId: 4 });
+  now += 20;
+  const inferred = tracker.begin("normal", { __stBmeFreshInputHint: false });
+  assert.equal(inferred.rawType, "normal");
+  assert.equal(inferred.type, "regenerate");
+  assert.equal(inferred.kind, "no-new-user");
+  assert.equal(inferred.inferredFrom, "assistant-tail-delete-without-fresh-input");
+
+  now += 20;
+  const afterCommands = tracker.update("normal", {}, { phase: "GENERATION_AFTER_COMMANDS" });
+  assert.equal(afterCommands.rawType, "normal");
+  assert.equal(afterCommands.type, "regenerate");
+  assert.equal(afterCommands.kind, "no-new-user");
+  assert.equal(afterCommands.afterCommandsAt, now);
+}
+
+{
+  let chatId = "chat-real-normal";
+  let now = 3300;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+    ttlMs: 1000,
+  });
+
+  tracker.noteAssistantTailDelete({ chatLengthOrMessageId: 4 });
+  now += 20;
+  const fresh = tracker.begin("normal", { __stBmeFreshInputHint: true });
+  assert.equal(fresh.rawType, "normal");
+  assert.equal(fresh.type, "normal");
+  assert.equal(fresh.kind, "fresh");
+}
+
+{
   let chatId = "chat-ttl";
   let now = 4000;
   const tracker = createGenerationContextTracker({

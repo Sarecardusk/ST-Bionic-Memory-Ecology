@@ -1701,6 +1701,8 @@ let sendIntentHookRetryTimer = null;
 let pendingHistoryRecoveryTimer = null;
 let pendingHistoryRecoveryTrigger = "";
 let pendingHistoryMutationCheckTimers = [];
+let pendingDeferredHistoryMutationRecheckTimer = null;
+let pendingDeferredHistoryMutationRecheckPayload = null;
 let pendingGraphLoadRetryTimer = null;
 let pendingGraphLoadRetryChatId = "";
 let pendingGraphPersistRetryTimer = null;
@@ -15045,6 +15047,39 @@ function scheduleHistoryMutationRecheck(
   }
 }
 
+function clearDeferredHistoryMutationRecheck() {
+  if (pendingDeferredHistoryMutationRecheckTimer) {
+    clearTimeout(pendingDeferredHistoryMutationRecheckTimer);
+  }
+  pendingDeferredHistoryMutationRecheckTimer = null;
+  pendingDeferredHistoryMutationRecheckPayload = null;
+}
+
+function scheduleDeferredHistoryMutationRecheck(
+  trigger = "history-change-deferred",
+  primaryArg = null,
+  meta = null,
+  delayMs = 2500,
+) {
+  if (!getSettings().enabled) return;
+  clearDeferredHistoryMutationRecheck();
+  pendingDeferredHistoryMutationRecheckPayload = { trigger, primaryArg, meta };
+  pendingDeferredHistoryMutationRecheckTimer = setTimeout(() => {
+    const payload = pendingDeferredHistoryMutationRecheckPayload;
+    clearDeferredHistoryMutationRecheck();
+    if (!payload) return;
+    scheduleHistoryMutationRecheck(payload.trigger, payload.primaryArg, payload.meta);
+  }, Math.max(250, Math.floor(Number(delayMs) || 2500)));
+}
+
+function flushDeferredHistoryMutationRecheck(reason = "generation-boundary") {
+  const payload = pendingDeferredHistoryMutationRecheckPayload;
+  if (!payload) return false;
+  clearDeferredHistoryMutationRecheck();
+  scheduleHistoryMutationRecheck(`${payload.trigger}:${reason}`, payload.primaryArg, payload.meta);
+  return true;
+}
+
 function inspectHistoryMutation(
   trigger = "history-change",
   primaryArg = null,
@@ -15848,6 +15883,7 @@ function onChatChanged() {
   isHostGenerationRunning = false;
   lastHostGenerationEndedAt = 0;
   generationContextTracker.clear("chat-changed");
+  clearDeferredHistoryMutationRecheck();
   const { target, lightweightHostMode, adapter } = syncBmeHostRuntimeFlags(getContext());
   updateGraphPersistenceState({
     hostProfile: adapter.hostProfile,
@@ -15987,10 +16023,14 @@ function onMessageDeleted(chatLengthOrMessageId, meta = null) {
   const result = onMessageDeletedController(
     {
       getGenerationContext: (...args) => generationContextTracker.get(...args),
+      getContext,
       invalidateRecallAfterHistoryMutation,
       markGenerationContextExpectedMutation: (...args) =>
         generationContextTracker.markExpectedMutation(...args),
+      noteAssistantTailDelete: (...args) =>
+        generationContextTracker.noteAssistantTailDelete(...args),
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
+      scheduleDeferredHistoryMutationRecheck,
       scheduleHistoryMutationRecheck,
     },
     chatLengthOrMessageId,
@@ -16145,10 +16185,20 @@ function onGenerationBeforeApiRequest(payload = {}) {
 
 function onGenerationStarted(type, params = {}, dryRun = false) {
   const generationType = String(type || "normal").trim() || "normal";
-  generationContextTracker.begin(generationType, params, {
+  const freshInputHint = Boolean(
+    pendingRecallSendIntent?.text || pendingRecallSendIntent?.rawText,
+  );
+  generationContextTracker.begin(
+    generationType,
+    {
+      ...params,
+      __stBmeFreshInputHint: freshInputHint,
+    },
+    {
     dryRun,
     phase: "GENERATION_STARTED",
-  });
+    },
+  );
   if (
     !dryRun &&
     !params?.automatic_trigger &&
@@ -16212,6 +16262,7 @@ function onGenerationEnded(_chatLength = null) {
   if (typeof scheduleMessageHideApply === "function") {
     scheduleMessageHideApply("generation-ended", 180);
   }
+  flushDeferredHistoryMutationRecheck("generation-ended");
   generationContextTracker.clear("generation-ended");
 }
 

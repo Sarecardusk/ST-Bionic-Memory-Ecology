@@ -428,28 +428,46 @@ export function onMessageDeletedController(
   chatLengthOrMessageId,
   meta = null,
 ) {
+  const chat = runtime.getContext?.()?.chat;
+  const lastVisible = Array.isArray(chat)
+    ? [...chat]
+        .map((message, index) => ({ message, index }))
+        .reverse()
+        .find(({ message }) => message && !message.is_system)
+    : null;
+  const assistantTailDelete = Boolean(lastVisible?.message?.is_user);
   const generationContext = runtime.getGenerationContext?.() || null;
   const expectedRegenerateDelete = Boolean(
     generationContext?.kind === "no-new-user" &&
-      generationContext?.type === "regenerate",
+      generationContext?.type === "regenerate" &&
+      assistantTailDelete,
   );
-  if (expectedRegenerateDelete) {
-    runtime.markGenerationContextExpectedMutation?.("regenerate-delete", {
+  if (assistantTailDelete) {
+    runtime.noteAssistantTailDelete?.({ chatLengthOrMessageId, meta });
+  }
+  if (expectedRegenerateDelete || assistantTailDelete) {
+    runtime.markGenerationContextExpectedMutation?.("assistant-tail-delete", {
       chatLengthOrMessageId,
       meta,
     });
+    runtime.scheduleDeferredHistoryMutationRecheck?.(
+      expectedRegenerateDelete ? "message-deleted-regenerate" : "message-deleted-assistant-tail",
+      chatLengthOrMessageId,
+      meta,
+    );
   } else {
     runtime.invalidateRecallAfterHistoryMutation("消息已删除");
+    runtime.scheduleHistoryMutationRecheck(
+      "message-deleted",
+      chatLengthOrMessageId,
+      meta,
+    );
   }
-  runtime.scheduleHistoryMutationRecheck(
-    expectedRegenerateDelete ? "message-deleted-regenerate" : "message-deleted",
-    chatLengthOrMessageId,
-    meta,
-  );
   runtime.refreshPersistedRecallMessageUi?.();
   return {
-    invalidated: !expectedRegenerateDelete,
+    invalidated: !(expectedRegenerateDelete || assistantTailDelete),
     expectedRegenerateDelete,
+    assistantTailDelete,
   };
 }
 

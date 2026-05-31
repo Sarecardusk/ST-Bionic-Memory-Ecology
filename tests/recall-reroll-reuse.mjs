@@ -603,16 +603,16 @@ const legacyUnboundResult = await runRecallController(legacyUnboundRuntime, {
 
 assert.equal(
   legacyUnboundResult.reason,
-  "persisted-user-floor-reused",
-  "legacy unbound user-floor recall should be reused for normal-typed history generation",
+  "召回完成",
+  "legacy unbound record with mismatched recallInput should not be reused",
 );
 assert.equal(
   legacyUnboundRetrieveCalled,
-  false,
-  "legacy unbound user-floor recall should not call retrieve",
+  true,
+  "legacy unbound record with mismatched recallInput should call retrieve",
 );
 
-console.log("  ✓ runRecallController reuses legacy unbound user-floor recall");
+console.log("  ✓ runRecallController rejects legacy unbound recallInput mismatch");
 
 const activeInputUnboundChat = [
   { is_user: true, mes: "主动新输入不应复用旧召回" },

@@ -188,6 +188,12 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
       boundUserFloorText &&
       currentUserFloorText === boundUserFloorText,
   );
+  const recordRecallInputMismatch = Boolean(
+    recordRecallInput &&
+      currentUserFloorText &&
+      currentUserFloorText !== recordRecallInput &&
+      currentRecallInputText !== recordRecallInput,
+  );
   const boundUserFloorMismatch = Boolean(
     boundUserFloorText && currentUserFloorText !== boundUserFloorText,
   );
@@ -199,6 +205,7 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
   const canReuseUnboundTargetRecord = Boolean(
     currentUserFloorText &&
       !boundUserFloorText &&
+      !recordRecallInput &&
       !isActiveInputSource &&
       String(record?.injectionText || "").trim(),
   );
@@ -212,6 +219,7 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
   const canTrustUserFloorRecord = Boolean(
     (!isActiveInputSource || isNoNewUserGeneration) &&
       !boundUserFloorText &&
+      !recordRecallInputMismatch &&
       (generationType !== "normal" || userFloorSources.has(recallSource)),
   );
 
