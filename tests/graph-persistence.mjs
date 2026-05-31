@@ -95,6 +95,7 @@ import {
 } from "../retrieval/recall-persistence.js";
 import { getNodeDisplayName } from "../graph/node-labels.js";
 import {
+  buildVectorCollectionId,
   hasGraphPersistDirtyState,
   normalizeGraphRuntimeState,
   pruneGraphPersistDirtyState,
@@ -121,6 +122,7 @@ import {
   normalizeAuthorityCapabilityState,
   probeAuthorityCapabilities,
 } from "../runtime/authority-capabilities.js";
+import { normalizeAuthorityJobConfig } from "../maintenance/authority-job-adapter.js";
 import { normalizeAuthorityBlobConfig } from "../maintenance/authority-blob-adapter.js";
 import {
   createAuthorityBrowserState,
@@ -186,6 +188,16 @@ import {
   getPanelRuntimeStatusImpl,
   readRuntimeDebugSnapshotImpl,
 } from "../sync/graph-mutation-gate.js";
+import {
+  buildBmeSyncRuntimeOptionsImpl,
+  loadGraphFromChatImpl,
+  maybeCaptureGraphShadowSnapshotImpl,
+  persistExtractionBatchResultImpl,
+  shouldUseAuthorityGraphStoreImpl,
+  shouldUseAuthorityJobsImpl,
+  syncGraphLoadFromLiveContextImpl,
+  writeAuthorityCheckpointFromCurrentGraphImpl,
+} from "../sync/graph-load-persist.js";
 import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
@@ -715,6 +727,20 @@ async function createGraphPersistenceHarness({
     return result;
   }
 
+  function buildPersistenceEnvironment(
+    context = null,
+    presentation = { storagePrimary: "indexeddb", storageMode: "indexeddb" },
+  ) {
+    const hostProfile = resolveBmeHostProfile(context);
+    const primaryStorageTier = String(presentation?.storagePrimary || "indexeddb");
+    const cacheStorageTier = primaryStorageTier === "authority" ? "indexeddb" : "none";
+    return {
+      hostProfile,
+      primaryStorageTier,
+      cacheStorageTier,
+    };
+  }
+
   const runtimeContext = {
     console,
     Date,
@@ -746,6 +772,7 @@ async function createGraphPersistenceHarness({
     createDefaultAuthorityCapabilityState,
     normalizeAuthoritySettings,
     normalizeAuthorityCapabilityState,
+    normalizeAuthorityJobConfig,
     probeAuthorityCapabilities,
     isAuthorityVectorConfig,
     normalizeAuthorityVectorConfig,
@@ -830,6 +857,14 @@ async function createGraphPersistenceHarness({
     getGraphPersistenceLiveStateImpl,
     getPanelRuntimeStatusImpl,
     readRuntimeDebugSnapshotImpl,
+    buildBmeSyncRuntimeOptionsImpl,
+    loadGraphFromChatImpl,
+    maybeCaptureGraphShadowSnapshotImpl,
+    persistExtractionBatchResultImpl,
+    shouldUseAuthorityGraphStoreImpl,
+    shouldUseAuthorityJobsImpl,
+    syncGraphLoadFromLiveContextImpl,
+    writeAuthorityCheckpointFromCurrentGraphImpl,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {
@@ -1329,6 +1364,10 @@ async function createGraphPersistenceHarness({
     getRequestHeaders() {
       return {};
     },
+    recordAuthorityBlobSnapshot() {},
+    recordLocalPersistEarlyFailure(reason = "") {
+      runtimeContext.__lastLocalPersistEarlyFailure = String(reason || "");
+    },
     __syncNowCalls: [],
     async syncNow(chatId, options = {}) {
       runtimeContext.__syncNowCalls.push({
@@ -1436,7 +1475,10 @@ async function createGraphPersistenceHarness({
     buildGraphFromSnapshot,
     buildPersistDelta,
     buildPersistDeltaFromGraphDirtyState,
+    buildPersistenceEnvironment,
     buildSnapshotFromGraph,
+    buildVectorCollectionId,
+    cloneGraphSnapshot: cloneGraphForPersistence,
     evaluateNativeHydrateGate,
     evaluatePersistNativeDeltaGate,
     hasGraphPersistDirtyState,

@@ -349,6 +349,17 @@ import {
   getPanelRuntimeStatusImpl,
   readRuntimeDebugSnapshotImpl,
 } from "./sync/graph-mutation-gate.js";
+
+import {
+  buildBmeSyncRuntimeOptionsImpl,
+  loadGraphFromChatImpl,
+  maybeCaptureGraphShadowSnapshotImpl,
+  persistExtractionBatchResultImpl,
+  shouldUseAuthorityGraphStoreImpl,
+  shouldUseAuthorityJobsImpl,
+  syncGraphLoadFromLiveContextImpl,
+  writeAuthorityCheckpointFromCurrentGraphImpl,
+} from "./sync/graph-load-persist.js";
 import {
   applyProcessedHistorySnapshotToGraph,
   appendBatchJournal,
@@ -1312,6 +1323,115 @@ function createGraphMutationGateRuntime() {
   };
 }
 
+function createGraphLoadPersistRuntime() {
+  return {
+    AUTHORITY_VECTOR_REBUILD_JOB_TYPE,
+    BmeDatabase,
+    GRAPH_LOAD_STATES,
+    GRAPH_METADATA_KEY,
+    applyGraphLoadState,
+    applyIndexedDbSnapshotToRuntime,
+    applyShadowSnapshotToRuntime,
+    allocateRequestedPersistRevision,
+    buildBmeSyncRuntimeOptions,
+    buildGraphFromSnapshot,
+    buildGraphPersistResult,
+    buildPersistenceEnvironment,
+    buildLukerGraphCheckpointV2,
+    buildRestoreSafetyChatId,
+    buildSnapshotFromGraph,
+    buildVectorCollectionId,
+    canPersistGraphToMetadataFallback,
+    canUseHostGraphChatStatePersistence,
+    clearPendingGraphLoadRetry,
+    cloneGraphForPersistence,
+    cloneGraphSnapshot,
+    cloneRuntimeDebugValue,
+    console,
+    createEmptyGraph,
+    createGraphLoadUiStatus,
+    createPreferredGraphLocalStore,
+    createUiStatus,
+    deserializeGraph,
+    detectIndexedDbSnapshotCommitMarkerMismatch,
+    detectStaleIndexedDbSnapshotAgainstRuntime,
+    ensureBmeChatManager,
+    ensureCurrentGraphRuntimeState,
+    exportAuthoritySqlSnapshotForCheckpoint,
+    getAcceptedCommitMarkerRevision,
+    getAuthorityCapabilityState: () => authorityCapabilityState,
+    getAuthorityRuntimeSnapshot,
+    getChatMetadataIntegrity,
+    getContext,
+    getCurrentChatId,
+    getCurrentGraph: () => currentGraph,
+    setCurrentGraph: (graph) => { currentGraph = graph; },
+    getExtractionCount: () => extractionCount,
+    setExtractionCount: (value) => { extractionCount = value; },
+    getGraphPersistedRevision,
+    getGraphPersistenceMeta,
+    getGraphPersistenceState: () => graphPersistenceState,
+    getLastExtractedItems: () => lastExtractedItems,
+    setLastExtractedItems: (value) => { lastExtractedItems = value; },
+    getLastRecalledItems: () => lastRecalledItems,
+    setLastRecalledItems: (value) => { lastRecalledItems = value; },
+    getLastInjectionContent: () => lastInjectionContent,
+    setLastInjectionContent: (value) => { lastInjectionContent = value; },
+    getRuntimeStatus: () => runtimeStatus,
+    setRuntimeStatus: (value) => { runtimeStatus = value; },
+    getLastExtractionStatus: () => lastExtractionStatus,
+    setLastExtractionStatus: (value) => { lastExtractionStatus = value; },
+    getLastVectorStatus: () => lastVectorStatus,
+    setLastVectorStatus: (value) => { lastVectorStatus = value; },
+    getLastRecallStatus: () => lastRecallStatus,
+    setLastRecallStatus: (value) => { lastRecallStatus = value; },
+    getPreferredGraphLocalStorePresentationSync,
+    getRequestHeaders,
+    getSettings,
+    isAuthorityGraphStorePresentation,
+    isAuthorityJobTypeSupported,
+    isAuthorityVectorConfig,
+    isGraphEffectivelyEmpty,
+    isIndexedDbSnapshotMeaningful,
+    loadGraphFromChat,
+    loadGraphFromIndexedDb,
+    normalizeAuthorityCapabilityState,
+    normalizeAuthorityJobConfig,
+    normalizeAuthoritySettings,
+    normalizeChatIdCandidate,
+    normalizeGraphRuntimeState,
+    persistGraphToChatMetadata,
+    persistGraphToConfiguredDurableTier,
+    queueGraphPersist,
+    readCachedIndexedDbSnapshot,
+    recordLocalPersistEarlyFailure,
+    recordAuthorityBlobSnapshot,
+    recordPersistMismatchDiagnostic,
+    refreshPanelLiveState,
+    refreshRuntimeGraphAfterSyncApplied,
+    rememberResolvedGraphIdentityAlias,
+    resolveCompatibleGraphShadowSnapshot,
+    resolveCurrentChatIdentity,
+    resolvePersistenceChatId,
+    resolvePreferredGraphLocalStorePresentation,
+    resolveSnapshotGraphStorePresentation,
+    restoreRecallUiStateFromPersistence,
+    runAuthorityConsistencyAudit,
+    scheduleGraphChatStateProbe,
+    scheduleIndexedDbGraphProbe,
+    schedulePersistedRecallMessageUiRefresh,
+    shouldPreferShadowSnapshotOverOfficial,
+    shouldSyncGraphLoadFromLiveContext,
+    shouldUseAuthorityBlobCheckpoint,
+    shouldUseAuthorityGraphStore,
+    stampGraphPersistenceMeta,
+    syncCommitMarkerToPersistenceState,
+    updateGraphPersistenceState,
+    writeAuthorityLukerCheckpointBlob,
+    writeGraphShadowSnapshot,
+  };
+}
+
 function createGraphPersistenceIoRuntime() {
   return {
     AUTHORITY_GRAPH_STORE_KIND,
@@ -2167,18 +2287,10 @@ function normalizeAuthorityJobType(kind = "") {
 }
 
 function shouldUseAuthorityJobs(config = null, kind = AUTHORITY_VECTOR_REBUILD_JOB_TYPE) {
-  const settings = getSettings();
-  const { capability } = getAuthorityRuntimeSnapshot(settings);
-  if (
-    !capability.jobsReady ||
-    settings.authorityJobsEnabled === false ||
-    !isAuthorityJobTypeSupported(capability, kind) ||
-    !isAuthorityVectorConfig(config)
-  ) {
-    return false;
-  }
-  const jobConfig = normalizeAuthorityJobConfig(settings);
-  return Boolean(jobConfig.enabled);
+  return shouldUseAuthorityJobsImpl(
+    createGraphLoadPersistRuntime(),
+    config, kind,
+  );
 }
 
 function isAuthorityJobTypeSupported(capability = {}, kind = "") {
@@ -3269,136 +3381,10 @@ async function restoreAuthorityCheckpointFromBlob(options = {}) {
 }
 
 async function writeAuthorityCheckpointFromCurrentGraph(options = {}) {
-  const settings = getSettings();
-  const { capability } = getAuthorityRuntimeSnapshot(settings);
-  const updatedAt = new Date().toISOString();
-  const chatId = normalizeChatIdCandidate(
-    options.chatId || getCurrentChatId() || graphPersistenceState.chatId || currentGraph?.chatId,
+  return await writeAuthorityCheckpointFromCurrentGraphImpl(
+    createGraphLoadPersistRuntime(),
+    options,
   );
-  if (!chatId) {
-    return {
-      success: false,
-      error: "missing-chat-id",
-    };
-  }
-  if (!capability.blobReady || !shouldUseAuthorityBlobCheckpoint()) {
-    return {
-      success: false,
-      error: "Authority Blob unavailable",
-    };
-  }
-
-  const reason = String(options.reason || "manual-authority-checkpoint");
-  const authoritySqlPrimary = shouldUseAuthorityGraphStore(settings, capability);
-  const authoritySqlCanonical =
-    authoritySqlPrimary ||
-    [
-      graphPersistenceState.acceptedBy,
-      graphPersistenceState.acceptedStorageTier,
-      graphPersistenceState.primaryStorageTier,
-    ].some((value) => String(value || "").trim() === "authority-sql");
-  let checkpointGraph = null;
-  let revision = 0;
-  let integrity = "";
-  let checkpointSource = "runtime";
-
-  if (authoritySqlCanonical) {
-    try {
-      const sqlSnapshot = await exportAuthoritySqlSnapshotForCheckpoint(chatId, settings);
-      const sqlRevision = Number(sqlSnapshot?.meta?.revision || 0);
-      if (!Number.isFinite(sqlRevision) || sqlRevision <= 0) {
-        return {
-          success: false,
-          error: "authority-sql-checkpoint-source-empty",
-        };
-      }
-      checkpointGraph = buildGraphFromSnapshot(sqlSnapshot, { chatId });
-      revision = sqlRevision;
-      integrity =
-        normalizeChatIdCandidate(options.integrity) ||
-        normalizeChatIdCandidate(sqlSnapshot?.meta?.integrity) ||
-        getChatMetadataIntegrity(getContext()) ||
-        graphPersistenceState.metadataIntegrity;
-      checkpointSource = "authority-sql";
-    } catch (error) {
-      return {
-        success: false,
-        error: error?.message || String(error) || "authority-sql-checkpoint-source-failed",
-      };
-    }
-  }
-
-  if (!checkpointGraph) {
-    ensureCurrentGraphRuntimeState();
-    if (!currentGraph) {
-      return {
-        success: false,
-        error: "Authority runtime graph unavailable",
-      };
-    }
-    checkpointGraph = currentGraph;
-    revision = Math.max(
-      1,
-      Number(options.revision || 0),
-      Number(currentGraph?.meta?.revision || 0),
-      Number(getGraphPersistedRevision(currentGraph) || 0),
-      Number(graphPersistenceState.revision || 0),
-    );
-    integrity =
-      normalizeChatIdCandidate(options.integrity) ||
-      normalizeChatIdCandidate(getGraphPersistenceMeta(currentGraph)?.integrity) ||
-      getChatMetadataIntegrity(getContext()) ||
-      graphPersistenceState.metadataIntegrity;
-  }
-
-  const checkpoint = buildLukerGraphCheckpointV2(checkpointGraph, {
-    revision,
-    chatId,
-    integrity,
-    reason,
-    storageTier: authoritySqlCanonical ? "authority-sql-primary" : "runtime-checkpoint",
-    persistedAt: updatedAt,
-  });
-  if (!checkpoint) {
-    return {
-      success: false,
-      error: "Authority checkpoint payload unavailable",
-    };
-  }
-
-  const writeResult = await writeAuthorityLukerCheckpointBlob(checkpoint, {
-    chatId,
-    reason,
-    signal: options.signal,
-  });
-  if (!writeResult?.ok) {
-    return {
-      success: false,
-      error:
-        writeResult?.error?.message ||
-        writeResult?.reason ||
-        "authority-blob-checkpoint-write-failed",
-    };
-  }
-
-  const auditResult = await runAuthorityConsistencyAudit({
-    chatId,
-    collectionId:
-      normalizeChatIdCandidate(options.collectionId) ||
-      normalizeChatIdCandidate(currentGraph?.vectorIndexState?.collectionId) ||
-      buildVectorCollectionId(chatId),
-  }).catch(() => null);
-  return {
-    success: true,
-    result: {
-      path: writeResult.path,
-      revision,
-      checkpointRevision: Number(checkpoint.revision || revision || 0),
-      source: checkpointSource,
-      auditSummary: auditResult?.audit?.summary || null,
-      auditActions: auditResult?.audit?.actions || [],
-    },
-  };
 }
 
 async function rebuildAuthorityTrivium(options = {}) {
@@ -5714,15 +5700,9 @@ function getRequestedGraphLocalStorageMode(settings = getSettings()) {
 }
 
 function shouldUseAuthorityGraphStore(settings = getSettings(), capability = authorityCapabilityState) {
-  const normalizedSettings = normalizeAuthoritySettings(settings);
-  const normalizedCapability = normalizeAuthorityCapabilityState(capability, settings);
-  return (
-    normalizedSettings.enabled &&
-    normalizedSettings.primaryWhenAvailable &&
-    normalizedSettings.sqlPrimary &&
-    normalizedSettings.storageMode !== "local-primary" &&
-    normalizedSettings.storageMode !== "off" &&
-    normalizedCapability.storagePrimaryReady
+  return shouldUseAuthorityGraphStoreImpl(
+    createGraphLoadPersistRuntime(),
+    settings, capability,
   );
 }
 
@@ -7029,61 +7009,10 @@ async function refreshRuntimeGraphAfterSyncApplied(syncPayload = {}) {
 }
 
 function buildBmeSyncRuntimeOptions(extra = {}) {
-  const normalizedExtra =
-    extra && typeof extra === "object" && !Array.isArray(extra) ? extra : {};
-  const settings = getSettings();
-  const authoritySettings = normalizeAuthoritySettings(settings);
-  const { capability } = getAuthorityRuntimeSnapshot(settings);
-  const defaultOptions = {
-    getDb: async (chatId) => {
-      const manager = ensureBmeChatManager();
-      if (!manager) {
-        throw new Error("BmeChatManager 不可用");
-      }
-      return await manager.getCurrentDb(chatId);
-    },
-    getSafetyDb: async (chatId) => {
-      const safetyChatId = buildRestoreSafetyChatId(chatId);
-      const safetyStore = await resolvePreferredGraphLocalStorePresentation();
-      const safetyDb = isAuthorityGraphStorePresentation(safetyStore)
-        ? new BmeDatabase(safetyChatId)
-        : await createPreferredGraphLocalStore(safetyChatId);
-      await safetyDb.open();
-      return safetyDb;
-    },
-    getCurrentChatId: () => getCurrentChatId(),
-    getCloudStorageMode: () => getSettings().cloudStorageMode || "automatic",
-    getRequestHeaders,
-    authorityBlobEnabled: Boolean(
-      authoritySettings.enabled &&
-        authoritySettings.blobCheckpointEnabled &&
-        capability.blobReady,
-    ),
-    authorityBlobFailOpen: authoritySettings.failOpen,
-    authorityBlobConfig: {
-      ...authoritySettings,
-    },
-    onAuthorityBlobEvent: recordAuthorityBlobSnapshot,
-    onSyncApplied: async (payload = {}) => {
-      await refreshRuntimeGraphAfterSyncApplied(payload);
-    },
-  };
-
-  if (typeof normalizedExtra.onSyncApplied !== "function") {
-    return {
-      ...defaultOptions,
-      ...normalizedExtra,
-    };
-  }
-
-  return {
-    ...defaultOptions,
-    ...normalizedExtra,
-    onSyncApplied: async (payload = {}) => {
-      await defaultOptions.onSyncApplied(payload);
-      await normalizedExtra.onSyncApplied(payload);
-    },
-  };
+  return buildBmeSyncRuntimeOptionsImpl(
+    createGraphLoadPersistRuntime(),
+    extra,
+  );
 }
 
 async function syncIndexedDbMetaToPersistenceState(
@@ -11909,16 +11838,11 @@ function maybeCaptureGraphShadowSnapshot(
     revision = graphPersistenceState.revision,
   } = {},
 ) {
-  if (!chatId || !graph) return false;
-  const hasMeaningfulGraphData =
-    !isGraphEffectivelyEmpty(graph) ||
-    graphPersistenceState.shadowSnapshotUsed ||
-    graphPersistenceState.lastPersistedRevision > 0;
-  if (!hasMeaningfulGraphData) return false;
-  return writeGraphShadowSnapshot(chatId, graph, {
-    revision,
+  return maybeCaptureGraphShadowSnapshotImpl(
+    createGraphLoadPersistRuntime(),
     reason,
-  });
+    { graph, chatId, revision },
+  );
 }
 
 function clearPendingGraphPersistRetry({ resetChatId = true } = {}) {
@@ -12671,117 +12595,10 @@ async function persistExtractionBatchResult({
   persistSnapshot = null,
   persistDelta = null,
 } = {}) {
-  ensureCurrentGraphRuntimeState();
-  const context = getContext();
-  const persistGraphDetached =
-    Boolean(graphSnapshot) &&
-    typeof graphSnapshot === "object" &&
-    graphSnapshot !== currentGraph;
-  const persistGraph =
-    graphSnapshot && typeof graphSnapshot === "object"
-      ? graphSnapshot === currentGraph
-        ? cloneGraphSnapshot(graphSnapshot)
-        : graphSnapshot
-      : currentGraph;
-  if (!context || !persistGraph) {
-    return buildGraphPersistResult({
-      saved: false,
-      blocked: true,
-      accepted: false,
-      reason: "missing-context-or-graph",
-      storageTier: "none",
-    });
-  }
-
-  const chatId = resolvePersistenceChatId(context, persistGraph);
-  if (!chatId) {
-    recordLocalPersistEarlyFailure("missing-chat-id", {
-      chatId,
-      revision: 0,
-    });
-    return buildGraphPersistResult({
-      saved: false,
-      blocked: true,
-      accepted: false,
-      reason: "missing-chat-id",
-      storageTier: "none",
-    });
-  }
-
-  const revision = allocateRequestedPersistRevision(0, persistGraph);
-  const acceptedPersistResult = await persistGraphToConfiguredDurableTier(
-    context,
-    persistGraph,
-    {
-      chatId,
-      revision,
-      reason,
-      lastProcessedAssistantFloor,
-      persistDelta,
-      graphSnapshot,
-      persistSnapshot,
-      graphDetached: persistGraphDetached,
-    },
+  return await persistExtractionBatchResultImpl(
+    createGraphLoadPersistRuntime(),
+    { reason, lastProcessedAssistantFloor, graphSnapshot, persistSnapshot, persistDelta },
   );
-  if (acceptedPersistResult?.accepted) {
-    return acceptedPersistResult;
-  }
-
-  let recoverableTier = "none";
-  if (
-    maybeCaptureGraphShadowSnapshot(`${reason}:shadow-fallback`, {
-      graph: persistGraph,
-      chatId,
-      revision,
-    })
-  ) {
-    recoverableTier = "shadow";
-  }
-
-  if (canPersistGraphToMetadataFallback(context, persistGraph)) {
-    const metadataReason = `${reason}:metadata-full-fallback`;
-    const metadataResult = persistGraphToChatMetadata(context, {
-      reason: metadataReason,
-      revision,
-      immediate: true,
-      graph: persistGraph,
-    });
-    if (metadataResult?.saved) {
-      recoverableTier = "metadata-full";
-    }
-  }
-
-  const queuedResult = queueGraphPersist(`${reason}:pending`, revision, {
-    immediate: true,
-    graph: persistGraph,
-    chatId,
-    captureShadow: recoverableTier === "none",
-    recoverableTier,
-  });
-  updateGraphPersistenceState({
-    pendingPersist: true,
-    lastPersistReason: String(queuedResult.reason || `${reason}:pending`),
-    lastPersistMode: String(queuedResult.saveMode || ""),
-    lastRecoverableStorageTier:
-      recoverableTier !== "none"
-        ? recoverableTier
-        : String(queuedResult.storageTier || graphPersistenceState.lastRecoverableStorageTier || "none"),
-  });
-  return buildGraphPersistResult({
-    saved: false,
-    queued: Boolean(queuedResult?.queued),
-    blocked: Boolean(queuedResult?.blocked),
-    accepted: false,
-    recoverable:
-      recoverableTier !== "none" || queuedResult?.recoverable === true,
-    reason: String(queuedResult?.reason || `${reason}:pending`),
-    revision: Number(queuedResult?.revision || revision),
-    saveMode: String(queuedResult?.saveMode || ""),
-    storageTier:
-      recoverableTier !== "none"
-        ? recoverableTier
-        : String(queuedResult?.storageTier || "none"),
-  });
 }
 
 function scheduleGraphLoadRetry(
@@ -12940,148 +12757,10 @@ function shouldSyncGraphLoadFromLiveContext(
 }
 
 function syncGraphLoadFromLiveContext(options = {}) {
-  const { source = "live-context-sync", force = false } = options;
-  const attemptIndex = Math.max(
-    0,
-    Math.floor(Number(options?.attemptIndex) || 0),
+  return syncGraphLoadFromLiveContextImpl(
+    createGraphLoadPersistRuntime(),
+    options,
   );
-  const context = getContext();
-  syncCommitMarkerToPersistenceState(context);
-  if (!shouldSyncGraphLoadFromLiveContext(context, { force })) {
-    return {
-      synced: false,
-      reason: "no-sync-needed",
-      loadState: graphPersistenceState.loadState,
-      chatId: graphPersistenceState.chatId,
-    };
-  }
-
-  const chatId = resolveCurrentChatIdentity(context).chatId;
-  if (!chatId) {
-    const result = loadGraphFromChat({
-      source,
-      attemptIndex: 0,
-    });
-    return {
-      synced: true,
-      ...result,
-    };
-  }
-
-  const persistenceEnvironment = buildPersistenceEnvironment(
-    context,
-    getPreferredGraphLocalStorePresentationSync(),
-  );
-  if (
-    persistenceEnvironment.hostProfile === "luker" &&
-    canUseHostGraphChatStatePersistence(context)
-  ) {
-    scheduleGraphChatStateProbe(chatId, {
-      source: `${source}:luker-chat-state-probe`,
-      attemptIndex,
-      allowOverride: true,
-    });
-    applyGraphLoadState(GRAPH_LOAD_STATES.LOADING, {
-      chatId,
-      reason: `luker-chat-state-probe-pending:${String(source || "direct-load")}`,
-      attemptIndex,
-      dbReady: false,
-      writesBlocked: true,
-      hostProfile: persistenceEnvironment.hostProfile,
-      primaryStorageTier: persistenceEnvironment.primaryStorageTier,
-      cacheStorageTier: persistenceEnvironment.cacheStorageTier,
-    });
-    updateGraphPersistenceState({
-      hostProfile: persistenceEnvironment.hostProfile,
-      primaryStorageTier: persistenceEnvironment.primaryStorageTier,
-      cacheStorageTier: persistenceEnvironment.cacheStorageTier,
-      storagePrimary: getPreferredGraphLocalStorePresentationSync().storagePrimary,
-      storageMode: getPreferredGraphLocalStorePresentationSync().storageMode,
-      dbReady: false,
-      indexedDbLastError: "",
-    });
-    refreshPanelLiveState();
-    return {
-      success: false,
-      loaded: false,
-      loadState: GRAPH_LOAD_STATES.LOADING,
-      reason: "luker-chat-state-probe-pending",
-      chatId,
-      attemptIndex,
-    };
-  }
-
-  if (canUseHostGraphChatStatePersistence(context)) {
-    scheduleGraphChatStateProbe(chatId, {
-      source: `${source}:chat-state-probe`,
-      attemptIndex: 0,
-      allowOverride: true,
-    });
-  }
-
-  const cachedPreferredLocalStore = getPreferredGraphLocalStorePresentationSync();
-  const cachedSnapshot = readCachedIndexedDbSnapshot(
-    chatId,
-    cachedPreferredLocalStore,
-  );
-  if (isIndexedDbSnapshotMeaningful(cachedSnapshot)) {
-    const cachedStore = resolveSnapshotGraphStorePresentation(
-      cachedSnapshot,
-      cachedPreferredLocalStore,
-    );
-    const result = applyIndexedDbSnapshotToRuntime(chatId, cachedSnapshot, {
-      source: `${source}:indexeddb-cache`,
-      attemptIndex: 0,
-      storagePrimary: cachedStore.storagePrimary,
-      storageMode: cachedStore.storageMode,
-      statusLabel: cachedStore.statusLabel,
-      reasonPrefix: cachedStore.reasonPrefix,
-    });
-    if (result?.reason === `${cachedStore.reasonPrefix}-stale-runtime`) {
-      return {
-        synced: false,
-        reason: "cached-indexeddb-stale-runtime",
-        loadState: graphPersistenceState.loadState,
-        chatId: graphPersistenceState.chatId,
-        staleDetail: cloneRuntimeDebugValue(result?.staleDetail, null),
-      };
-    }
-    return {
-      synced: true,
-      ...result,
-    };
-  }
-
-  const preferredLocalStore = getPreferredGraphLocalStorePresentationSync();
-  applyGraphLoadState(GRAPH_LOAD_STATES.LOADING, {
-    chatId,
-    reason: `indexeddb-sync:${String(source || "live-context-sync")}`,
-    attemptIndex: 0,
-    dbReady: false,
-    writesBlocked: true,
-  });
-  updateGraphPersistenceState({
-    storagePrimary: preferredLocalStore.storagePrimary,
-    storageMode: preferredLocalStore.storageMode,
-    dbReady: false,
-    indexedDbLastError: "",
-  });
-  scheduleIndexedDbGraphProbe(chatId, {
-    source: `${source}:indexeddb-probe`,
-    allowOverride: true,
-    applyEmptyState: true,
-  });
-  refreshPanelLiveState();
-
-  return {
-    synced: true,
-    success: false,
-    loaded: false,
-    loadState: GRAPH_LOAD_STATES.LOADING,
-    reason: "indexeddb-loading",
-    chatId,
-    attemptIndex: 0,
-  };
 }
 
 function scheduleStartupGraphReconciliation() {
@@ -14681,470 +14360,10 @@ function updateModuleSettings(patch = {}) {
 // ==================== 图状态持久化 ====================
 
 function loadGraphFromChat(options = {}) {
-  const {
-    attemptIndex = 0,
-    expectedChatId = "",
-    source = "direct-load",
-    allowMetadataFallback = true,
-  } = options;
-  const context = getContext();
-  const chatIdentity = resolveCurrentChatIdentity(context);
-  const chatId = chatIdentity.chatId;
-  const commitMarker = syncCommitMarkerToPersistenceState(context);
-  const shadowSnapshot = resolveCompatibleGraphShadowSnapshot(chatIdentity);
-  const normalizedExpectedChatId = String(expectedChatId || "");
-  if (attemptIndex === 0) {
-    clearPendingGraphLoadRetry();
-  }
-
-  if (
-    normalizedExpectedChatId &&
-    chatId &&
-    normalizedExpectedChatId !== chatId
-  ) {
-    clearPendingGraphLoadRetry();
-    return {
-      success: false,
-      loaded: false,
-      loadState: graphPersistenceState.loadState,
-      reason: "expected-chat-mismatch",
-      chatId,
-      attemptIndex,
-    };
-  }
-
-  if (!chatId) {
-    if (chatIdentity.hasLikelySelectedChat) {
-      currentGraph = normalizeGraphRuntimeState(createEmptyGraph(), "");
-      extractionCount = 0;
-      lastExtractedItems = [];
-      lastRecalledItems = [];
-      lastInjectionContent = "";
-      runtimeStatus = createUiStatus(
-        "图谱加载中",
-        "正在等待当前聊天会话 ID 就绪",
-        "running",
-      );
-      lastExtractionStatus = createUiStatus(
-        "待命",
-        "正在等待当前聊天会话 ID 就绪",
-        "idle",
-      );
-      lastVectorStatus = createUiStatus(
-        "待命",
-        "正在等待当前聊天会话 ID 就绪",
-        "idle",
-      );
-      lastRecallStatus = createUiStatus(
-        "待命",
-        "正在等待当前聊天会话 ID 就绪",
-        "idle",
-      );
-      applyGraphLoadState(GRAPH_LOAD_STATES.LOADING, {
-        chatId: "",
-        reason: "chat-id-missing",
-        attemptIndex,
-        revision: 0,
-        lastPersistedRevision: 0,
-        queuedPersistRevision: 0,
-        queuedPersistChatId: "",
-        pendingPersist: false,
-        shadowSnapshotUsed: false,
-        shadowSnapshotRevision: 0,
-        shadowSnapshotUpdatedAt: "",
-        shadowSnapshotReason: "",
-        dbReady: false,
-        writesBlocked: true,
-      });
-      refreshPanelLiveState();
-      return {
-        success: false,
-        loaded: false,
-        loadState: GRAPH_LOAD_STATES.LOADING,
-        reason: "chat-id-missing",
-        chatId: "",
-        attemptIndex,
-      };
-    }
-
-    clearPendingGraphLoadRetry();
-    currentGraph = normalizeGraphRuntimeState(createEmptyGraph(), "");
-    extractionCount = 0;
-    lastExtractedItems = [];
-    lastRecalledItems = [];
-    lastInjectionContent = "";
-    runtimeStatus = createUiStatus("待命", "当前尚未进入聊天", "idle");
-    lastExtractionStatus = createUiStatus("待命", "当前尚未进入聊天", "idle");
-    lastVectorStatus = createUiStatus("待命", "当前尚未进入聊天", "idle");
-    lastRecallStatus = createUiStatus("待命", "当前尚未进入聊天", "idle");
-    applyGraphLoadState(GRAPH_LOAD_STATES.NO_CHAT, {
-      chatId: "",
-      reason: "no-chat",
-      attemptIndex,
-      revision: 0,
-      lastPersistedRevision: 0,
-      queuedPersistRevision: 0,
-      queuedPersistChatId: "",
-      pendingPersist: false,
-      shadowSnapshotUsed: false,
-      shadowSnapshotRevision: 0,
-      shadowSnapshotUpdatedAt: "",
-      shadowSnapshotReason: "",
-      writesBlocked: true,
-    });
-
-    refreshPanelLiveState();
-    return {
-      success: false,
-      loaded: false,
-      loadState: GRAPH_LOAD_STATES.NO_CHAT,
-      reason: "no-chat",
-      chatId: "",
-      attemptIndex,
-    };
-  }
-
-  if (canUseHostGraphChatStatePersistence(context)) {
-    scheduleGraphChatStateProbe(chatId, {
-      source: `${source}:chat-state-probe`,
-      attemptIndex,
-      allowOverride: true,
-    });
-  }
-
-  const preferredLocalStore = getPreferredGraphLocalStorePresentationSync();
-  const cachedSnapshot = readCachedIndexedDbSnapshot(
-    chatId,
-    preferredLocalStore,
+  return loadGraphFromChatImpl(
+    createGraphLoadPersistRuntime(),
+    options,
   );
-  if (isIndexedDbSnapshotMeaningful(cachedSnapshot)) {
-    const cachedStore = resolveSnapshotGraphStorePresentation(
-      cachedSnapshot,
-      preferredLocalStore,
-    );
-    const cachedResult = applyIndexedDbSnapshotToRuntime(
-      chatId,
-      cachedSnapshot,
-      {
-        source: `${source}:indexeddb-cache`,
-        attemptIndex,
-        storagePrimary: cachedStore.storagePrimary,
-        storageMode: cachedStore.storageMode,
-        statusLabel: cachedStore.statusLabel,
-        reasonPrefix: cachedStore.reasonPrefix,
-      },
-    );
-    if (cachedResult?.reason === `${cachedStore.reasonPrefix}-stale-runtime`) {
-      clearPendingGraphLoadRetry();
-      refreshPanelLiveState();
-      return {
-        success: false,
-        loaded: false,
-        loadState: graphPersistenceState.loadState,
-        reason: "indexeddb-cache-stale-runtime",
-        chatId,
-        attemptIndex,
-        staleDetail: cloneRuntimeDebugValue(cachedResult?.staleDetail, null),
-      };
-    }
-    if (cachedResult?.loaded) {
-      clearPendingGraphLoadRetry();
-      return cachedResult;
-    }
-  }
-
-  const savedData = allowMetadataFallback
-    ? context?.chatMetadata?.[GRAPH_METADATA_KEY]
-    : undefined;
-  if (savedData != null && savedData !== "") {
-    try {
-      const hydratedOfficialGraph = normalizeGraphRuntimeState(
-        deserializeGraph(savedData),
-        chatId,
-      );
-      const officialGraph =
-        typeof savedData === "string"
-          ? hydratedOfficialGraph
-          : cloneGraphForPersistence(hydratedOfficialGraph, chatId);
-      const shadowDecision = shouldPreferShadowSnapshotOverOfficial(
-        officialGraph,
-        shadowSnapshot,
-      );
-      const officialRevision = Math.max(
-        1,
-        getGraphPersistedRevision(officialGraph),
-      );
-      const officialSnapshot = buildSnapshotFromGraph(officialGraph, {
-        chatId,
-        revision: officialRevision,
-      });
-      const metadataCommitMismatch = detectIndexedDbSnapshotCommitMarkerMismatch(
-        officialSnapshot,
-        commitMarker,
-      );
-      const officialRuntimeStaleDecision =
-        detectStaleIndexedDbSnapshotAgainstRuntime(
-          chatId,
-          officialSnapshot,
-          {
-            identity: chatIdentity,
-          },
-        );
-
-      if (officialRuntimeStaleDecision.stale) {
-        clearPendingGraphLoadRetry();
-        updateGraphPersistenceState({
-          metadataIntegrity: getChatMetadataIntegrity(context),
-          dualWriteLastResult: {
-            action: "load",
-            source: `${source}:metadata-compat`,
-            success: false,
-            provisional: true,
-            rejected: true,
-            reason: "metadata-compat-stale-runtime",
-            revision: officialRevision,
-            staleDetail: cloneRuntimeDebugValue(
-              officialRuntimeStaleDecision,
-              null,
-            ),
-            at: Date.now(),
-          },
-        });
-        refreshPanelLiveState();
-        return {
-          success: false,
-          loaded: false,
-          loadState: graphPersistenceState.loadState,
-          reason: "metadata-compat-stale-runtime",
-          chatId,
-          attemptIndex,
-          staleDetail: cloneRuntimeDebugValue(
-            officialRuntimeStaleDecision,
-            null,
-          ),
-        };
-      }
-
-      let metadataMismatchDiagnostic = null;
-      if (metadataCommitMismatch.mismatched) {
-        clearPendingGraphLoadRetry();
-        metadataMismatchDiagnostic = recordPersistMismatchDiagnostic(
-          metadataCommitMismatch,
-          {
-            source: `${source}:metadata-compat`,
-          },
-        );
-        if (
-          shadowSnapshot &&
-          Number(shadowSnapshot.revision || 0) >=
-            Number(metadataCommitMismatch.markerRevision || 0)
-        ) {
-          const shadowResult = applyShadowSnapshotToRuntime(chatId, shadowSnapshot, {
-            source: `${source}:metadata-shadow`,
-            attemptIndex,
-          });
-          if (shadowResult?.loaded && metadataMismatchDiagnostic?.reason) {
-            updateGraphPersistenceState({
-              persistMismatchReason: metadataMismatchDiagnostic.reason,
-            });
-          }
-          return shadowResult;
-        }
-      }
-
-      if (shadowSnapshot && shadowDecision?.reason) {
-        updateGraphPersistenceState({
-          dualWriteLastResult: {
-            action: "shadow-compare",
-            source: `${source}:metadata-shadow-compare`,
-            success: Boolean(shadowDecision.prefer),
-            reason: shadowDecision.reason,
-            resultCode: String(shadowDecision.resultCode || ""),
-            shadowRevision: Number(shadowSnapshot.revision || 0),
-            officialRevision,
-            at: Date.now(),
-          },
-        });
-      }
-
-      if (shadowSnapshot && shadowDecision?.prefer) {
-        clearPendingGraphLoadRetry();
-        return applyShadowSnapshotToRuntime(chatId, shadowSnapshot, {
-          source: `${source}:metadata-shadow`,
-          attemptIndex,
-        });
-      }
-
-      clearPendingGraphLoadRetry();
-      currentGraph = officialGraph;
-      stampGraphPersistenceMeta(currentGraph, {
-        revision: officialRevision,
-        reason: `${source}:metadata-compat-provisional`,
-        chatId,
-        integrity: getChatMetadataIntegrity(context),
-      });
-      extractionCount = Number.isFinite(
-        currentGraph?.historyState?.extractionCount,
-      )
-        ? currentGraph.historyState.extractionCount
-        : 0;
-      lastExtractedItems = [];
-      const restoredRecallUi = restoreRecallUiStateFromPersistence(
-        context?.chat,
-      );
-      runtimeStatus = createUiStatus(
-        "图谱加载中",
-        "已从兼容 metadata 暂载图谱，等待 IndexedDB 权威确认",
-        "running",
-      );
-      lastExtractionStatus = createUiStatus(
-        "待命",
-        "兼容图谱暂载中，等待 IndexedDB 确认后再执行提取",
-        "idle",
-      );
-      lastVectorStatus = createUiStatus(
-        "待命",
-        currentGraph.vectorIndexState?.lastWarning ||
-          "兼容图谱暂载中，等待 IndexedDB 确认后再执行向量任务",
-        "idle",
-      );
-      lastRecallStatus = createUiStatus(
-        "待命",
-        restoredRecallUi.restored
-          ? "已从持久化召回记录恢复显示，等待 IndexedDB 权威确认"
-          : "兼容图谱暂载中，等待 IndexedDB 确认后再执行召回",
-        "idle",
-      );
-      applyGraphLoadState(GRAPH_LOAD_STATES.LOADING, {
-        chatId,
-        reason: `${source}:metadata-compat-provisional`,
-        attemptIndex,
-        revision: officialRevision,
-        lastPersistedRevision: officialRevision,
-        queuedPersistRevision: 0,
-        queuedPersistChatId: "",
-        pendingPersist: false,
-        shadowSnapshotUsed: false,
-        shadowSnapshotRevision: Number(shadowSnapshot?.revision || 0),
-        shadowSnapshotUpdatedAt: String(shadowSnapshot?.updatedAt || ""),
-        shadowSnapshotReason: String(
-          shadowDecision?.reason || shadowSnapshot?.reason || "",
-        ),
-        dbReady: false,
-        writesBlocked: true,
-      });
-      updateGraphPersistenceState({
-        metadataIntegrity: getChatMetadataIntegrity(context),
-        storagePrimary: getPreferredGraphLocalStorePresentationSync().storagePrimary,
-        storageMode: getPreferredGraphLocalStorePresentationSync().storageMode,
-        dbReady: false,
-        indexedDbLastError: "",
-        persistMismatchReason:
-          metadataMismatchDiagnostic?.reason ||
-          graphPersistenceState.persistMismatchReason ||
-          "",
-        dualWriteLastResult: {
-          action: "load",
-          source: `${source}:metadata-compat`,
-          success: true,
-          provisional: true,
-          revision: officialRevision,
-          resultCode: "graph.load.metadata-compat.provisional",
-          reason: `${source}:metadata-compat-provisional`,
-          at: Date.now(),
-        },
-      });
-      rememberResolvedGraphIdentityAlias(context, chatId);
-
-      scheduleIndexedDbGraphProbe(chatId, {
-        source: `${source}:indexeddb-probe`,
-        attemptIndex,
-        allowOverride: true,
-        applyEmptyState: true,
-      });
-
-      refreshPanelLiveState();
-      schedulePersistedRecallMessageUiRefresh(30);
-      return {
-        success: true,
-        loaded: true,
-        loadState: GRAPH_LOAD_STATES.LOADING,
-        reason: `${source}:metadata-compat-provisional`,
-        chatId,
-        attemptIndex,
-      };
-    } catch (error) {
-      console.warn(
-        "[ST-BME] 兼容 metadata 图谱读取失败，将回退 IndexedDB:",
-        error,
-      );
-    }
-  }
-
-  if (shadowSnapshot) {
-    const acceptedCommitRevision = getAcceptedCommitMarkerRevision(commitMarker);
-    let shadowOnlyMismatch = null;
-    if (
-      acceptedCommitRevision > 0 &&
-      Number(shadowSnapshot.revision || 0) < acceptedCommitRevision
-    ) {
-      clearPendingGraphLoadRetry();
-      shadowOnlyMismatch = recordPersistMismatchDiagnostic(
-        {
-          mismatched: true,
-          reason: "persist-mismatch:indexeddb-behind-commit-marker",
-          markerRevision: acceptedCommitRevision,
-          snapshotRevision: Number(shadowSnapshot.revision || 0),
-          marker: commitMarker,
-        },
-        {
-          source: `${source}:shadow-no-official`,
-          resolvedBy: "shadow",
-        },
-      );
-    }
-    clearPendingGraphLoadRetry();
-    const shadowResult = applyShadowSnapshotToRuntime(chatId, shadowSnapshot, {
-      source: `${source}:shadow-no-official`,
-      attemptIndex,
-    });
-    if (shadowOnlyMismatch?.reason && shadowResult?.loaded) {
-      updateGraphPersistenceState({
-        persistMismatchReason: shadowOnlyMismatch.reason,
-      });
-    }
-    return shadowResult;
-  }
-
-  applyGraphLoadState(GRAPH_LOAD_STATES.LOADING, {
-    chatId,
-    reason: `indexeddb-probe-pending:${String(source || "direct-load")}`,
-    attemptIndex,
-    dbReady: false,
-    writesBlocked: true,
-  });
-  updateGraphPersistenceState({
-    storagePrimary: getPreferredGraphLocalStorePresentationSync().storagePrimary,
-    storageMode: getPreferredGraphLocalStorePresentationSync().storageMode,
-    dbReady: false,
-    indexedDbLastError: "",
-  });
-  scheduleIndexedDbGraphProbe(chatId, {
-    source: `${source}:indexeddb-probe`,
-    attemptIndex,
-    allowOverride: true,
-    applyEmptyState: true,
-  });
-  refreshPanelLiveState();
-
-  return {
-    success: false,
-    loaded: false,
-    loadState: GRAPH_LOAD_STATES.LOADING,
-    reason: "indexeddb-probe-pending",
-    chatId,
-    attemptIndex,
-  };
 }
 
 async function saveGraphToIndexedDb(
