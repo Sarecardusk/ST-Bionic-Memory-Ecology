@@ -4,6 +4,8 @@
 
 ST-BME（Bionic Memory Ecology）是一个 **SillyTavern 第三方前端扩展**。它会把长期聊天中出现的角色、事件、地点、规则、主线、反思和总结抽取成一张可视化记忆图谱，并在下一轮生成前自动召回最相关的记忆注入 prompt。
 
+> 本 README 是用户手册。想了解内部架构、算法原理、功能解析或参与维护，见 [`docs/`](docs/README.md)。
+
 ---
 
 ## 目录
@@ -789,6 +791,12 @@ ST-BME 已加入保护：
 ---
 
 ## 开发者参考
+
+> 完整的架构、算法原理、功能解析和贡献指南在 [`docs/`](docs/README.md)：
+> - 架构与控制平面 [`docs/architecture/`](docs/architecture/)
+> - 算法原理 [`docs/algorithms/`](docs/algorithms/)
+> - 功能解析 [`docs/features/`](docs/features/)
+> - 参与维护 [`docs/contributing/`](docs/contributing/)
 
 ### 目录结构
 
