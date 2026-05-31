@@ -15,6 +15,7 @@ import {
   shouldAdvanceProcessedHistory,
 } from "../maintenance/extraction-success-controller.js";
 import { notifyHistoryDirtyNotice } from "../ui/history-notice.js";
+import { createRecallMessageUiController } from "../ui/recall-message-ui-controller.js";
 import {
   onBeforeCombinePromptsController,
   onCharacterMessageRenderedController,
@@ -1336,13 +1337,6 @@ async function createRecallUiHarness({
   const harness = createDomHarness(chat);
   const previousDocument = globalThis.document;
   globalThis.document = harness.document;
-  const source = await fs.readFile(indexPath, "utf8");
-  const start = source.indexOf("function debugWithThrottle(");
-  const end = source.indexOf("async function rerunRecallForMessage(");
-  if (start < 0 || end < 0 || end <= start) {
-    throw new Error("无法从 index.js 提取 Recall UI 逻辑");
-  }
-  const snippet = source.slice(start, end).replace(/^export\s+/gm, "");
   const context = {
     console,
     Date,
@@ -1361,13 +1355,8 @@ async function createRecallUiHarness({
     queueMicrotask,
     document: harness.document,
     currentGraph: graph,
-    persistedRecallUiRefreshTimer: null,
-    persistedRecallUiRefreshObserver: null,
-    persistedRecallUiRefreshSession: 0,
     PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS: [0, 10, 20],
     PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS: 0,
-    persistedRecallUiDiagnosticTimestamps: new Map(),
-    persistedRecallPersistDiagnosticTimestamps: new Map(),
     getContext: () => ({ chat }),
     getSettings: () => ({ panelTheme: "crimson" }),
     triggerChatMetadataSave: () => "debounced",
@@ -1389,20 +1378,48 @@ async function createRecallUiHarness({
     markPersistedRecallManualEdit,
     createRecallCardElement: null,
     updateRecallCardData: null,
-    globalThis: null,
     result: null,
   };
-  context.globalThis = context;
   const recallUiModule = await import("../ui/recall-message-ui.js");
-  context.createRecallCardElement = recallUiModule.createRecallCardElement;
-  context.updateRecallCardData = recallUiModule.updateRecallCardData;
+  context.createRecallCardElement = (...args) =>
+    context.createRecallCardElementImpl(...args);
+  context.createRecallCardElementImpl = recallUiModule.createRecallCardElement;
+  context.updateRecallCardData = (...args) => context.updateRecallCardDataImpl(...args);
+  context.updateRecallCardDataImpl = recallUiModule.updateRecallCardData;
   context.MutationObserver = harness.MutationObserver;
-  vm.createContext(context);
-  vm.runInContext(
-    `${snippet}\nresult = { refreshPersistedRecallMessageUi, schedulePersistedRecallMessageUiRefresh, cleanupPersistedRecallMessageUi, resolveMessageIndexFromElement, resolveRecallCardAnchor };`,
-    context,
-    { filename: indexPath },
-  );
+  context.result = createRecallMessageUiController({
+    getContext: () => context.getContext(),
+    getSettings: () => context.getSettings(),
+    getCurrentGraph: () => context.currentGraph,
+    get document() { return context.document; },
+    get MutationObserver() { return context.MutationObserver; },
+    console: context.console,
+    setTimeout: context.setTimeout,
+    clearTimeout: context.clearTimeout,
+    toastr: context.toastr,
+    estimateTokens: (...args) => context.estimateTokens(...args),
+    triggerChatMetadataSave: (...args) => context.triggerChatMetadataSave(...args),
+    openRecallSidebar: (...args) => context.openRecallSidebar(...args),
+    readPersistedRecallFromUserMessage: (...args) =>
+      context.readPersistedRecallFromUserMessage(...args),
+    removePersistedRecallFromUserMessage: (...args) =>
+      context.removePersistedRecallFromUserMessage(...args),
+    writePersistedRecallToUserMessage: (...args) =>
+      context.writePersistedRecallToUserMessage(...args),
+    buildPersistedRecallRecord: (...args) => context.buildPersistedRecallRecord(...args),
+    markPersistedRecallManualEdit: (...args) =>
+      context.markPersistedRecallManualEdit(...args),
+    createRecallCardElement: (...args) => context.createRecallCardElement(...args),
+    updateRecallCardData: (...args) => context.updateRecallCardData(...args),
+    normalizeRecallInputText,
+    rerunRecallForMessage: async () => null,
+    get PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS() {
+      return context.PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS;
+    },
+    get PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS() {
+      return context.PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS;
+    },
+  });
   return {
     ...harness,
     context,

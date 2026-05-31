@@ -240,6 +240,33 @@ export function createGenerationRecallHarness(options = {}) {
         context.metadataSaveCalls += 1;
         return "debounced";
       },
+      toastr: {
+        success() {},
+        warning() {},
+        info() {},
+        error() {},
+      },
+      openRecallSidebar() {},
+      removePersistedRecallFromUserMessage: () => false,
+      markPersistedRecallManualEdit: () => null,
+      createRecallCardElement: () => null,
+      updateRecallCardData: () => {},
+      createRecallMessageUiController: () => ({
+        refreshPersistedRecallMessageUi: () => ({
+          status: "missing_recall_record",
+          renderedCount: 0,
+          persistedRecordCount: 0,
+          waitingMessageIndices: [],
+          anchorFailureIndices: [],
+          skippedNonUserIndices: [],
+        }),
+        schedulePersistedRecallMessageUiRefresh: () => {
+          context.recallUiRefreshCalls += 1;
+        },
+        cleanupPersistedRecallMessageUi: () => {},
+        resolveMessageIndexFromElement: () => null,
+        resolveRecallCardAnchor: () => null,
+      }),
       refreshPanelLiveState: () => {
         context.refreshPanelCalls += 1;
       },

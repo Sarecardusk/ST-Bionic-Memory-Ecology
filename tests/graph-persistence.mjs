@@ -781,6 +781,31 @@ async function createGraphPersistenceHarness({
         return null;
       },
     },
+    createRecallMessageUiController() {
+      return {
+        refreshPersistedRecallMessageUi: () => ({
+          status: "missing_recall_record",
+          renderedCount: 0,
+          persistedRecordCount: 0,
+          waitingMessageIndices: [],
+          anchorFailureIndices: [],
+          skippedNonUserIndices: [],
+        }),
+        schedulePersistedRecallMessageUiRefresh() {},
+        cleanupPersistedRecallMessageUi() {},
+        resolveMessageIndexFromElement: () => null,
+        resolveRecallCardAnchor: () => null,
+      };
+    },
+    openRecallSidebar() {},
+    removePersistedRecallFromUserMessage: () => false,
+    writePersistedRecallToUserMessage: () => false,
+    buildPersistedRecallRecord: (record = {}) => ({ ...record }),
+    markPersistedRecallManualEdit: () => null,
+    createRecallCardElement: () => null,
+    updateRecallCardData() {},
+    estimateTokens: (text = "") =>
+      String(text || "").trim().split(/\s+/).filter(Boolean).length || 1,
     SillyTavern: {
       getCurrentChatId() {
         return runtimeContext.__globalChatId;

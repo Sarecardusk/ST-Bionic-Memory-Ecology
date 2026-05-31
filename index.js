@@ -281,6 +281,7 @@ import {
   resolveRecallInputController,
   runRecallController,
 } from "./retrieval/recall-controller.js";
+import { createRecallMessageUiController } from "./ui/recall-message-ui-controller.js";
 import {
   createRecallCardElement,
   openRecallSidebar,
@@ -1383,9 +1384,6 @@ let lastPreGenerationRecallKey = "";
 let lastPreGenerationRecallAt = 0;
 const generationRecallTransactions = new Map();
 const plannerRecallHandoffs = new Map();
-let persistedRecallUiRefreshTimer = null;
-let persistedRecallUiRefreshObserver = null;
-let persistedRecallUiRefreshSession = 0;
 const PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS = [
   0,
   80,
@@ -1399,8 +1397,31 @@ const PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS = [
   4200,
 ];
 const PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS = 1500;
-const persistedRecallUiDiagnosticTimestamps = new Map();
-const persistedRecallPersistDiagnosticTimestamps = new Map();
+const recallMessageUiController = createRecallMessageUiController({
+  getContext,
+  getSettings,
+  getCurrentGraph: () => currentGraph,
+  get document() { return globalThis.document; },
+  get MutationObserver() { return globalThis.MutationObserver; },
+  console,
+  setTimeout,
+  clearTimeout,
+  toastr,
+  estimateTokens,
+  triggerChatMetadataSave,
+  openRecallSidebar,
+  readPersistedRecallFromUserMessage,
+  removePersistedRecallFromUserMessage,
+  writePersistedRecallToUserMessage,
+  buildPersistedRecallRecord,
+  markPersistedRecallManualEdit,
+  createRecallCardElement,
+  updateRecallCardData,
+  normalizeRecallInputText,
+  rerunRecallForMessage: (messageIndex) => rerunRecallForMessage(messageIndex),
+  PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS,
+  PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS,
+});
 const GENERATION_RECALL_TRANSACTION_TTL_MS = 15000;
 const PLANNER_RECALL_HANDOFF_TTL_MS = GENERATION_RECALL_TRANSACTION_TTL_MS;
 const GENERATION_RECALL_HOOK_BRIDGE_MS = 1200;
@@ -5361,9 +5382,10 @@ function debugWithThrottle(cache, key, ...args) {
 }
 
 function debugPersistedRecallUi(reason, details = null, throttleKey = reason) {
+  if (!globalThis.__stBmeDebugLoggingEnabled) return;
   const suffix = details ? ` ${JSON.stringify(details)}` : "";
   debugWithThrottle(
-    persistedRecallUiDiagnosticTimestamps,
+    recallMessageUiController.uiDiagnosticTimestamps || new Map(),
     `ui:${throttleKey}`,
     `[ST-BME] Recall Card UI: ${reason}${suffix}`,
   );
@@ -5374,9 +5396,10 @@ function debugPersistedRecallPersistence(
   details = null,
   throttleKey = reason,
 ) {
+  if (!globalThis.__stBmeDebugLoggingEnabled) return;
   const suffix = details ? ` ${JSON.stringify(details)}` : "";
   debugWithThrottle(
-    persistedRecallPersistDiagnosticTimestamps,
+    recallMessageUiController.persistDiagnosticTimestamps || new Map(),
     `persist:${throttleKey}`,
     `[ST-BME] Recall Card persist: ${reason}${suffix}`,
   );
@@ -6582,554 +6605,25 @@ function clearLiveRecallInjectionPromptForRewrite() {
   }
 }
 
-function clearPersistedRecallMessageUiObserver() {
-  try {
-    persistedRecallUiRefreshObserver?.disconnect?.();
-  } catch (error) {
-    console.warn("[ST-BME] Recall Card UI observer disconnect 失败:", error);
-  }
-  persistedRecallUiRefreshObserver = null;
-}
-
-function isDomNodeAttached(node) {
-  if (!node) return false;
-  if (node.isConnected === true) return true;
-  return typeof document?.contains === "function"
-    ? document.contains(node)
-    : true;
-}
-
-function cleanupRecallCardElement(cardElement) {
-  if (!cardElement) return;
-  const messageElement = cardElement.closest?.(".mes") || null;
-  if (messageElement) {
-    restoreRecallCardUserInputDisplay(messageElement);
-  }
-  try {
-    cardElement._bmeDestroyRenderer?.();
-  } catch (error) {
-    console.warn("[ST-BME] Recall Card renderer 清理失败:", error);
-  }
-  cardElement.remove?.();
-}
-
-function cleanupLegacyRecallBadges(messageElement) {
-  if (!messageElement?.querySelectorAll) return;
-  const oldBadges = Array.from(
-    messageElement.querySelectorAll(".st-bme-recall-badge") || [],
-  );
-  for (const oldBadge of oldBadges) oldBadge.remove();
-}
-
-function cleanupRecallArtifacts(messageElement, keepMessageIndex = null) {
-  if (!messageElement?.querySelectorAll) return;
-
-  cleanupLegacyRecallBadges(messageElement);
-  restoreRecallCardUserInputDisplay(messageElement);
-
-  const existingCards = Array.from(
-    messageElement.querySelectorAll(".bme-recall-card") || [],
-  );
-  for (const card of existingCards) {
-    if (
-      keepMessageIndex !== null &&
-      card.dataset?.messageIndex === String(keepMessageIndex)
-    ) {
-      continue;
-    }
-    cleanupRecallCardElement(card);
-  }
-}
-
-function parseStableMessageIndex(candidate) {
-  const normalized = String(candidate ?? "").trim();
-  if (!normalized) return null;
-  if (!/^\d+$/.test(normalized)) return null;
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function resolveMessageIndexFromElement(messageElement) {
-  if (!messageElement) return null;
-
-  const candidates = [
-    messageElement.getAttribute?.("mesid"),
-    messageElement.getAttribute?.("data-mesid"),
-    messageElement.getAttribute?.("data-message-id"),
-    messageElement.dataset?.mesid,
-    messageElement.dataset?.messageId,
-  ];
-
-  for (const candidate of candidates) {
-    const parsed = parseStableMessageIndex(candidate);
-    if (parsed !== null) return parsed;
-  }
-
-  return null;
+  return recallMessageUiController.resolveMessageIndexFromElement(messageElement);
 }
 
 function resolveRecallCardAnchor(messageElement) {
-  if (!messageElement || !isDomNodeAttached(messageElement)) return null;
-  const mesBlock = messageElement.querySelector?.(".mes_block");
-  if (isDomNodeAttached(mesBlock)) return mesBlock;
-
-  const mesTextParent =
-    messageElement.querySelector?.(".mes_text")?.parentElement;
-  if (isDomNodeAttached(mesTextParent)) return mesTextParent;
-
-  return isDomNodeAttached(messageElement) ? messageElement : null;
-}
-
-function getRecallMessageElementPriority(messageElement) {
-  if (!messageElement || !isDomNodeAttached(messageElement)) return -1;
-
-  let priority = 0;
-  const anchor = resolveRecallCardAnchor(messageElement);
-  if (anchor === messageElement) priority += 1;
-  else if (anchor) priority += 3;
-
-  if (messageElement.querySelector?.(".mes_text")) priority += 1;
-  if (messageElement.classList?.contains("last_mes")) priority += 2;
-  if (
-    messageElement.getAttribute?.("is_user") === "true" ||
-    messageElement.dataset?.isUser === "true" ||
-    messageElement.classList?.contains("user_mes")
-  ) {
-    priority += 1;
-  }
-
-  return priority;
-}
-
-function normalizeRecallCardUserInputDisplayMode(mode) {
-  const normalized = String(mode || "").trim();
-  if (
-    normalized === "off" ||
-    normalized === "beautify_only" ||
-    normalized === "mirror"
-  ) {
-    return normalized;
-  }
-  return "beautify_only";
-}
-
-function applyRecallCardUserInputDisplayMode(messageElement, mode) {
-  if (!messageElement?.querySelector) return;
-  const userTextElement = messageElement.querySelector(".mes_text");
-  if (!userTextElement) return;
-  userTextElement.classList.toggle(
-    "bme-hide-original-user-text",
-    normalizeRecallCardUserInputDisplayMode(mode) === "beautify_only",
-  );
-}
-
-function restoreRecallCardUserInputDisplay(messageElement) {
-  if (!messageElement?.querySelector) return;
-  const userTextElement = messageElement.querySelector(".mes_text");
-  userTextElement?.classList?.remove("bme-hide-original-user-text");
-}
-
-function buildPersistedRecallUiRetryDelays(initialDelayMs = 0) {
-  const normalizedInitial = Math.max(
-    0,
-    Number.parseInt(initialDelayMs, 10) || 0,
-  );
-  if (!normalizedInitial)
-    return [...PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS];
-  return [
-    normalizedInitial,
-    ...PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS.filter(
-      (delay) => delay > normalizedInitial,
-    ),
-  ];
-}
-
-function summarizePersistedRecallRefreshStatus(summary) {
-  if (summary.waitingMessageIndices.length > 0) return "waiting_dom";
-  if (summary.anchorFailureIndices.length > 0) return "missing_message_anchor";
-  if (summary.renderedCount > 0) return "rendered";
-  if (summary.skippedNonUserIndices.length > 0) return "skipped_non_user";
-  if (summary.persistedRecordCount === 0) return "missing_recall_record";
-  return "missing_message_anchor";
+  return recallMessageUiController.resolveRecallCardAnchor(messageElement);
 }
 
 function refreshPersistedRecallMessageUi() {
-  const context = getContext();
-  const chat = context?.chat;
-  if (!Array.isArray(chat) || typeof document?.getElementById !== "function") {
-    return {
-      status: "missing_chat_root",
-      renderedCount: 0,
-      persistedRecordCount: 0,
-      waitingMessageIndices: [],
-      anchorFailureIndices: [],
-      skippedNonUserIndices: [],
-    };
-  }
-
-  const chatRoot = document.getElementById("chat");
-  if (!chatRoot) {
-    debugPersistedRecallUi("缺少 #chat 根节点");
-    return {
-      status: "missing_chat_root",
-      renderedCount: 0,
-      persistedRecordCount: 0,
-      waitingMessageIndices: [],
-      anchorFailureIndices: [],
-      skippedNonUserIndices: [],
-    };
-  }
-
-  const settings = getSettings();
-  const themeName = settings?.panelTheme || "crimson";
-  const recallCardUserInputDisplayMode =
-    normalizeRecallCardUserInputDisplayMode(
-      settings?.recallCardUserInputDisplayMode,
-    );
-  const callbacks = getRecallCardCallbacks();
-  const messageElementMap = new Map();
-  const messageElements = Array.from(chatRoot.querySelectorAll(".mes"));
-  for (const messageElement of messageElements) {
-    cleanupLegacyRecallBadges(messageElement);
-    const messageIndex = resolveMessageIndexFromElement(messageElement);
-    if (!Number.isFinite(messageIndex)) {
-      debugPersistedRecallUi(
-        "消息 DOM 缺少稳定索引属性，跳过挂载",
-        {
-          className: messageElement.className || "",
-        },
-        "missing-stable-message-index",
-      );
-      continue;
-    }
-    if (messageElementMap.has(messageIndex)) {
-      const previousElement = messageElementMap.get(messageIndex) || null;
-      const previousPriority = getRecallMessageElementPriority(previousElement);
-      const nextPriority = getRecallMessageElementPriority(messageElement);
-      const shouldReplace = nextPriority >= previousPriority;
-      debugPersistedRecallUi(
-        "检测到重复消息 DOM 索引，已挑选更可靠的锚点",
-        {
-          messageIndex,
-          previousPriority,
-          nextPriority,
-          replaced: shouldReplace,
-        },
-        `duplicate-message-index:${messageIndex}`,
-      );
-      if (shouldReplace) {
-        cleanupRecallArtifacts(previousElement);
-        messageElementMap.set(messageIndex, messageElement);
-      } else {
-        cleanupRecallArtifacts(messageElement);
-      }
-      continue;
-    }
-    messageElementMap.set(messageIndex, messageElement);
-  }
-
-  const summary = {
-    status: "missing_recall_record",
-    renderedCount: 0,
-    persistedRecordCount: 0,
-    waitingMessageIndices: [],
-    anchorFailureIndices: [],
-    skippedNonUserIndices: [],
-  };
-
-  for (let messageIndex = 0; messageIndex < chat.length; messageIndex++) {
-    const message = chat[messageIndex];
-    const messageElement = messageElementMap.get(messageIndex) || null;
-    const existingCard =
-      messageElement?.querySelector?.(
-        `.bme-recall-card[data-message-index="${messageIndex}"]`,
-      ) || null;
-
-    if (!message?.is_user) {
-      if (messageElement) {
-        restoreRecallCardUserInputDisplay(messageElement);
-      }
-      if (existingCard) cleanupRecallCardElement(existingCard);
-      const unexpectedRecord = readPersistedRecallFromUserMessage(
-        chat,
-        messageIndex,
-      );
-      if (unexpectedRecord) {
-        summary.skippedNonUserIndices.push(messageIndex);
-        debugPersistedRecallUi(
-          "非 user 楼层存在持久召回记录，已跳过挂载",
-          {
-            messageIndex,
-          },
-          `skipped-non-user:${messageIndex}`,
-        );
-      }
-      continue;
-    }
-
-    const record = readPersistedRecallFromUserMessage(chat, messageIndex);
-    if (!record?.injectionText) {
-      if (messageElement) {
-        restoreRecallCardUserInputDisplay(messageElement);
-      }
-      if (existingCard) cleanupRecallCardElement(existingCard);
-      continue;
-    }
-
-    summary.persistedRecordCount += 1;
-    if (!messageElement) {
-      summary.waitingMessageIndices.push(messageIndex);
-      debugPersistedRecallUi(
-        "目标 user 楼层 DOM 未就绪，等待后续刷新",
-        {
-          messageIndex,
-        },
-        `waiting-dom:${messageIndex}`,
-      );
-      continue;
-    }
-
-    const anchor = resolveRecallCardAnchor(messageElement);
-    if (!anchor) {
-      restoreRecallCardUserInputDisplay(messageElement);
-      cleanupRecallCardElement(existingCard);
-      summary.anchorFailureIndices.push(messageIndex);
-      debugPersistedRecallUi(
-        "目标 user 楼层锚点解析失败，跳过挂载",
-        {
-          messageIndex,
-        },
-        `missing-anchor:${messageIndex}`,
-      );
-      continue;
-    }
-
-    cleanupRecallArtifacts(messageElement, messageIndex);
-    const currentCard =
-      messageElement.querySelector?.(
-        `.bme-recall-card[data-message-index="${messageIndex}"]`,
-      ) || null;
-
-    if (currentCard) {
-      updateRecallCardData(currentCard, record, {
-        userMessageText: message.mes || "",
-        userInputDisplayMode: recallCardUserInputDisplayMode,
-        graph: currentGraph,
-        themeName,
-        callbacks,
-      });
-    } else {
-      const card = createRecallCardElement({
-        messageIndex,
-        record,
-        userMessageText: message.mes || "",
-        userInputDisplayMode: recallCardUserInputDisplayMode,
-        graph: currentGraph,
-        themeName,
-        callbacks,
-      });
-      anchor.appendChild(card);
-    }
-    applyRecallCardUserInputDisplayMode(
-      messageElement,
-      recallCardUserInputDisplayMode,
-    );
-    summary.renderedCount += 1;
-  }
-
-  summary.status = summarizePersistedRecallRefreshStatus(summary);
-  if (summary.status === "missing_recall_record") {
-    debugPersistedRecallUi("当前无有效持久召回记录可渲染");
-  } else if (summary.renderedCount > 0) {
-    debugPersistedRecallUi(
-      "Recall Card 挂载完成",
-      {
-        renderedCount: summary.renderedCount,
-        persistedRecordCount: summary.persistedRecordCount,
-        waitingDom: summary.waitingMessageIndices.length,
-      },
-      `rendered:${summary.renderedCount}`,
-    );
-  }
-  return summary;
-}
-
-function getRecallCardCallbacks() {
-  return {
-    onEdit: (messageIndex) => {
-      const record = getMessageRecallRecord(messageIndex);
-      if (!record) return;
-      openRecallSidebar({
-        mode: "edit",
-        messageIndex,
-        record,
-        node: null,
-        graph: currentGraph,
-        callbacks: {
-          onSave: (idx, newText) => {
-            const edited = editMessageRecallRecord(idx, newText);
-            if (edited) {
-              toastr.success("已保存手动编辑");
-            } else {
-              toastr.warning("编辑失败：注入文本不能为空");
-            }
-            schedulePersistedRecallMessageUiRefresh();
-          },
-          estimateTokens,
-        },
-      });
-    },
-    onEditUserInput: (messageIndex, nextUserInputText) => {
-      const result = editMessageUserInputText(messageIndex, nextUserInputText);
-      if (!result?.ok) {
-        toastr.warning("编辑失败：内容不能为空或此楼层非用户消息");
-        return result;
-      }
-
-      if (result.unchanged) {
-        toastr.info("用户输入未变化");
-      } else {
-        toastr.success("已更新本轮用户输入");
-      }
-      if (result.recallMayBeStale) {
-        toastr.info("输入已改，当前召回结果可能需要重新召回");
-      }
-      schedulePersistedRecallMessageUiRefresh();
-      return result;
-    },
-    onDelete: (messageIndex) => {
-      if (removeMessageRecallRecord(messageIndex)) {
-        toastr.success("已删除持久召回注入");
-        schedulePersistedRecallMessageUiRefresh();
-      }
-    },
-    onRerunRecall: async (messageIndex) => {
-      const result = await rerunRecallForMessage(messageIndex);
-      if (result?.status === "completed") {
-        toastr.success("重新召回完成");
-      }
-      schedulePersistedRecallMessageUiRefresh();
-    },
-    onNodeClick: (messageIndex, node) => {
-      const record = getMessageRecallRecord(messageIndex);
-      if (!record) return;
-      openRecallSidebar({
-        mode: "view",
-        messageIndex,
-        record,
-        node,
-        graph: currentGraph,
-        callbacks: {
-          onSave: (idx, newText) => {
-            const edited = editMessageRecallRecord(idx, newText);
-            if (edited) toastr.success("已保存手动编辑");
-            else toastr.warning("编辑失败：注入文本不能为空");
-            schedulePersistedRecallMessageUiRefresh();
-          },
-          estimateTokens,
-        },
-      });
-    },
-  };
-}
-
-function armPersistedRecallMessageUiObserver(sessionId, runAttempt) {
-  clearPersistedRecallMessageUiObserver();
-  const chatRoot = document?.getElementById?.("chat");
-  const ObserverCtor = globalThis.MutationObserver;
-  if (!chatRoot || typeof ObserverCtor !== "function") return false;
-
-  persistedRecallUiRefreshObserver = new ObserverCtor(() => {
-    if (sessionId !== persistedRecallUiRefreshSession) return;
-    clearPersistedRecallMessageUiObserver();
-    runAttempt();
-  });
-  persistedRecallUiRefreshObserver.observe(chatRoot, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: [
-      "mesid",
-      "data-mesid",
-      "data-message-id",
-      "class",
-      "is_user",
-    ],
-  });
-  return true;
+  return recallMessageUiController.refreshPersistedRecallMessageUi();
 }
 
 function schedulePersistedRecallMessageUiRefresh(delayMs = 0) {
-  clearTimeout(persistedRecallUiRefreshTimer);
-  clearPersistedRecallMessageUiObserver();
-
-  const retryDelays = buildPersistedRecallUiRetryDelays(delayMs);
-  const sessionId = ++persistedRecallUiRefreshSession;
-  let attemptIndex = 0;
-
-  const runAttempt = () => {
-    if (sessionId !== persistedRecallUiRefreshSession) return;
-    if (persistedRecallUiRefreshTimer) {
-      clearTimeout(persistedRecallUiRefreshTimer);
-      persistedRecallUiRefreshTimer = null;
-    }
-
-    const summary = refreshPersistedRecallMessageUi();
-
-    const shouldRetryForPending =
-      (summary.status === "missing_chat_root" ||
-        summary.status === "waiting_dom" ||
-        summary.status === "missing_message_anchor") &&
-      attemptIndex < retryDelays.length - 1;
-
-    // 勿在「已成功渲染」时长期监听 MutationObserver：chat 的 class/流式更新会疯狂触发
-    // runAttempt，造成满屏刷新与日志；显式事件（USER_MESSAGE_RENDERED 等）仍会 schedule 刷新。
-    const shouldWatchForRepaint = false;
-
-    if (!shouldRetryForPending && !shouldWatchForRepaint) {
-      clearPersistedRecallMessageUiObserver();
-      return;
-    }
-
-    armPersistedRecallMessageUiObserver(sessionId, runAttempt);
-    if (shouldRetryForPending) {
-      attemptIndex += 1;
-      persistedRecallUiRefreshTimer = setTimeout(
-        runAttempt,
-        retryDelays[attemptIndex],
-      );
-      return;
-    }
-
-    const lingerMs = retryDelays[retryDelays.length - 1] || 0;
-    if (lingerMs <= 0) {
-      clearPersistedRecallMessageUiObserver();
-      return;
-    }
-    persistedRecallUiRefreshTimer = setTimeout(() => {
-      if (sessionId !== persistedRecallUiRefreshSession) return;
-      clearPersistedRecallMessageUiObserver();
-      persistedRecallUiRefreshTimer = null;
-    }, lingerMs);
-  };
-
-  persistedRecallUiRefreshTimer = setTimeout(
-    runAttempt,
-    retryDelays[attemptIndex],
-  );
+  return recallMessageUiController.schedulePersistedRecallMessageUiRefresh(delayMs);
 }
 
 function cleanupPersistedRecallMessageUi() {
-  clearTimeout(persistedRecallUiRefreshTimer);
-  persistedRecallUiRefreshTimer = null;
-  clearPersistedRecallMessageUiObserver();
-  const chatRoot = document.getElementById("chat");
-  if (!chatRoot?.querySelectorAll) return;
-  for (const messageElement of Array.from(chatRoot.querySelectorAll(".mes"))) {
-    cleanupRecallArtifacts(messageElement);
-  }
+  return recallMessageUiController.cleanupPersistedRecallMessageUi();
 }
-
 async function rerunRecallForMessage(messageIndex) {
   const chat = getContext()?.chat;
   const message = Array.isArray(chat) ? chat[messageIndex] : null;
