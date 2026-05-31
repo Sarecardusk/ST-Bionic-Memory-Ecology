@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   classifyGenerationKind,
   createGenerationContextTracker,
+  resolveGenerationParentUserFloor,
 } from "../runtime/generation-context.js";
 
 assert.equal(classifyGenerationKind("normal"), "fresh");
@@ -99,4 +100,49 @@ assert.equal(classifyGenerationKind("normal", { quiet_prompt: true }), "skip");
 
   chatId = "chat-original";
   assert.equal(tracker.get(), null);
+}
+
+{
+  const chat = [
+    { is_system: true, mes: "greeting" },
+    { is_user: true, mes: "first" },
+    { is_user: false, mes: "assistant first" },
+    { is_user: true, mes: "parent" },
+    { is_user: false, mes: "assistant active" },
+  ];
+
+  assert.equal(
+    resolveGenerationParentUserFloor(chat, {
+      type: "swipe",
+      swipedAssistantFloor: 4,
+    }),
+    3,
+  );
+  assert.equal(resolveGenerationParentUserFloor(chat, { type: "regenerate" }), 3);
+}
+
+{
+  const chatAfterRegenerateDelete = [
+    { is_system: true, mes: "greeting" },
+    { is_user: true, mes: "parent" },
+  ];
+  assert.equal(
+    resolveGenerationParentUserFloor(chatAfterRegenerateDelete, {
+      type: "regenerate",
+    }),
+    1,
+  );
+}
+
+{
+  const chat = [
+    { is_system: true, mes: "greeting" },
+    { is_user: true, mes: "hidden", is_system: true },
+    { is_user: true, mes: "visible" },
+    { is_user: false, mes: "assistant" },
+  ];
+  assert.equal(
+    resolveGenerationParentUserFloor(chat, { type: "swipe", swipedAssistantFloor: 3 }),
+    2,
+  );
 }

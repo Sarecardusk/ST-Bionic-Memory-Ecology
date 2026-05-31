@@ -23,6 +23,66 @@ export function classifyGenerationKind(type = "normal", params = {}) {
   return "fresh";
 }
 
+export function isVisibleUserGenerationMessage(message, { index = null, chat = null, isSystemMessage = null } = {}) {
+  if (!message?.is_user) return false;
+  if (message?.extra?.isSmallSys) return false;
+  if (typeof isSystemMessage === "function" && isSystemMessage(message, { index, chat })) {
+    return false;
+  }
+  if (message?.is_system) return false;
+  return true;
+}
+
+export function resolveGenerationParentUserFloor(
+  chat,
+  context = {},
+  { phase = "", isSystemMessage = null } = {},
+) {
+  if (!Array.isArray(chat) || chat.length === 0) return null;
+  const generationType = normalizeGenerationType(context?.type || context?.generationType || "normal");
+  const findVisibleUserBefore = (startIndex) => {
+    for (let index = Math.min(chat.length - 1, Math.floor(Number(startIndex))); index >= 0; index--) {
+      if (isVisibleUserGenerationMessage(chat[index], { index, chat, isSystemMessage })) return index;
+    }
+    return null;
+  };
+  const findLastVisibleNonSystemIndex = () => {
+    for (let index = chat.length - 1; index >= 0; index--) {
+      const message = chat[index];
+      if (!message) continue;
+      if (message?.extra?.isSmallSys) continue;
+      if (typeof isSystemMessage === "function" && isSystemMessage(message, { index, chat })) continue;
+      if (message?.is_system) continue;
+      return index;
+    }
+    return null;
+  };
+
+  if (generationType === "swipe") {
+    const swipedFloor = Number(context?.swipedAssistantFloor);
+    if (Number.isFinite(swipedFloor)) return findVisibleUserBefore(swipedFloor - 1);
+    const lastVisible = findLastVisibleNonSystemIndex();
+    return Number.isFinite(lastVisible) ? findVisibleUserBefore(lastVisible - 1) : null;
+  }
+
+  if (generationType === "regenerate") {
+    const lastVisible = findLastVisibleNonSystemIndex();
+    if (!Number.isFinite(lastVisible)) return null;
+    if (isVisibleUserGenerationMessage(chat[lastVisible], { index: lastVisible, chat, isSystemMessage })) {
+      return lastVisible;
+    }
+    return findVisibleUserBefore(lastVisible - 1);
+  }
+
+  if (generationType === "continue") {
+    const lastVisible = findLastVisibleNonSystemIndex();
+    if (!Number.isFinite(lastVisible)) return null;
+    return findVisibleUserBefore(lastVisible - (chat[lastVisible]?.is_user ? 0 : 1));
+  }
+
+  return findVisibleUserBefore(chat.length - 1);
+}
+
 function clonePlain(value, fallback = null) {
   if (!value || typeof value !== "object") return fallback;
   try {
