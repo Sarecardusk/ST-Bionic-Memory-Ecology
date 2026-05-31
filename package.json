@@ -15,7 +15,6 @@
     "test:graph-snapshot-upgrade": "node tests/graph-snapshot-upgrade.mjs",
     "test:snapshot-forward-compat": "node tests/snapshot-forward-compat.mjs",
     "test:luker-snapshot-forward-compat": "node tests/luker-snapshot-forward-compat.mjs",
-    "test:reroll-transaction-boundary": "node tests/reroll-transaction-boundary.mjs",
     "test:vector-gate": "node tests/vector-gate.mjs",
     "test:hide-engine": "node tests/hide-engine.mjs",
     "test:maintenance-journal": "node tests/maintenance-journal.mjs",

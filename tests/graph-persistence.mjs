@@ -201,10 +201,6 @@ import {
   syncGraphLoadFromLiveContextImpl,
   writeAuthorityCheckpointFromCurrentGraphImpl,
 } from "../sync/graph-load-persist.js";
-import {
-  consumeRerollRecallReuseMarker,
-  createRerollRecallReuseMarker,
-} from "../runtime/reroll-transaction-boundary.js";
 
 function isAuthorityVectorConfig(config = null) {
   return config?.mode === "authority" || config?.source === "authority-trivium";
@@ -892,8 +888,6 @@ async function createGraphPersistenceHarness({
     shouldUseAuthorityJobsImpl,
     syncGraphLoadFromLiveContextImpl,
     writeAuthorityCheckpointFromCurrentGraphImpl,
-    consumeRerollRecallReuseMarker,
-    createRerollRecallReuseMarker,
     createRecallMessageUiController() {
       return {
         refreshPersistedRecallMessageUi: () => ({

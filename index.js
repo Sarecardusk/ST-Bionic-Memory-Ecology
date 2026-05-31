@@ -156,10 +156,6 @@ import {
   resolvePersistenceChatIdCore,
   resolveRuntimeGraphFallbackIdentityCore,
 } from "./runtime/identity-resolver.js";
-import {
-  consumeRerollRecallReuseMarker,
-  createRerollRecallReuseMarker,
-} from "./runtime/reroll-transaction-boundary.js";
 import { createRecallInputState } from "./runtime/recall-input-state.js";
 import { createRerollRecallInput } from "./runtime/reroll-recall-input.js";
 import { createGenerationContextTracker } from "./runtime/generation-context.js";
@@ -1666,8 +1662,6 @@ const rerollRecallInput = createRerollRecallInput({
     clearPendingHostGenerationInputSnapshot(...args),
   clearPendingRecallSendIntent: (...args) => clearPendingRecallSendIntent(...args),
   console,
-  consumeRerollRecallReuseMarker,
-  createRerollRecallReuseMarker,
   createTrivialRecallSkipSentinel: (...args) =>
     createTrivialRecallSkipSentinel(...args),
   findLatestUserChatMessageWithIndex: (...args) =>
@@ -14581,20 +14575,8 @@ function getLastNonSystemChatMessage(chat) {
   return null;
 }
 
-function getPendingRerollRecallReuse() {
-  return rerollRecallInput.getPendingRerollRecallReuse();
-}
-
 function clearPendingRerollRecallReuse(reason = "") {
   return rerollRecallInput.clearPendingRerollRecallReuse(reason);
-}
-
-function prepareRerollRecallReuse({ fromFloor = null, meta = null } = {}) {
-  return rerollRecallInput.prepareRerollRecallReuse({ fromFloor, meta });
-}
-
-function consumePendingRerollRecallReuse(chat = getContext()?.chat) {
-  return rerollRecallInput.consumePendingRerollRecallReuse(chat);
 }
 
 function buildRecallRecentMessages(chat, limit, syntheticUserMessage = "") {

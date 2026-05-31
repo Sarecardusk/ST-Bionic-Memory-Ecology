@@ -1,8 +1,6 @@
 export function createRerollRecallInput(deps = {}) {
-  let pendingRerollRecallReuse = null;
   const plannerRecallHandoffs = new Map();
 
-  const getContext = (...args) => deps.getContext?.(...args);
   const getCurrentChatId = (...args) => deps.getCurrentChatId?.(...args);
   const normalizeChatIdCandidate = (value = "") =>
     deps.normalizeChatIdCandidate?.(value) ?? String(value ?? "").trim();
@@ -13,94 +11,13 @@ export function createRerollRecallInput(deps = {}) {
     deps.getLastRecallSentUserMessage?.() || {};
   const getPendingRecallSendIntent = () =>
     deps.getPendingRecallSendIntent?.() || {};
-  const getGenerationRecallTransactionTtlMs = () =>
-    Number.isFinite(Number(deps.GENERATION_RECALL_TRANSACTION_TTL_MS))
-      ? Number(deps.GENERATION_RECALL_TRANSACTION_TTL_MS)
-      : 60000;
   const getPlannerRecallHandoffTtlMs = () =>
     Number.isFinite(Number(deps.PLANNER_RECALL_HANDOFF_TTL_MS))
       ? Number(deps.PLANNER_RECALL_HANDOFF_TTL_MS)
       : 60000;
 
-  function getPendingRerollRecallReuse() {
-    return pendingRerollRecallReuse;
-  }
-
   function clearPendingRerollRecallReuse(reason = "") {
-    const previous = pendingRerollRecallReuse;
-    pendingRerollRecallReuse = null;
-    return previous;
-  }
-
-  function prepareRerollRecallReuse({ fromFloor = null, meta = null } = {}) {
-    const context = getContext();
-    const chat = context?.chat;
-    if (!Array.isArray(chat) || chat.length === 0) {
-      pendingRerollRecallReuse = null;
-      return null;
-    }
-
-    const latestUser = deps.findLatestUserChatMessageWithIndex(chat);
-    const targetUserMessageIndex = Number.isFinite(latestUser?.index)
-      ? latestUser.index
-      : null;
-    if (!Number.isFinite(targetUserMessageIndex)) {
-      pendingRerollRecallReuse = null;
-      return null;
-    }
-
-    const userMessage = chat[targetUserMessageIndex];
-    const userText = normalizeRecallInputText(userMessage?.mes || "");
-    if (!userText) {
-      pendingRerollRecallReuse = null;
-      return null;
-    }
-
-    const persistedRecord = deps.readPersistedRecallFromUserMessage(
-      chat,
-      targetUserMessageIndex,
-    );
-    const chatId = normalizeChatIdCandidate(getCurrentChatId(context));
-    const prepared = deps.createRerollRecallReuseMarker({
-      chatId,
-      fromFloor,
-      targetUserMessageIndex,
-      userText,
-      persistedRecord,
-      hashRecallInput,
-      now: Date.now(),
-      meta,
-    });
-    if (!prepared.marker) {
-      pendingRerollRecallReuse = null;
-      return null;
-    }
-
-    pendingRerollRecallReuse = prepared.marker;
-    return pendingRerollRecallReuse;
-  }
-
-  function consumePendingRerollRecallReuse(chat = getContext()?.chat) {
-    const reuse = pendingRerollRecallReuse;
-    if (!reuse) return null;
-
-    const activeChatId = normalizeChatIdCandidate(getCurrentChatId());
-    const latestUser = deps.findLatestUserChatMessageWithIndex(chat);
-    const targetUserMessageIndex = Number.isFinite(latestUser?.index)
-      ? latestUser.index
-      : reuse.targetUserMessageIndex;
-    const userText = normalizeRecallInputText(chat?.[targetUserMessageIndex]?.mes || "");
-    const consumed = deps.consumeRerollRecallReuseMarker({
-      marker: reuse,
-      activeChatId,
-      latestUserMessageIndex: targetUserMessageIndex,
-      currentUserText: userText,
-      hashRecallInput,
-      now: Date.now(),
-      ttlMs: getGenerationRecallTransactionTtlMs(),
-    });
-    pendingRerollRecallReuse = consumed.marker;
-    return consumed.consumed ? consumed.override : null;
+    return null;
   }
 
   function buildGenerationAfterCommandsRecallInput(type, params = {}, chat) {
@@ -115,6 +32,7 @@ export function createRerollRecallInput(deps = {}) {
 
     const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(chat, {
       generationType,
+      generationContext: params?.generationContext,
     });
 
     // 对于 history 类型（continue/regenerate/swipe），必须依赖 chat 中的用户消息
@@ -125,7 +43,10 @@ export function createRerollRecallInput(deps = {}) {
           targetUserMessageIndex: null,
         };
       }
-      const historyInput = buildHistoryGenerationRecallInput(chat);
+      const historyInput = buildHistoryGenerationRecallInput(chat, {
+        generationType,
+        generationContext: params?.generationContext,
+      });
       if (!historyInput) {
         return {
           generationType,
@@ -157,11 +78,6 @@ export function createRerollRecallInput(deps = {}) {
   }
 
   function buildNormalGenerationRecallInput(chat, options = {}) {
-    const rerollReuse = consumePendingRerollRecallReuse(chat);
-    if (rerollReuse) {
-      return rerollReuse;
-    }
-
     const lastNonSystemMessage = deps.getLastNonSystemChatMessage(chat);
     const tailUserText = lastNonSystemMessage?.is_user
       ? normalizeRecallInputText(lastNonSystemMessage?.mes || "")
@@ -294,19 +210,24 @@ export function createRerollRecallInput(deps = {}) {
     };
   }
 
-  function buildHistoryGenerationRecallInput(chat) {
+  function buildHistoryGenerationRecallInput(chat, options = {}) {
+    const generationType = String(options?.generationType || "history").trim() || "history";
     const lastRecallSentUserMessage = getLastRecallSentUserMessage();
+    const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(chat, {
+      generationType,
+      generationContext: options?.generationContext,
+    });
+    const targetUserText = Number.isFinite(targetUserMessageIndex)
+      ? normalizeRecallInputText(chat?.[targetUserMessageIndex]?.mes || "")
+      : "";
     const latestUserText = normalizeRecallInputText(
-      deps.getLatestUserChatMessage(chat)?.mes || lastRecallSentUserMessage.text,
+      targetUserText || deps.getLatestUserChatMessage(chat)?.mes || lastRecallSentUserMessage.text,
     );
     if (!latestUserText) return null;
-    const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(chat, {
-      generationType: "history",
-    });
 
     return {
       overrideUserMessage: latestUserText,
-      generationType: "history",
+      generationType,
       targetUserMessageIndex,
       overrideSource: Number.isFinite(targetUserMessageIndex)
         ? "chat-last-user"
@@ -429,10 +350,7 @@ export function createRerollRecallInput(deps = {}) {
   }
 
   return {
-    prepareRerollRecallReuse,
-    getPendingRerollRecallReuse,
     clearPendingRerollRecallReuse,
-    consumePendingRerollRecallReuse,
     buildNormalGenerationRecallInput,
     buildHistoryGenerationRecallInput,
     buildGenerationAfterCommandsRecallInput,

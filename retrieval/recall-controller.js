@@ -118,7 +118,14 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
     "planner-handoff",
   ]);
   const isActiveInputSource = activeInputSources.has(recallSource);
-  if (isActiveInputSource) {
+  const noNewUserGenerationTypes = new Set([
+    "swipe",
+    "regenerate",
+    "continue",
+    "history",
+  ]);
+  const isNoNewUserGeneration = noNewUserGenerationTypes.has(generationType);
+  if (isActiveInputSource && !isNoNewUserGeneration) {
     return null;
   }
 
@@ -203,7 +210,7 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
     "persisted-user-floor",
   ]);
   const canTrustUserFloorRecord = Boolean(
-    !isActiveInputSource &&
+    (!isActiveInputSource || isNoNewUserGeneration) &&
       !boundUserFloorText &&
       (generationType !== "normal" || userFloorSources.has(recallSource)),
   );

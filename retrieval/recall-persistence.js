@@ -134,10 +134,15 @@ export function bumpPersistedRecallGenerationCount(chat, userMessageIndex) {
 
 export function resolveGenerationTargetUserMessageIndex(
   chat,
-  { generationType = "normal" } = {},
+  { generationType = "normal", generationContext = null } = {},
 ) {
   if (!Array.isArray(chat) || chat.length === 0) return null;
-  return resolveGenerationParentUserFloor(chat, { type: generationType });
+  return resolveGenerationParentUserFloor(
+    chat,
+    generationContext && typeof generationContext === "object"
+      ? { ...generationContext, type: generationContext.type || generationType }
+      : { type: generationType },
+  );
 }
 
 export function resolveFinalRecallInjectionSource({

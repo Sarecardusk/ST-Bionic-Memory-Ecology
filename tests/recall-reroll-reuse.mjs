@@ -534,11 +534,6 @@ writePersistedRecallToUserMessage(
   }),
 );
 
-const preparedRerollReuse = rerollInputHarness.result.prepareRerollRecallReuse({
-  fromFloor: 1,
-});
-assert.ok(preparedRerollReuse, "assistant-only reroll should prepare recall reuse marker");
-
 rerollInputHarness.result.recordRecallSendIntent(
   "错误的主动输入不应覆盖 reroll 用户楼",
   "send-intent",
@@ -548,11 +543,16 @@ rerollInputHarness.result.freezeHostGenerationInputSnapshot(
   "host-generation-lifecycle",
 );
 
-const rerollReplacementInput = rerollInputHarness.result.buildNormalGenerationRecallInput(
-  rerollInputHarness.chat,
+const rerollReplacementInput = rerollInputHarness.result.buildGenerationAfterCommandsRecallInput(
+  "swipe",
   {
-    frozenInputSnapshot: rerollInputHarness.result.getPendingHostGenerationInputSnapshot(),
+    generationContext: {
+      type: "swipe",
+      kind: "no-new-user",
+      swipedAssistantFloor: 1,
+    },
   },
+  rerollInputHarness.chat,
 );
 assert.equal(
   rerollReplacementInput.overrideUserMessage,
@@ -560,14 +560,9 @@ assert.equal(
   "reroll replacement should ignore stale live input sources and bind to stable user floor",
 );
 assert.equal(rerollReplacementInput.overrideSource, "chat-last-user");
-assert.equal(rerollReplacementInput.overrideReason, "reroll-user-floor-reuse");
-assert.equal(
-  rerollInputHarness.result.getPendingRerollRecallReuse(),
-  null,
-  "reroll reuse marker should be one-shot after binding recall input",
-);
+assert.equal(rerollReplacementInput.generationType, "swipe");
 
-console.log("  ✓ reroll replacement normal input is forced to stable user-floor recall source");
+console.log("  ✓ reroll replacement input is forced by host type to stable user-floor recall source");
 
 const legacyUnboundReuseChat = [
   { is_user: true, mes: "旧记录没有绑定楼层" },
