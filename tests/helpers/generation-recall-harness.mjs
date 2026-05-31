@@ -64,6 +64,7 @@ import {
 } from "../../runtime/reroll-transaction-boundary.js";
 import { createRecallInputState } from "../../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../../runtime/reroll-recall-input.js";
+import { createGenerationRecallTransactions } from "../../runtime/generation-recall-transactions.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -122,6 +123,7 @@ export function createGenerationRecallHarness(options = {}) {
       createRerollRecallReuseMarker,
       createRecallInputState,
       createRerollRecallInput,
+      createGenerationRecallTransactions,
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },

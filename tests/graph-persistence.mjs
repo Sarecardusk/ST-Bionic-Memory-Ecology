@@ -159,9 +159,11 @@ import {
   isFreshRecallInputRecord,
   normalizeRecallInputText,
   normalizeStageNoticeLevel,
+  shouldRunRecallForTransaction,
 } from "../ui/ui-status.js";
 import { createRecallInputState } from "../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../runtime/reroll-recall-input.js";
+import { createGenerationRecallTransactions } from "../runtime/generation-recall-transactions.js";
 import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
@@ -789,6 +791,7 @@ async function createGraphPersistenceHarness({
     },
     createRecallInputState,
     createRerollRecallInput,
+    createGenerationRecallTransactions,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {
@@ -947,6 +950,7 @@ async function createGraphPersistenceHarness({
     formatInjection: (result = null) =>
       String(result?.injectionText || result?.memoryBlock || ""),
     getSchema: () => [],
+    shouldRunRecallForTransaction,
     areChatIdsEquivalentForIdentityCore,
     cloneGraphForPersistence,
     canMutateRuntimeGraphForIdentityCore,
