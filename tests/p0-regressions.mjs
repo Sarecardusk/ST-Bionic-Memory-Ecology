@@ -9,6 +9,10 @@ import {
   toDataModuleUrl,
 } from "./helpers/register-hooks-compat.mjs";
 import { pruneProcessedMessageHashesFromFloor } from "../maintenance/chat-history.js";
+import {
+  handleExtractionSuccessController,
+  shouldAdvanceProcessedHistory,
+} from "../maintenance/extraction-success-controller.js";
 import { notifyHistoryDirtyNotice } from "../ui/history-notice.js";
 import {
   onBeforeCombinePromptsController,
@@ -272,76 +276,186 @@ function buildAutoExtractionPlan({
 }
 
 function createBatchStageHarness() {
-  return fs.readFile(indexPath, "utf8").then((source) => {
-    const marker = "function notifyHistoryDirty(dirtyFrom, reason) {";
-    const start = source.indexOf("function shouldAdvanceProcessedHistory(");
-    const end = source.indexOf(marker);
-    const resolvedEnd = end >= 0 ? end : endFallback;
-    if (start < 0 || resolvedEnd < 0 || resolvedEnd <= start) {
-      throw new Error("无法从 index.js 提取批次状态机定义");
-    }
-    const snippet = source
-      .slice(start, resolvedEnd)
-      .replace(/^export\s+/gm, "");
-    const context = {
-      console,
-      AbortController,
-      AbortSignal,
-      DOMException,
-      setTimeout,
-      clearTimeout,
-      EXTRACTION_VECTOR_SYNC_TIMEOUT_MS: 120000,
-      result: null,
-      extractionCount: 0,
-      currentGraph: null,
-      extractionStatuses: [],
-      consolidateMemories: async () => {},
-      generateSynopsis: async () => {},
-      generateReflection: async () => {},
-      sleepCycle: () => {},
-      compressAll: async () => ({ created: 0, archived: 0 }),
-      syncVectorState: async () => ({
-        insertedHashes: [],
-        stats: { pending: 0 },
+  const context = {
+    console,
+    AbortController,
+    AbortSignal,
+    DOMException,
+    setTimeout,
+    clearTimeout,
+    EXTRACTION_VECTOR_SYNC_TIMEOUT_MS: 120000,
+    result: null,
+    extractionCount: 0,
+    currentGraph: null,
+    extractionStatuses: [],
+    consolidateMemories: async () => {},
+    generateSynopsis: async () => {},
+    generateReflection: async () => {},
+    sleepCycle: () => {},
+    compressAll: async () => ({ created: 0, archived: 0 }),
+    syncVectorState: async () => ({
+      insertedHashes: [],
+      stats: { pending: 0 },
+    }),
+    getSchema: () => schema,
+    getEmbeddingConfig: () => null,
+    getVectorIndexStats: () => ({ pending: 0 }),
+    analyzeAutoConsolidationGate: async () => ({
+      triggered: false,
+      reason: "本批新增少且无明显重复风险，跳过自动整合",
+      matchedScore: null,
+      matchedNodeId: "",
+    }),
+    inspectAutoCompressionCandidates: () => ({
+      hasCandidates: false,
+      reason: "已到自动压缩周期，但当前没有达到内部压缩阈值的候选组",
+    }),
+    updateLastExtractedItems: () => {},
+    ensureCurrentGraphRuntimeState: () => {},
+    throwIfAborted: () => {},
+    isAbortError: () => false,
+    createAbortError: (message) => new Error(message),
+    BATCH_STAGE_ORDER,
+    BATCH_STAGE_SEVERITY,
+    createBatchStageStatus,
+    createBatchStatusSkeleton,
+    setBatchStageOutcome,
+    pushBatchStageArtifact,
+    finalizeBatchStatus,
+    createUiStatus,
+    setLastExtractionStatus(...args) {
+      context.extractionStatuses.push(args);
+    },
+  };
+  const runtime = {
+    clonePlanCommitValue: (value, fallback = null) => {
+      try {
+        return JSON.parse(JSON.stringify(value ?? fallback));
+      } catch {
+        return fallback;
+      }
+    },
+    consolidateMemories: (...args) => context.consolidateMemories(...args),
+    createAbortError: (...args) => context.createAbortError(...args),
+    createBatchStatusSkeleton,
+    ensureCurrentGraphRuntimeState: (...args) =>
+      context.ensureCurrentGraphRuntimeState(...args),
+    evaluateAutoCompressionSchedule: undefined,
+    finalizeBatchStatus,
+    getContext: () => ({ chat: context.chat || [] }),
+    getEmbeddingConfig: (...args) => context.getEmbeddingConfig(...args),
+    getSchema: (...args) => context.getSchema(...args),
+    getSummaryStageLabel: () => "旧式全局概要生成",
+    getVectorIndexStats: (...args) => context.getVectorIndexStats(...args),
+    inspectAutoCompressionCandidates: (...args) =>
+      context.inspectAutoCompressionCandidates(...args),
+    isAbortError: (...args) => context.isAbortError(...args),
+    noteMaintenanceGate: undefined,
+    pushBatchStageArtifact,
+    resolveMaintenancePostProcessConcurrency: (settings = {}) => {
+      const mode = String(settings?.maintenanceExecutionMode || "strict")
+        .trim()
+        .toLowerCase();
+      const strict = mode !== "balanced" && mode !== "fast";
+      return {
+        mode: strict ? "strict" : mode,
+        level: strict ? 1 : mode === "balanced" ? 2 : 3,
+      };
+    },
+    runCompressionPostProcessPlanCommit: async ({
+      graph,
+      schema: schemaArg = [],
+      embeddingConfig = null,
+      force = false,
+      customPrompt = undefined,
+      signal = undefined,
+      settings = {},
+    } = {}) =>
+      context.compressAll(
+        graph,
+        schemaArg,
+        embeddingConfig,
+        force,
+        customPrompt,
+        signal,
+        settings,
+      ),
+    runReflectionPostProcessPlanCommit: async (params = {}) => ({
+      reflectionId: await context.generateReflection(params),
+      planCommit: null,
+    }),
+    runSummaryPostProcess: async (params = {}) => {
+      await context.generateSynopsis({
+        graph: params.graph,
+        schema: context.getSchema(),
+        currentSeq: params.currentAssistantFloor,
+        settings: params.settings,
+        signal: params.signal,
+      });
+      return {
+        created: true,
+        smallSummary: { created: true, reason: "" },
+        rollup: null,
+      };
+    },
+    setBatchStageOutcome,
+    setLastExtractionStatus: (...args) => context.setLastExtractionStatus(...args),
+    setLastVectorStatus: (...args) => context.setLastVectorStatus?.(...args),
+    shouldDeferExtractionMaintenance: (settings = {}) =>
+      runtime.resolveMaintenancePostProcessConcurrency(settings).mode !== "strict",
+    shouldDeferExtractionVectorSync: (settings = {}) =>
+      runtime.resolveMaintenancePostProcessConcurrency(settings).mode !== "strict",
+    sleepCycle: (...args) => context.sleepCycle(...args),
+    syncVectorState: (...args) => context.syncVectorState(...args),
+    throwIfAborted: (...args) => context.throwIfAborted(...args),
+    updateLastExtractedItems: (...args) => context.updateLastExtractedItems(...args),
+    analyzeAutoConsolidationGate: (...args) =>
+      context.analyzeAutoConsolidationGate(...args),
+    cloneMaintenanceSnapshot: (value) => JSON.parse(JSON.stringify(value ?? null)),
+    persistMaintenanceAction: () => null,
+    summarizeMaintenance: (action, maintenanceResult, mode = "manual") => {
+      const prefix = mode === "auto" ? "自动" : "手动";
+      switch (String(action || "")) {
+        case "compress":
+          return `${prefix}压缩：新增 ${maintenanceResult?.created || 0}，归档 ${maintenanceResult?.archived || 0}`;
+        case "consolidate":
+          return `${prefix}整合：合并 ${maintenanceResult?.merged || 0}，跳过 ${maintenanceResult?.skipped || 0}，保留 ${maintenanceResult?.kept || 0}，进化 ${maintenanceResult?.evolved || 0}，新链接 ${maintenanceResult?.connections || 0}，回溯更新 ${maintenanceResult?.updates || 0}`;
+        case "sleep":
+          return `${prefix}遗忘：归档 ${maintenanceResult?.forgotten || 0} 个节点`;
+        default:
+          return `${prefix}维护已执行`;
+      }
+    },
+    getExtractionCount: () => context.extractionCount,
+    setExtractionCount: (n) => {
+      context.extractionCount = n;
+    },
+    getCurrentGraph: () => context.currentGraph,
+    EXTRACTION_VECTOR_SYNC_TIMEOUT_MS: context.EXTRACTION_VECTOR_SYNC_TIMEOUT_MS,
+  };
+  context.result = {
+    createBatchStatusSkeleton,
+    finalizeBatchStatus,
+    handleExtractionSuccess: (
+      result,
+      endIdx,
+      settings,
+      signal,
+      status,
+      postProcessContext = null,
+    ) =>
+      handleExtractionSuccessController(runtime, {
+        result,
+        endIdx,
+        settings,
+        signal,
+        status,
+        postProcessContext,
       }),
-      getSchema: () => schema,
-      getEmbeddingConfig: () => null,
-      getVectorIndexStats: () => ({ pending: 0 }),
-      analyzeAutoConsolidationGate: async () => ({
-        triggered: false,
-        reason: "本批新增少且无明显重复风险，跳过自动整合",
-        matchedScore: null,
-        matchedNodeId: "",
-      }),
-      inspectAutoCompressionCandidates: () => ({
-        hasCandidates: false,
-        reason: "已到自动压缩周期，但当前没有达到内部压缩阈值的候选组",
-      }),
-      updateLastExtractedItems: () => {},
-      ensureCurrentGraphRuntimeState: () => {},
-      throwIfAborted: () => {},
-      isAbortError: () => false,
-      createAbortError: (message) => new Error(message),
-      BATCH_STAGE_ORDER,
-      BATCH_STAGE_SEVERITY,
-      createBatchStageStatus,
-      createBatchStatusSkeleton,
-      setBatchStageOutcome,
-      pushBatchStageArtifact,
-      finalizeBatchStatus,
-      createUiStatus,
-      setLastExtractionStatus(...args) {
-        context.extractionStatuses.push(args);
-      },
-    };
-    vm.createContext(context);
-    vm.runInContext(
-      `${snippet}\nresult = { createBatchStatusSkeleton, finalizeBatchStatus, handleExtractionSuccess, setBatchStageOutcome, shouldAdvanceProcessedHistory };`,
-      context,
-      { filename: indexPath },
-    );
-    return context;
-  });
+    setBatchStageOutcome,
+    shouldAdvanceProcessedHistory,
+  };
+  return Promise.resolve(context);
 }
 
 function createHistoryRecoveryHarness() {
