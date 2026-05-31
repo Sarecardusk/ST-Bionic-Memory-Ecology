@@ -9,6 +9,7 @@ import {
   toDataModuleUrl,
 } from "./helpers/register-hooks-compat.mjs";
 import { pruneProcessedMessageHashesFromFloor } from "../maintenance/chat-history.js";
+import { rollbackGraphForRerollController } from "../maintenance/reroll-recovery-controller.js";
 import {
   handleExtractionSuccessController,
   shouldAdvanceProcessedHistory,
@@ -703,196 +704,231 @@ function createHistoryNotificationHarness() {
 }
 
 function createRerollHarness() {
-  return fs.readFile(indexPath, "utf8").then((source) => {
-    const rollbackStart = source.indexOf(
-      "async function rollbackGraphForReroll(",
-    );
-    const rollbackEnd = source.indexOf(
-      "async function recoverHistoryIfNeeded(",
-    );
-    const rerollStart = source.indexOf("async function onReroll(");
-    const rerollEnd = source.indexOf("async function onManualSleep()");
-    if (
-      rollbackStart < 0 ||
-      rollbackEnd < 0 ||
-      rerollStart < 0 ||
-      rerollEnd < 0 ||
-      rollbackEnd <= rollbackStart ||
-      rerollEnd <= rerollStart
-    ) {
-      throw new Error("无法从 index.js 提取 reroll 定义");
-    }
-    const snippet = [
-      source.slice(rollbackStart, rollbackEnd),
-      source.slice(rerollStart, rerollEnd),
-    ]
-      .join("\n")
-      .replace(/^export\s+/gm, "");
-    const context = {
-      console,
-      Date,
-      result: null,
-      currentGraph: null,
-      isExtracting: false,
-      extractionCount: 0,
-      lastExtractedItems: ["stale-node"],
-      lastExtractionStatus: { level: "idle" },
-      chat: [],
-      embeddingConfig: { mode: "backend" },
-      rollbackAffectedJournalsCalls: [],
-      deletedHashesCalls: [],
-      prepareVectorStateCalls: [],
-      recoveryPlans: [],
-      saveGraphToChatCalls: 0,
-      refreshPanelCalls: 0,
-      clearInjectionCalls: 0,
-      onManualExtractCalls: 0,
-      clearedHistoryDirty: null,
-      postRollbackGraph: null,
-      manualExtractLevel: "success",
-      ensureCurrentGraphRuntimeState() {
-        return context.currentGraph;
-      },
-      getContext() {
-        return {
-          chat: context.chat,
-          chatId: "chat-main",
-        };
-      },
-      getCurrentChatId() {
-        return "chat-main";
-      },
-      getAssistantTurns(chat = []) {
-        return chat.flatMap((message, index) =>
-          !message?.is_user && !message?.is_system ? [index] : [],
-        );
-      },
-      getLastProcessedAssistantFloor() {
-        return Number(
-          context.currentGraph?.historyState?.lastProcessedAssistantFloor ?? -1,
-        );
-      },
-      findJournalRecoveryPoint(graph, floor) {
-        return context.findJournalRecoveryPointImpl(graph, floor);
-      },
-      findJournalRecoveryPointImpl() {
-        return null;
-      },
-      buildReverseJournalRecoveryPlan(...args) {
-        return context.buildReverseJournalRecoveryPlanImpl(...args);
-      },
-      buildReverseJournalRecoveryPlanImpl() {
-        return {
-          backendDeleteHashes: [],
-          replayRequiredNodeIds: [],
-          pendingRepairFromFloor: null,
-          legacyGapFallback: false,
-          dirtyReason: "history-recovery-replay",
-        };
-      },
-      rollbackAffectedJournals(graph, journals) {
-        context.rollbackAffectedJournalsCalls.push({ graph, journals });
-        if (context.postRollbackGraph) {
-          context.currentGraph = context.postRollbackGraph;
-        }
-      },
-      normalizeGraphRuntimeState(graph) {
-        return graph;
-      },
-      getEmbeddingConfig() {
-        return context.embeddingConfig;
-      },
-      applyRecoveryPlanToVectorState(plan, floor) {
-        context.recoveryPlans.push({ plan, floor });
-      },
-      isBackendVectorConfig(config) {
-        return config?.mode === "backend";
-      },
-      async deleteBackendVectorHashesForRecovery(...args) {
-        context.deletedHashesCalls.push(args);
-      },
-      updateProcessedHistorySnapshot(chat, lastProcessedAssistantFloor) {
-        context.updatedProcessedHistorySnapshot = {
-          chatLength: Array.isArray(chat) ? chat.length : 0,
-          lastProcessedAssistantFloor,
-        };
-        context.currentGraph.historyState ||= {};
-        context.currentGraph.historyState.lastProcessedAssistantFloor =
-          lastProcessedAssistantFloor;
-        context.currentGraph.historyState.processedMessageHashes =
-          lastProcessedAssistantFloor >= 0
-            ? { [lastProcessedAssistantFloor]: `hash-${lastProcessedAssistantFloor}` }
-            : {};
-        context.currentGraph.lastProcessedSeq = lastProcessedAssistantFloor;
-      },
-      pruneProcessedMessageHashesFromFloor(graph, fromFloor) {
-        return pruneProcessedMessageHashesFromFloor(graph, fromFloor);
-      },
-      async prepareVectorStateForReplay(...args) {
-        context.prepareVectorStateCalls.push(args);
-      },
-      clearHistoryDirty(graph, result) {
-        context.clearedHistoryDirty = result;
-        graph.historyState ||= {};
-        graph.historyState.historyDirtyFrom = null;
-        graph.historyState.processedMessageHashes = {};
-        graph.historyState.lastRecoveryResult = result;
-      },
-      buildRecoveryResult(status, extra = {}) {
-        return {
-          status,
-          ...extra,
-        };
-      },
-      saveGraphToChat() {
-        context.saveGraphToChatCalls += 1;
-        return true;
-      },
-      refreshPanelLiveState() {
-        context.refreshPanelCalls += 1;
-      },
-      setRuntimeStatus(text, meta = "", level = "info") {
-        context.runtimeStatus = { text, meta, level };
-      },
-      setLastExtractionStatus(text, meta = "", level = "info") {
-        context.lastExtractionStatus = { text, meta, level };
-      },
-      clearInjectionState() {
-        context.clearInjectionCalls += 1;
-      },
-      async onManualExtract() {
-        context.onManualExtractCalls += 1;
-        context.lastExtractionStatus = { level: context.manualExtractLevel };
-      },
-      ensureGraphMutationReady() {
-        return true;
-      },
-      getGraphMutationBlockReason() {
-        return "graph-not-ready";
-      },
-      graphPersistenceState: {
-        loadState: "loaded",
-      },
-      createUiStatus,
-      onRerollController,
-      isAbortError: (e) => e?.name === "AbortError",
-      assertRecoveryChatStillActive() {
-        // no-op in test
-      },
-      toastr: {
-        info() {},
-        error() {},
-        success() {},
-      },
-    };
-    vm.createContext(context);
-    vm.runInContext(
-      `${snippet}\nresult = { rollbackGraphForReroll, onReroll };`,
-      context,
-      { filename: indexPath },
-    );
-    return context;
-  });
+  const context = {
+    console,
+    Date,
+    result: null,
+    currentGraph: null,
+    isExtracting: false,
+    extractionCount: 0,
+    lastExtractedItems: ["stale-node"],
+    lastExtractionStatus: { level: "idle" },
+    chat: [],
+    embeddingConfig: { mode: "backend" },
+    rollbackAffectedJournalsCalls: [],
+    deletedHashesCalls: [],
+    prepareVectorStateCalls: [],
+    recoveryPlans: [],
+    saveGraphToChatCalls: 0,
+    refreshPanelCalls: 0,
+    clearInjectionCalls: 0,
+    onManualExtractCalls: 0,
+    clearedHistoryDirty: null,
+    postRollbackGraph: null,
+    manualExtractLevel: "success",
+    ensureCurrentGraphRuntimeState() {
+      return context.currentGraph;
+    },
+    getContext() {
+      return {
+        chat: context.chat,
+        chatId: "chat-main",
+      };
+    },
+    getCurrentChatId() {
+      return "chat-main";
+    },
+    getAssistantTurns(chat = []) {
+      return chat.flatMap((message, index) =>
+        !message?.is_user && !message?.is_system ? [index] : [],
+      );
+    },
+    getLastProcessedAssistantFloor() {
+      return Number(
+        context.currentGraph?.historyState?.lastProcessedAssistantFloor ?? -1,
+      );
+    },
+    findJournalRecoveryPoint(graph, floor) {
+      return context.findJournalRecoveryPointImpl(graph, floor);
+    },
+    findJournalRecoveryPointImpl() {
+      return null;
+    },
+    buildReverseJournalRecoveryPlan(...args) {
+      return context.buildReverseJournalRecoveryPlanImpl(...args);
+    },
+    buildReverseJournalRecoveryPlanImpl() {
+      return {
+        backendDeleteHashes: [],
+        replayRequiredNodeIds: [],
+        pendingRepairFromFloor: null,
+        legacyGapFallback: false,
+        dirtyReason: "history-recovery-replay",
+      };
+    },
+    rollbackAffectedJournals(graph, journals) {
+      context.rollbackAffectedJournalsCalls.push({ graph, journals });
+      if (context.postRollbackGraph) {
+        context.currentGraph = context.postRollbackGraph;
+      }
+    },
+    normalizeGraphRuntimeState(graph) {
+      return graph;
+    },
+    getEmbeddingConfig() {
+      return context.embeddingConfig;
+    },
+    applyRecoveryPlanToVectorState(plan, floor) {
+      context.recoveryPlans.push({ plan, floor });
+    },
+    isBackendVectorConfig(config) {
+      return config?.mode === "backend";
+    },
+    async deleteBackendVectorHashesForRecovery(...args) {
+      context.deletedHashesCalls.push(args);
+    },
+    updateProcessedHistorySnapshot(chat, lastProcessedAssistantFloor) {
+      context.updatedProcessedHistorySnapshot = {
+        chatLength: Array.isArray(chat) ? chat.length : 0,
+        lastProcessedAssistantFloor,
+      };
+      context.currentGraph.historyState ||= {};
+      context.currentGraph.historyState.lastProcessedAssistantFloor =
+        lastProcessedAssistantFloor;
+      context.currentGraph.historyState.processedMessageHashes =
+        lastProcessedAssistantFloor >= 0
+          ? { [lastProcessedAssistantFloor]: `hash-${lastProcessedAssistantFloor}` }
+          : {};
+      context.currentGraph.lastProcessedSeq = lastProcessedAssistantFloor;
+    },
+    pruneProcessedMessageHashesFromFloor(graph, fromFloor) {
+      return pruneProcessedMessageHashesFromFloor(graph, fromFloor);
+    },
+    async prepareVectorStateForReplay(...args) {
+      context.prepareVectorStateCalls.push(args);
+    },
+    clearHistoryDirty(graph, result) {
+      context.clearedHistoryDirty = result;
+      graph.historyState ||= {};
+      graph.historyState.historyDirtyFrom = null;
+      graph.historyState.processedMessageHashes = {};
+      graph.historyState.lastRecoveryResult = result;
+    },
+    buildRecoveryResult(status, extra = {}) {
+      return {
+        status,
+        ...extra,
+      };
+    },
+    saveGraphToChat() {
+      context.saveGraphToChatCalls += 1;
+      return true;
+    },
+    refreshPanelLiveState() {
+      context.refreshPanelCalls += 1;
+    },
+    setRuntimeStatus(text, meta = "", level = "info") {
+      context.runtimeStatus = { text, meta, level };
+    },
+    setLastExtractionStatus(text, meta = "", level = "info") {
+      context.lastExtractionStatus = { text, meta, level };
+    },
+    clearInjectionState() {
+      context.clearInjectionCalls += 1;
+    },
+    async onManualExtract() {
+      context.onManualExtractCalls += 1;
+      context.lastExtractionStatus = { level: context.manualExtractLevel };
+    },
+    ensureGraphMutationReady() {
+      return true;
+    },
+    getGraphMutationBlockReason() {
+      return "graph-not-ready";
+    },
+    graphPersistenceState: {
+      loadState: "loaded",
+    },
+    createUiStatus,
+    onRerollController,
+    isAbortError: (e) => e?.name === "AbortError",
+    assertRecoveryChatStillActive() {
+      // no-op in test
+    },
+    toastr: {
+      info() {},
+      error() {},
+      success() {},
+    },
+  };
+  const runtime = {
+    applyRecoveryPlanToVectorState: (...args) =>
+      context.applyRecoveryPlanToVectorState(...args),
+    assertRecoveryChatStillActive: (...args) =>
+      context.assertRecoveryChatStillActive(...args),
+    buildRecoveryResult: (...args) => context.buildRecoveryResult(...args),
+    buildReverseJournalRecoveryPlan: (...args) =>
+      context.buildReverseJournalRecoveryPlan(...args),
+    clearHistoryDirty: (...args) => context.clearHistoryDirty(...args),
+    clearInjectionState: (...args) => context.clearInjectionState(...args),
+    ensureCurrentGraphRuntimeState: (...args) =>
+      context.ensureCurrentGraphRuntimeState(...args),
+    findJournalRecoveryPoint: (...args) =>
+      context.findJournalRecoveryPoint(...args),
+    getAssistantTurns: (...args) => context.getAssistantTurns(...args),
+    getContext: (...args) => context.getContext(...args),
+    getCurrentChatId: (...args) => context.getCurrentChatId(...args),
+    getCurrentGraph: () => context.currentGraph,
+    getEmbeddingConfig: (...args) => context.getEmbeddingConfig(...args),
+    getGraphMutationBlockReason: (...args) =>
+      context.getGraphMutationBlockReason(...args),
+    getGraphPersistenceState: () => context.graphPersistenceState,
+    getIsExtracting: () => context.isExtracting,
+    getLastExtractionStatusLevel: () => context.lastExtractionStatus?.level || "idle",
+    getLastProcessedAssistantFloor: (...args) =>
+      context.getLastProcessedAssistantFloor(...args),
+    isAbortError: (...args) => context.isAbortError(...args),
+    isBackendVectorConfig: (...args) => context.isBackendVectorConfig(...args),
+    normalizeGraphRuntimeState: (...args) => context.normalizeGraphRuntimeState(...args),
+    onManualExtract: (...args) => context.onManualExtract(...args),
+    prepareVectorStateForReplay: (...args) =>
+      context.prepareVectorStateForReplay(...args),
+    pruneProcessedMessageHashesFromFloor: (...args) =>
+      context.pruneProcessedMessageHashesFromFloor(...args),
+    refreshPanelLiveState: (...args) => context.refreshPanelLiveState(...args),
+    rollbackAffectedJournals: (...args) => context.rollbackAffectedJournals(...args),
+    rollbackGraphForReroll: (targetFloor, rerollContext = context.getContext()) =>
+      rollbackGraphForRerollController(runtime, {
+        targetFloor,
+        context: rerollContext,
+      }),
+    saveGraphToChat: (...args) => context.saveGraphToChat(...args),
+    setCurrentGraph: (graph) => {
+      context.currentGraph = graph;
+    },
+    setExtractionCount: (count) => {
+      context.extractionCount = count;
+    },
+    setLastExtractedItems: (items) => {
+      context.lastExtractedItems = items;
+    },
+    setLastExtractionStatus: (...args) => context.setLastExtractionStatus(...args),
+    setRuntimeStatus: (...args) => context.setRuntimeStatus(...args),
+    toastr: context.toastr,
+    tryDeleteBackendVectorHashesForRecovery: (...args) =>
+      context.deleteBackendVectorHashesForRecovery(...args),
+    updateProcessedHistorySnapshot: (...args) =>
+      context.updateProcessedHistorySnapshot(...args),
+  };
+  context.result = {
+    rollbackGraphForReroll: (targetFloor, rerollContext = context.getContext()) =>
+      rollbackGraphForRerollController(runtime, {
+        targetFloor,
+        context: rerollContext,
+      }),
+    onReroll: (payload = {}) => onRerollController(runtime, payload),
+  };
+  return Promise.resolve(context);
 }
 
 function pushTestOverrides(patch = {}) {
