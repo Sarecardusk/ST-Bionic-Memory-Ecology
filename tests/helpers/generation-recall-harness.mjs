@@ -62,6 +62,7 @@ import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
 } from "../../runtime/reroll-transaction-boundary.js";
+import { createRecallInputState } from "../../runtime/recall-input-state.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -102,6 +103,9 @@ export function createGenerationRecallHarness(options = {}) {
       },
       result: null,
       currentGraph: {},
+      pendingRecallSendIntent: createRecallInputRecord(),
+      lastRecallSentUserMessage: createRecallInputRecord(),
+      pendingHostGenerationInputSnapshot: createRecallInputRecord(),
       _panelModule: null,
       defaultSettings,
       mergePersistedSettings,
@@ -115,6 +119,7 @@ export function createGenerationRecallHarness(options = {}) {
       recordAuthorityAcceptedRevision,
       consumeRerollRecallReuseMarker,
       createRerollRecallReuseMarker,
+      createRecallInputState,
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },
@@ -273,6 +278,7 @@ export function createGenerationRecallHarness(options = {}) {
       recordInjectionSnapshot: (_kind, snapshot = {}) => {
         context.recordedInjectionSnapshots.push({ ...snapshot });
       },
+      recordMessageTraceSnapshot() {},
       schedulePersistedRecallMessageUiRefresh: () => {
         context.recallUiRefreshCalls += 1;
       },

@@ -160,6 +160,7 @@ import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
 } from "./runtime/reroll-transaction-boundary.js";
+import { createRecallInputState } from "./runtime/recall-input-state.js";
 import {
   extractMemories,
   generateReflection,
@@ -1349,7 +1350,31 @@ let pendingRecallSendIntent = createRecallInputRecord();
 let lastRecallSentUserMessage = createRecallInputRecord();
 let pendingHostGenerationInputSnapshot = createRecallInputRecord();
 let pendingRerollRecallReuse = null;
-let currentGenerationTrivialSkip = null;
+const recallInputState = createRecallInputState({
+  createRecallInputRecord,
+  getCurrentChatId,
+  getLastRecallSentUserMessage: () => lastRecallSentUserMessage,
+  getPendingHostGenerationInputSnapshot: () => pendingHostGenerationInputSnapshot,
+  getPendingRecallSendIntent: () => pendingRecallSendIntent,
+  hashRecallInput,
+  isFreshRecallInputRecord,
+  normalizeChatIdCandidate,
+  normalizeRecallInputText,
+  recordMessageTraceSnapshot: (patch) => recordMessageTraceSnapshot(patch),
+  setLastRecallSentUserMessage: (record) => {
+    lastRecallSentUserMessage = record;
+  },
+  setPendingHostGenerationInputSnapshot: (record) => {
+    pendingHostGenerationInputSnapshot = record;
+  },
+  setPendingRecallSendIntent: (record) => {
+    pendingRecallSendIntent = record;
+  },
+  clearPendingRerollRecallReuse: (...args) => clearPendingRerollRecallReuse(...args),
+  clearPlannerRecallHandoffsForChat: (...args) =>
+    clearPlannerRecallHandoffsForChat(...args),
+  TRIVIAL_GENERATION_SKIP_TTL_MS,
+});
 let coreEventBindingState = {
   registered: false,
   cleanups: [],
@@ -5138,18 +5163,8 @@ function restoreRecallUiStateFromPersistence(chat = getContext()?.chat) {
 }
 
 function clearRecallInputTracking() {
-  clearPendingRecallSendIntent();
-  lastRecallSentUserMessage = createRecallInputRecord();
-  clearPendingHostGenerationInputSnapshot();
-  clearPendingRerollRecallReuse("recall-input-tracking-cleared");
-  if (typeof recordMessageTraceSnapshot === "function") {
-    recordMessageTraceSnapshot({
-      lastSentUserMessage: null,
-    });
-  }
-  clearPlannerRecallHandoffsForChat("", { clearAll: true });
+  return recallInputState.clearRecallInputTracking();
 }
-
 function getCoreEventBindingState() {
   return coreEventBindingState;
 }
@@ -5189,74 +5204,30 @@ function freezeHostGenerationInputSnapshot(
   text,
   source = "host-generation-lifecycle",
 ) {
-  const normalized = normalizeRecallInputText(text);
-  if (!normalized) return null;
-
-  pendingHostGenerationInputSnapshot = createRecallInputRecord({
-    text: normalized,
-    hash: hashRecallInput(normalized),
-    source,
-    at: Date.now(),
-  });
-  return pendingHostGenerationInputSnapshot;
+  return recallInputState.freezeHostGenerationInputSnapshot(text, source);
 }
 
 function consumeHostGenerationInputSnapshot(options = {}) {
-  const { preserve = false } = options;
-  if (!isFreshRecallInputRecord(pendingHostGenerationInputSnapshot)) {
-    if (!preserve) {
-      pendingHostGenerationInputSnapshot = createRecallInputRecord();
-    }
-    return createRecallInputRecord();
-  }
-
-  const snapshot = createRecallInputRecord({
-    ...pendingHostGenerationInputSnapshot,
-  });
-  if (!preserve) {
-    pendingHostGenerationInputSnapshot = createRecallInputRecord();
-  }
-  return snapshot;
+  return recallInputState.consumeHostGenerationInputSnapshot(options);
 }
 
 function getPendingHostGenerationInputSnapshot() {
-  return pendingHostGenerationInputSnapshot;
+  return recallInputState.getPendingHostGenerationInputSnapshot();
 }
 
 function clearPendingRecallSendIntent() {
-  pendingRecallSendIntent = createRecallInputRecord();
-  return pendingRecallSendIntent;
+  return recallInputState.clearPendingRecallSendIntent();
 }
 
 function clearPendingHostGenerationInputSnapshot() {
-  pendingHostGenerationInputSnapshot = createRecallInputRecord();
-  return pendingHostGenerationInputSnapshot;
+  return recallInputState.clearPendingHostGenerationInputSnapshot();
 }
 
 function getCurrentGenerationTrivialSkip(
   chatId = getCurrentChatId(),
   now = Date.now(),
 ) {
-  if (!currentGenerationTrivialSkip) return null;
-
-  const setAtMs = Number(currentGenerationTrivialSkip.setAtMs) || 0;
-  if (
-    !setAtMs ||
-    now - setAtMs > TRIVIAL_GENERATION_SKIP_TTL_MS
-  ) {
-    currentGenerationTrivialSkip = null;
-    return null;
-  }
-
-  const normalizedChatId = normalizeChatIdCandidate(chatId);
-  const activeChatId = normalizeChatIdCandidate(
-    currentGenerationTrivialSkip.chatId,
-  );
-  if (normalizedChatId && activeChatId && normalizedChatId !== activeChatId) {
-    return null;
-  }
-
-  return currentGenerationTrivialSkip;
+  return recallInputState.getCurrentGenerationTrivialSkip(chatId, now);
 }
 
 function markCurrentGenerationTrivialSkip({
@@ -5264,22 +5235,15 @@ function markCurrentGenerationTrivialSkip({
   chatId = getCurrentChatId(),
   chatLength = 0,
 } = {}) {
-  currentGenerationTrivialSkip = {
-    chatId: normalizeChatIdCandidate(chatId),
-    setAtMs: Date.now(),
-    reason: String(reason || ""),
-    generationStartMinChatIndex: Math.max(
-      0,
-      Math.floor(Number(chatLength) || 0),
-    ),
-  };
-  return currentGenerationTrivialSkip;
+  return recallInputState.markCurrentGenerationTrivialSkip({
+    reason,
+    chatId,
+    chatLength,
+  });
 }
 
 function clearCurrentGenerationTrivialSkip(_reason = "") {
-  const previous = currentGenerationTrivialSkip;
-  currentGenerationTrivialSkip = null;
-  return previous;
+  return recallInputState.clearCurrentGenerationTrivialSkip(_reason);
 }
 
 function consumeCurrentGenerationTrivialSkip(
@@ -5287,89 +5251,20 @@ function consumeCurrentGenerationTrivialSkip(
   chatId = getCurrentChatId(),
   now = Date.now(),
 ) {
-  const activeSkip = getCurrentGenerationTrivialSkip(chatId, now);
-  if (!activeSkip) return false;
-
-  const normalizedTargetIndex = Number.isFinite(Number(targetMessageIndex))
-    ? Math.floor(Number(targetMessageIndex))
-    : null;
-  if (!Number.isFinite(normalizedTargetIndex)) {
-    return false;
-  }
-
-  if (
-    normalizedTargetIndex <
-    Math.max(0, Math.floor(Number(activeSkip.generationStartMinChatIndex) || 0))
-  ) {
-    return false;
-  }
-
-  currentGenerationTrivialSkip = null;
-  return true;
+  return recallInputState.consumeCurrentGenerationTrivialSkip(
+    targetMessageIndex,
+    chatId,
+    now,
+  );
 }
 
 function recordRecallSendIntent(text, source = "dom-intent") {
-  const normalized = normalizeRecallInputText(text);
-  if (!normalized) return createRecallInputRecord();
-
-  const hash = hashRecallInput(normalized);
-  const previousRecord = isFreshRecallInputRecord(pendingRecallSendIntent)
-    ? pendingRecallSendIntent
-    : null;
-  const previousHash = String(previousRecord?.hash || "");
-  const previousText = String(previousRecord?.text || "");
-
-  if (previousHash && previousHash === hash && previousText === normalized) {
-    pendingRecallSendIntent = createRecallInputRecord({
-      ...previousRecord,
-      at: Date.now(),
-      source: String(source || previousRecord.source || "dom-intent"),
-    });
-    return pendingRecallSendIntent;
-  }
-
-  pendingRecallSendIntent = createRecallInputRecord({
-    text: normalized,
-    hash,
-    source,
-    at: Date.now(),
-  });
-  return pendingRecallSendIntent;
+  return recallInputState.recordRecallSendIntent(text, source);
 }
 
 function recordRecallSentUserMessage(messageId, text, source = "message-sent") {
-  const normalized = normalizeRecallInputText(text);
-  if (!normalized) return createRecallInputRecord();
-
-  const hash = hashRecallInput(normalized);
-  lastRecallSentUserMessage = createRecallInputRecord({
-    text: normalized,
-    hash,
-    messageId: Number.isFinite(messageId) ? messageId : null,
-    source,
-    at: Date.now(),
-  });
-  if (typeof recordMessageTraceSnapshot === "function") {
-    recordMessageTraceSnapshot({
-      lastSentUserMessage: {
-        text: normalized,
-        hash,
-        messageId: Number.isFinite(messageId) ? messageId : null,
-        source,
-        updatedAt: new Date().toISOString(),
-      },
-    });
-  }
-
-  // 注意：不再在 MESSAGE_SENT 阶段清空 pendingRecallSendIntent /
-  // pendingHostGenerationInputSnapshot / transactions。
-  // 这些数据在 GENERATION_AFTER_COMMANDS 中被消费；MESSAGE_SENT 先于
-  // GENERATION_AFTER_COMMANDS 触发，提前清空会导致召回拿不到用户输入。
-  // 真正的消费发生在 recall 执行后（runRecallController 内部）。
-
-  return lastRecallSentUserMessage;
+  return recallInputState.recordRecallSentUserMessage(messageId, text, source);
 }
-
 function getMessageRecallRecord(messageIndex) {
   const chat = getContext()?.chat;
   return readPersistedRecallFromUserMessage(chat, messageIndex);

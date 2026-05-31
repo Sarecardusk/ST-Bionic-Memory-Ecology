@@ -160,6 +160,7 @@ import {
   normalizeRecallInputText,
   normalizeStageNoticeLevel,
 } from "../ui/ui-status.js";
+import { createRecallInputState } from "../runtime/recall-input-state.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../index.js");
@@ -781,6 +782,7 @@ async function createGraphPersistenceHarness({
         return null;
       },
     },
+    createRecallInputState,
     createRecallMessageUiController() {
       return {
         refreshPersistedRecallMessageUi: () => ({
