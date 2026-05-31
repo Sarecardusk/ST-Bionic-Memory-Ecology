@@ -21,6 +21,56 @@ npm install
 
 控制面/数据格式专项测试见 [`testing.md`](testing.md)。
 
+## 完整脚本参考
+
+控制面与数据格式专项：
+
+```bash
+npm run test:identity-resolver
+npm run test:persistence-reducer
+npm run test:runtime-deps
+npm run test:vector-gate
+npm run test:reroll-transaction-boundary
+npm run test:graph-snapshot-schema
+npm run test:graph-snapshot-upgrade
+npm run test:snapshot-forward-compat
+npm run test:luker-snapshot-forward-compat
+```
+
+持久化矩阵：
+
+```bash
+npm run test:persistence-matrix
+```
+
+IndexedDB 专项：
+
+```bash
+npm run test:indexeddb
+```
+
+Native / 性能相关：
+
+```bash
+npm run test:native-layout-parity
+npm run bench:graph-layout
+npm run bench:persist-delta
+npm run bench:persist-load
+npm run bench:load-preapply
+```
+
+构建 Native WASM：
+
+```bash
+npm run build:native:wasm
+```
+
+更新 manifest 版本：
+
+```bash
+npm run version:bump-manifest
+```
+
 ## 提交前
 
 至少运行：

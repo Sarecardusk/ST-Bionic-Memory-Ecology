@@ -42,6 +42,20 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 
 详见 [`conventions.md`](conventions.md)。
 
+## 重要测试文件
+
+- **`tests/p0-regressions.mjs`** — 主回归集合，覆盖提取、召回、恢复、UI 关键路径。
+- **`tests/runtime-history.mjs`** — 消息 hash、历史 dirty、恢复状态。
+- **`tests/message-render-limit.mjs`** — 聊天区渲染限制和渲染切片历史保护。
+- **`tests/graph-persistence.mjs`** — 图谱持久化基础行为。
+- **`tests/identity-resolver.mjs` / `tests/persistence-reducer.mjs`** — 身份解析核心、持久化 accepted/queued/pending 状态机。
+- **`tests/runtime-deps-completeness.mjs`** — 检查注入式控制器模块的 `runtime.X` 依赖均由对应 builder 提供。
+- **`tests/graph-snapshot-schema.mjs` / `tests/snapshot-forward-compat.mjs`** — 耐久快照契约、宽容解析和真实存储向前兼容往返。
+- **`tests/indexeddb-persistence.mjs`** — IndexedDB 快照、增量提交、hydrate。
+- **`tests/indexeddb-sync.mjs`** — 云端同步与冲突合并。
+- **`tests/native-rollout-matrix.mjs`** — Native 灰度开关和阈值迁移。
+- **`tests/task-profile-migration.mjs`** — 任务预设迁移。
+
 ## 已知环境限制
 
 - `tests/indexeddb-migration.mjs` 等需要 IndexedDB 测试依赖；某些 Node 环境缺失会失败，非代码问题。

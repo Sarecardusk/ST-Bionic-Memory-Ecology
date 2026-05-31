@@ -1,15 +1,24 @@
-# ST-BME 开发者文档
+# ST-BME 文档
 
-这里是 ST-Bionic-Memory-Ecology（ST-BME）的**开发者/架构文档**。面向想理解内部原理、算法、或参与维护的人。
+这里是 ST-Bionic-Memory-Ecology（ST-BME）的完整文档。仓库根目录的 [`README.md`](../README.md) 是精简入口（介绍、安装、快速上手、导航），细节都在这里。
 
-普通用户的安装、面板、配置、排障说明在仓库根目录的 [`README.md`](../README.md)，本目录不重复。
+- 想**用好插件**（配置、面板、排障、存储）→ 看 [`usage/`](#usage--使用手册)
+- 想**理解内部原理**（架构、算法、功能机制）或**参与维护** → 看后面几节
 
 ## 文档地图
+
+### usage/ — 使用手册
+面向用户："怎么配、怎么用、出问题怎么查"。从精简后的 README 下沉的详细内容。
+
+- [`configuration.md`](usage/configuration.md) — 完整配置参考：记忆 LLM、Embedding、提取/召回/认知/维护设置、任务预设、ENA、隐藏/渲染、Native
+- [`panel.md`](usage/panel.md) — 面板导览：总览、任务、操作、配置、图谱区域
+- [`troubleshooting.md`](usage/troubleshooting.md) — 排障指南
+- [`storage-and-sync.md`](usage/storage-and-sync.md) — 数据存储、云端镜像、兼容兜底、持久召回卡片
 
 ### architecture/ — 架构与控制平面
 跨文件的结构、数据路径、不变量。这些内容变化慢，是理解"为什么这样组织"的入口。
 
-- [`overview.md`](architecture/overview.md) — 子系统地图 + 写入/读取/安全三条数据路径
+- [`overview.md`](architecture/overview.md) — 子系统地图 + 写入/读取/安全三条数据路径 + 完整目录结构 + 事件挂载
 - [`control-plane.md`](architecture/control-plane.md) — 身份解析、持久化状态机、必须维持的不变量
 - [`storage-and-formats.md`](architecture/storage-and-formats.md) — 存储分层、快照契约、向前兼容纪律
 - [`server-integration.md`](architecture/server-integration.md) — 三档 Authority 集成、自动降级/升级、能力探测
