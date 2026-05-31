@@ -5,6 +5,7 @@
     "test:p0": "node tests/p0-regressions.mjs",
     "test:triviumdb-poc": "node tests/triviumdb-poc.mjs",
     "test:runtime-history": "node tests/runtime-history.mjs",
+    "test:generation-context": "node tests/generation-context.mjs",
     "test:graph-persistence": "node tests/graph-persistence.mjs",
     "test:index-slicing-ratchet": "node tests/index-slicing-ratchet.mjs",
     "test:runtime-deps": "node tests/runtime-deps-completeness.mjs",

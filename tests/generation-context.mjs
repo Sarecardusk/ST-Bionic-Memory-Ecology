@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import {
+  classifyGenerationKind,
+  createGenerationContextTracker,
+} from "../runtime/generation-context.js";
+
+assert.equal(classifyGenerationKind("normal"), "fresh");
+assert.equal(classifyGenerationKind("swipe"), "no-new-user");
+assert.equal(classifyGenerationKind("regenerate"), "no-new-user");
+assert.equal(classifyGenerationKind("continue"), "no-new-user");
+assert.equal(classifyGenerationKind("quiet"), "skip");
+assert.equal(classifyGenerationKind("impersonate"), "skip");
+assert.equal(classifyGenerationKind("normal", { automatic_trigger: true }), "skip");
+assert.equal(classifyGenerationKind("normal", { quiet_prompt: true }), "skip");
+
+{
+  let chatId = "chat-swipe";
+  let now = 1000;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+  });
+
+  tracker.noteSwipe(7);
+  const context = tracker.begin("swipe");
+
+  assert.equal(context.type, "swipe");
+  assert.equal(context.kind, "no-new-user");
+  assert.equal(context.swipedAssistantFloor, 7);
+  assert.equal(context.chatId, chatId);
+}
+
+{
+  let chatId = "chat-dry-run";
+  let now = 2000;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+  });
+
+  const original = tracker.begin("normal", { existing: true });
+  assert.equal(tracker.begin("swipe", {}, { dryRun: true }), null);
+  assert.deepEqual(tracker.get(), original);
+
+  now += 1;
+  assert.equal(tracker.update("regenerate", {}, { dryRun: true }), null);
+  assert.deepEqual(tracker.get(), original);
+}
+
+{
+  let chatId = "chat-update";
+  let now = 3000;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+  });
+
+  tracker.begin("regenerate");
+  now += 25;
+  const context = tracker.update(
+    "regenerate",
+    {},
+    { phase: "GENERATION_AFTER_COMMANDS" },
+  );
+
+  assert.equal(context.type, "regenerate");
+  assert.equal(context.kind, "no-new-user");
+  assert.equal(context.afterCommandsAt, now);
+}
+
+{
+  let chatId = "chat-ttl";
+  let now = 4000;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+    ttlMs: 10,
+  });
+
+  tracker.begin("normal");
+  now += 11;
+
+  assert.equal(tracker.get(), null);
+  assert.equal(tracker.get({ allowStale: true }), null);
+}
+
+{
+  let chatId = "chat-original";
+  let now = 5000;
+  const tracker = createGenerationContextTracker({
+    getCurrentChatId: () => chatId,
+    now: () => now,
+  });
+
+  tracker.begin("normal");
+  chatId = "chat-current";
+
+  assert.equal(tracker.get(), null);
+
+  chatId = "chat-original";
+  assert.equal(tracker.get(), null);
+}

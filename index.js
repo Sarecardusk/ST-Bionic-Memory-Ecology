@@ -162,6 +162,7 @@ import {
 } from "./runtime/reroll-transaction-boundary.js";
 import { createRecallInputState } from "./runtime/recall-input-state.js";
 import { createRerollRecallInput } from "./runtime/reroll-recall-input.js";
+import { createGenerationContextTracker } from "./runtime/generation-context.js";
 import { createGenerationRecallTransactions } from "./runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "./runtime/final-recall-injection.js";
 import { createAutoExtractionDefer } from "./runtime/auto-extraction-defer.js";
@@ -1739,6 +1740,10 @@ const generationRecallTransactionRuntime = createGenerationRecallTransactions({
 });
 const generationRecallTransactions =
   generationRecallTransactionRuntime.generationRecallTransactions;
+const generationContextTracker = createGenerationContextTracker({
+  getCurrentChatId,
+  ttlMs: GENERATION_RECALL_TRANSACTION_TTL_MS,
+});
 const finalRecallInjectionRuntime = createFinalRecallInjection({
   applyModuleInjectionPrompt: (...args) => applyModuleInjectionPrompt(...args),
   areRecallNodeIdListsEqual: (...args) => areRecallNodeIdListsEqual(...args),
@@ -15860,6 +15865,7 @@ async function runRecall(options = {}) {
 function onChatChanged() {
   isHostGenerationRunning = false;
   lastHostGenerationEndedAt = 0;
+  generationContextTracker.clear("chat-changed");
   const { target, lightweightHostMode, adapter } = syncBmeHostRuntimeFlags(getContext());
   updateGraphPersistenceState({
     hostProfile: adapter.hostProfile,
@@ -16042,6 +16048,7 @@ function onMessageUpdated(messageId, meta = null) {
 }
 
 async function onMessageSwiped(messageId, meta = null) {
+  generationContextTracker.noteSwipe(messageId, meta);
   const result = await onMessageSwipedController(
     {
       invalidateRecallAfterHistoryMutation,
@@ -16155,6 +16162,10 @@ function onGenerationBeforeApiRequest(payload = {}) {
 
 function onGenerationStarted(type, params = {}, dryRun = false) {
   const generationType = String(type || "normal").trim() || "normal";
+  generationContextTracker.begin(generationType, params, {
+    dryRun,
+    phase: "GENERATION_STARTED",
+  });
   if (
     !dryRun &&
     !params?.automatic_trigger &&
@@ -16218,9 +16229,14 @@ function onGenerationEnded(_chatLength = null) {
   if (typeof scheduleMessageHideApply === "function") {
     scheduleMessageHideApply("generation-ended", 180);
   }
+  generationContextTracker.clear("generation-ended");
 }
 
 async function onGenerationAfterCommands(type, params = {}, dryRun = false) {
+  generationContextTracker.update(type, params, {
+    dryRun,
+    phase: "GENERATION_AFTER_COMMANDS",
+  });
   return await onGenerationAfterCommandsController(
     {
       applyFinalRecallInjectionForGeneration,
