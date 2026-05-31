@@ -169,6 +169,7 @@ import { createRerollRecallInput } from "../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "../runtime/final-recall-injection.js";
 import { createAutoExtractionDefer } from "../runtime/auto-extraction-defer.js";
+import { runPlannerRecallForEnaController } from "../runtime/planner-recall-controller.js";
 import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
@@ -799,6 +800,7 @@ async function createGraphPersistenceHarness({
     createGenerationRecallTransactions,
     createFinalRecallInjection,
     createAutoExtractionDefer,
+    runPlannerRecallForEnaController,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {

@@ -67,6 +67,7 @@ import { createRerollRecallInput } from "../../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../../runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "../../runtime/final-recall-injection.js";
 import { createAutoExtractionDefer } from "../../runtime/auto-extraction-defer.js";
+import { runPlannerRecallForEnaController } from "../../runtime/planner-recall-controller.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -128,6 +129,16 @@ export function createGenerationRecallHarness(options = {}) {
       createGenerationRecallTransactions,
       createFinalRecallInjection,
       createAutoExtractionDefer,
+      runPlannerRecallForEnaController,
+      // retrieve is only reached on the non-trivial, graph-non-empty recall
+      // path; the planner-recall tests exercise trivial/graph-empty early
+      // returns, so a recording stub is sufficient and avoids pulling the host
+      // llm/retriever chain into the test environment.
+      retrieve: (...args) => {
+        context.retrieveCalls ||= [];
+        context.retrieveCalls.push(args);
+        return { entries: [], items: [], nodes: [] };
+      },
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },

@@ -165,6 +165,7 @@ import { createRerollRecallInput } from "./runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "./runtime/generation-recall-transactions.js";
 import { createFinalRecallInjection } from "./runtime/final-recall-injection.js";
 import { createAutoExtractionDefer } from "./runtime/auto-extraction-defer.js";
+import { runPlannerRecallForEnaController } from "./runtime/planner-recall-controller.js";
 import {
   extractMemories,
   generateReflection,
@@ -19086,119 +19087,34 @@ async function runPlannerRecallForEna({
   signal = undefined,
   disableLlmRecall = false,
 } = {}) {
-  const userMessage = normalizeRecallInputText(rawUserInput || "");
-  const trivialInputResult = isTrivialUserInput(userMessage);
-  if (trivialInputResult.trivial) {
-    console.info?.(
-      `[ST-BME] trivial-input skip: reason=${trivialInputResult.reason} len=${trivialInputResult.normalizedText.length} hook=ena-planner`,
-    );
-    return {
-      ok: false,
-      reason: `trivial-user-input:${trivialInputResult.reason}`,
-      memoryBlock: "",
-      recentMessages: [],
-      result: null,
-    };
-  }
-
-  const settings = getSettings();
-  if (!settings.enabled || !settings.recallEnabled) {
-    return {
-      ok: false,
-      reason: "recall-disabled",
-      memoryBlock: "",
-      recentMessages: [],
-      result: null,
-    };
-  }
-
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : createAbortError("Ena Planner recall aborted");
-  }
-
-  if (!currentGraph || !isGraphReadableForRecall()) {
-    return {
-      ok: false,
-      reason: "graph-not-readable",
-      memoryBlock: "",
-      recentMessages: [],
-      result: null,
-    };
-  }
-
-  if (
-    !Array.isArray(currentGraph.nodes) ||
-    currentGraph.nodes.length === 0
-  ) {
-    return {
-      ok: false,
-      reason: "graph-empty",
-      memoryBlock: "",
-      recentMessages: [],
-      result: null,
-    };
-  }
-
-  if (isGraphMetadataWriteAllowed()) {
-    const recovered = await recoverHistoryIfNeeded("pre-ena-planner-recall");
-    if (!recovered) {
-      return {
-        ok: false,
-        reason: "history-recovery-not-ready",
-        memoryBlock: "",
-        recentMessages: [],
-        result: null,
-      };
-    }
-  }
-
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : createAbortError("Ena Planner recall aborted");
-  }
-
-  await ensureVectorReadyIfNeeded("pre-ena-planner-recall", signal);
-
-  const context = getContext();
-  const chat = context?.chat ?? [];
-  const recentMessages = buildRecallRecentMessages(
-    chat,
-    clampInt(settings.recallLlmContextMessages, 4, 0, 20),
-    userMessage,
+  return await runPlannerRecallForEnaController(
+    {
+      buildRecallRecentMessages,
+      buildRecallRetrieveOptions,
+      clampInt,
+      console,
+      createAbortError,
+      ensureVectorReadyIfNeeded,
+      formatInjection,
+      getContext,
+      getCurrentGraph: () => currentGraph,
+      getEmbeddingConfig,
+      getSchema,
+      getSettings,
+      isGraphMetadataWriteAllowed,
+      isGraphReadableForRecall,
+      isTrivialUserInput,
+      normalizeRecallInputText,
+      recoverHistoryIfNeeded,
+      retrieve,
+    },
+    {
+      rawUserInput,
+      signal,
+      disableLlmRecall,
+    },
   );
-  const schema = getSchema();
-  const baseOptions = buildRecallRetrieveOptions(settings, context);
-  const options = {
-    ...baseOptions,
-    enableLLMRecall: disableLlmRecall
-      ? false
-      : baseOptions.enableLLMRecall,
-  };
-
-  const result = await retrieve({
-    graph: currentGraph,
-    userMessage,
-    recentMessages,
-    embeddingConfig: getEmbeddingConfig(),
-    schema,
-    settings,
-    signal,
-    options,
-  });
-  const memoryBlock = formatInjection(result, schema).trim();
-
-  return {
-    ok: Boolean(memoryBlock),
-    reason: memoryBlock ? "completed" : "empty-memory-block",
-    memoryBlock,
-    recentMessages,
-    result,
-  };
 }
-
 /**
  * 召回管线：检索并注入记忆
  */
