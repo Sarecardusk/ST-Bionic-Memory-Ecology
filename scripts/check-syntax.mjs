@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -19,86 +19,6 @@ const SOURCE_ROOTS = [
   "vendor/wasm",
   "native",
 ];
-
-function toDataModuleUrl(source = "") {
-  return `data:text/javascript,${encodeURIComponent(String(source || ""))}`;
-}
-
-const CHECK_SYNTAX_HOOK_BOOTSTRAP_URL = toDataModuleUrl(`
-import * as nodeModule from "node:module";
-
-const register = typeof nodeModule.register === "function" ? nodeModule.register : undefined;
-const registerHooks = typeof nodeModule.registerHooks === "function"
-  ? nodeModule.registerHooks
-  : undefined;
-
-const scriptShimUrl = ${JSON.stringify(toDataModuleUrl([
-  "export function getRequestHeaders() { return {}; }",
-  "export function saveMetadata() {}",
-  "export function saveSettingsDebounced() {}",
-  "export function substituteParamsExtended(value) { return String(value ?? ''); }",
-].join("\n")))};
-const extensionsShimUrl = ${JSON.stringify(toDataModuleUrl([
-  "export const extension_settings = { st_bme: {} };",
-  "export function getContext() { return {}; }",
-  "export function saveMetadataDebounced() {}",
-].join("\n")))};
-const openaiShimUrl = ${JSON.stringify(toDataModuleUrl([
-  "export const chat_completion_sources = {};",
-  "export async function sendOpenAIRequest() { return {}; }",
-].join("\n")))};
-
-function resolveShim(specifier) {
-  const normalized = String(specifier || "");
-  if (normalized.endsWith("/script.js")) return scriptShimUrl;
-  if (normalized.endsWith("/extensions.js")) return extensionsShimUrl;
-  if (normalized.endsWith("/openai.js")) return openaiShimUrl;
-  return "";
-}
-
-if (typeof registerHooks === "function") {
-  registerHooks({
-    resolve(specifier, context, nextResolve) {
-      const shimUrl = resolveShim(specifier);
-      if (shimUrl) {
-        return {
-          shortCircuit: true,
-          url: shimUrl,
-        };
-      }
-      return nextResolve(specifier, context);
-    },
-  });
-} else if (typeof register === "function") {
-  register(${JSON.stringify(toDataModuleUrl(`
-export async function resolve(specifier, context, nextResolve) {
-  const normalized = String(specifier || "");
-  if (normalized.endsWith("/script.js")) {
-    return { shortCircuit: true, url: ${JSON.stringify(toDataModuleUrl([
-      "export function getRequestHeaders() { return {}; }",
-      "export function saveMetadata() {}",
-      "export function saveSettingsDebounced() {}",
-      "export function substituteParamsExtended(value) { return String(value ?? ''); }",
-    ].join("\n")))} };
-  }
-  if (normalized.endsWith("/extensions.js")) {
-    return { shortCircuit: true, url: ${JSON.stringify(toDataModuleUrl([
-      "export const extension_settings = { st_bme: {} };",
-      "export function getContext() { return {}; }",
-      "export function saveMetadataDebounced() {}",
-    ].join("\n")))} };
-  }
-  if (normalized.endsWith("/openai.js")) {
-    return { shortCircuit: true, url: ${JSON.stringify(toDataModuleUrl([
-      "export const chat_completion_sources = {};",
-      "export async function sendOpenAIRequest() { return {}; }",
-    ].join("\n")))} };
-  }
-  return nextResolve(specifier, context);
-}
-`))}, import.meta.url);
-}
-`);
 
 async function collectFiles(targetPath) {
   const absolutePath = path.resolve(process.cwd(), targetPath);
@@ -127,12 +47,25 @@ function toPosixPath(filePath) {
 }
 
 async function runNodeCheck(filePath) {
+  // Force ES module parsing. This repo's `.js` files are ESM (import/export,
+  // and the browser loads them as modules), but package.json has no
+  // `"type": "module"`, so `node --check file.js` parses them as CommonJS/script
+  // and silently accepts invalid ESM syntax (e.g. an arrow function pasted inside
+  // an `import { ... }` block — which shipped a broken index.js once). Node only
+  // allows `--input-type=module` with stdin input, not a file argument, so we
+  // pipe the file content through stdin. `--check` validates syntax only and does
+  // not resolve imports, so no module-resolution hook is needed here.
+  const source = await readFile(filePath, "utf8");
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", CHECK_SYNTAX_HOOK_BOOTSTRAP_URL, "--check", filePath], {
-      cwd: process.cwd(),
-      stdio: "inherit",
-      windowsHide: true,
-    });
+    const child = spawn(
+      process.execPath,
+      ["--check", "--input-type=module", "-"],
+      {
+        cwd: process.cwd(),
+        stdio: ["pipe", "inherit", "inherit"],
+        windowsHide: true,
+      },
+    );
 
     child.on("error", reject);
     child.on("exit", (code, signal) => {
@@ -146,6 +79,9 @@ async function runNodeCheck(filePath) {
       }
       resolve();
     });
+
+    child.stdin.on("error", reject);
+    child.stdin.end(source);
   });
 }
 

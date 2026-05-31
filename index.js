@@ -210,7 +210,7 @@ import {
   LUKER_GRAPH_SIDECAR_V2_FORMAT,
   MODULE_NAME,
   cloneGraphForPersistence,
-  cloneRuntimeDebugValue: (...args) => cloneRuntimeDebugValue(...args),
+  cloneRuntimeDebugValue,
   getGraphPersistedRevision,
   getGraphPersistenceMeta,
   getGraphIdentityAliasCandidates,
@@ -448,8 +448,7 @@ import {
   normalizeStageNoticeLevel,
   pushBatchStageArtifact,
   setBatchStageOutcome,
-  shouldRunRecallForTransaction: (...args) =>
-    shouldRunRecallForTransaction(...args),
+  shouldRunRecallForTransaction,
 } from "./ui/ui-status.js";
 import {
   deleteBackendVectorHashesForRecovery,
@@ -4589,6 +4588,7 @@ function applyGraphLoadState(
       cacheStorageTier,
     },
   );
+}
 
 function createAbortError(message = "操作已终止") {
   const error = new Error(message);
