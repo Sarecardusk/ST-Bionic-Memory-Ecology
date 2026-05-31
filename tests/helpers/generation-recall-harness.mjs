@@ -65,6 +65,7 @@ import {
 import { createRecallInputState } from "../../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../../runtime/generation-recall-transactions.js";
+import { createFinalRecallInjection } from "../../runtime/final-recall-injection.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const indexPath = path.resolve(moduleDir, "../../index.js");
@@ -124,6 +125,7 @@ export function createGenerationRecallHarness(options = {}) {
       createRecallInputState,
       createRerollRecallInput,
       createGenerationRecallTransactions,
+      createFinalRecallInjection,
       settings: {},
       graphPersistenceState: createGraphPersistenceState(),
       extension_settings: { [MODULE_NAME]: {} },

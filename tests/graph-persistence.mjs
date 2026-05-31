@@ -88,7 +88,10 @@ import {
 } from "../graph/graph.js";
 import {
   buildPersistedRecallRecord,
+  bumpPersistedRecallGenerationCount,
   readPersistedRecallFromUserMessage,
+  resolveFinalRecallInjectionSource,
+  writePersistedRecallToUserMessage,
 } from "../retrieval/recall-persistence.js";
 import { getNodeDisplayName } from "../graph/node-labels.js";
 import {
@@ -164,6 +167,7 @@ import {
 import { createRecallInputState } from "../runtime/recall-input-state.js";
 import { createRerollRecallInput } from "../runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "../runtime/generation-recall-transactions.js";
+import { createFinalRecallInjection } from "../runtime/final-recall-injection.js";
 import {
   consumeRerollRecallReuseMarker,
   createRerollRecallReuseMarker,
@@ -792,6 +796,7 @@ async function createGraphPersistenceHarness({
     createRecallInputState,
     createRerollRecallInput,
     createGenerationRecallTransactions,
+    createFinalRecallInjection,
     consumeRerollRecallReuseMarker,
     createRerollRecallReuseMarker,
     createRecallMessageUiController() {
@@ -947,6 +952,9 @@ async function createGraphPersistenceHarness({
       return serializeBmeChatStateTarget(target);
     },
     readPersistedRecallFromUserMessage,
+    writePersistedRecallToUserMessage,
+    bumpPersistedRecallGenerationCount,
+    resolveFinalRecallInjectionSource,
     formatInjection: (result = null) =>
       String(result?.injectionText || result?.memoryBlock || ""),
     getSchema: () => [],

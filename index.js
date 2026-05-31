@@ -163,6 +163,7 @@ import {
 import { createRecallInputState } from "./runtime/recall-input-state.js";
 import { createRerollRecallInput } from "./runtime/reroll-recall-input.js";
 import { createGenerationRecallTransactions } from "./runtime/generation-recall-transactions.js";
+import { createFinalRecallInjection } from "./runtime/final-recall-injection.js";
 import {
   extractMemories,
   generateReflection,
@@ -297,8 +298,7 @@ import {
   buildPersistedRecallRecord,
   bumpPersistedRecallGenerationCount,
   markPersistedRecallManualEdit,
-  readPersistedRecallFromUserMessage: (...args) =>
-    readPersistedRecallFromUserMessage(...args),
+  readPersistedRecallFromUserMessage,
   removePersistedRecallFromUserMessage,
   resolveFinalRecallInjectionSource,
   resolveGenerationTargetUserMessageIndex,
@@ -1470,6 +1470,50 @@ const generationRecallTransactionRuntime = createGenerationRecallTransactions({
 });
 const generationRecallTransactions =
   generationRecallTransactionRuntime.generationRecallTransactions;
+const finalRecallInjectionRuntime = createFinalRecallInjection({
+  applyModuleInjectionPrompt: (...args) => applyModuleInjectionPrompt(...args),
+  areRecallNodeIdListsEqual: (...args) => areRecallNodeIdListsEqual(...args),
+  buildPersistedRecallRecord,
+  bumpPersistedRecallGenerationCount: (...args) =>
+    bumpPersistedRecallGenerationCount(...args),
+  clearLiveRecallInjectionPromptForRewrite: (...args) =>
+    clearLiveRecallInjectionPromptForRewrite(...args),
+  createUiStatus,
+  debugPersistedRecallPersistence: (...args) =>
+    debugPersistedRecallPersistence(...args),
+  estimateTokens,
+  getContext,
+  getGenerationRecallTransactionResult: (...args) =>
+    getGenerationRecallTransactionResult(...args),
+  getLastInjectionContent: () => lastInjectionContent,
+  getLastRecallSentUserMessage: () => lastRecallSentUserMessage,
+  getRuntimeStatus: () => runtimeStatus,
+  getSettings,
+  normalizeRecallInputText,
+  normalizeRecallNodeIdList: (...args) => normalizeRecallNodeIdList(...args),
+  readGenerationRecallTransactionFinalResolution: (...args) =>
+    readGenerationRecallTransactionFinalResolution(...args),
+  readPersistedRecallFromUserMessage,
+  recordInjectionSnapshot: (...args) => recordInjectionSnapshot(...args),
+  refreshPanelLiveState: (...args) => refreshPanelLiveState(...args),
+  resolveFinalRecallInjectionSource,
+  resolveGenerationRecallDeliveryMode: (...args) =>
+    resolveGenerationRecallDeliveryMode(...args),
+  resolveRecallPersistenceTargetUserMessageIndex: (...args) =>
+    resolveRecallPersistenceTargetUserMessageIndex(...args),
+  schedulePersistedRecallMessageUiRefresh: (...args) =>
+    schedulePersistedRecallMessageUiRefresh(...args),
+  setLastInjectionContent: (value = "") => {
+    lastInjectionContent = String(value || "");
+  },
+  setRuntimeStatus: (status) => {
+    runtimeStatus = status;
+  },
+  storeGenerationRecallTransactionFinalResolution: (...args) =>
+    storeGenerationRecallTransactionFinalResolution(...args),
+  triggerChatMetadataSave,
+  writePersistedRecallToUserMessage,
+});
 const PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS = [
   0,
   80,
@@ -5544,96 +5588,12 @@ function persistRecallInjectionRecord({
   injectionText = "",
   tokenEstimate = 0,
 } = {}) {
-  const chat = getContext()?.chat;
-  if (!Array.isArray(chat)) return null;
-
-  const generationType =
-    String(recallInput?.generationType || "normal").trim() || "normal";
-  let resolvedTargetIndex = resolveRecallPersistenceTargetUserMessageIndex(
-    chat,
-    {
-      generationType,
-      explicitTargetUserMessageIndex: recallInput?.targetUserMessageIndex,
-      candidateTexts: [
-        recallInput?.userMessage,
-        recallInput?.overrideUserMessage,
-        lastRecallSentUserMessage?.text,
-      ],
-      preferredRecord: lastRecallSentUserMessage,
-    },
-  );
-
-  if (!Number.isFinite(resolvedTargetIndex)) {
-    debugPersistedRecallPersistence("目标 user 楼层解析失败", {
-      generationType,
-      explicitTargetUserMessageIndex: recallInput?.targetUserMessageIndex,
-      lastSentUserMessageId: lastRecallSentUserMessage?.messageId,
-      recallInputSource: String(recallInput?.source || ""),
-    });
-    return null;
-  }
-
-  if (!chat[resolvedTargetIndex]?.is_user) {
-    debugPersistedRecallPersistence("目标楼层不是 user 消息，跳过持久化", {
-      targetUserMessageIndex: resolvedTargetIndex,
-      messageKeys: Object.keys(chat[resolvedTargetIndex] || {}),
-    });
-    return null;
-  }
-
-  const targetUserFloorText = normalizeRecallInputText(
-    chat[resolvedTargetIndex]?.mes || "",
-  );
-  const boundUserFloorText = normalizeRecallInputText(
-    recallInput?.boundUserFloorText || targetUserFloorText,
-  );
-  const record = buildPersistedRecallRecord(
-    {
-      injectionText,
-      selectedNodeIds: result?.selectedNodeIds || [],
-      recallInput: String(recallInput?.userMessage || ""),
-      recallSource: String(recallInput?.source || ""),
-      hookName: String(recallInput?.hookName || ""),
-      tokenEstimate,
-      manuallyEdited: false,
-      authoritativeInputUsed: Boolean(recallInput?.authoritativeInputUsed),
-      boundUserFloorText,
-    },
-    readPersistedRecallFromUserMessage(chat, resolvedTargetIndex),
-  );
-  if (!String(record?.injectionText || "").trim()) {
-    debugPersistedRecallPersistence("无有效 injectionText，跳过持久化", {
-      targetUserMessageIndex: resolvedTargetIndex,
-      selectedNodeCount: Array.isArray(result?.selectedNodeIds)
-        ? result.selectedNodeIds.length
-        : 0,
-    });
-    return null;
-  }
-  if (!writePersistedRecallToUserMessage(chat, resolvedTargetIndex, record)) {
-    debugPersistedRecallPersistence("写入 user 楼层失败", {
-      targetUserMessageIndex: resolvedTargetIndex,
-    });
-    return null;
-  }
-
-  triggerChatMetadataSave(getContext(), { immediate: false });
-  schedulePersistedRecallMessageUiRefresh();
-  debugPersistedRecallPersistence(
-    "召回记录已写入 user 楼层",
-    {
-      targetUserMessageIndex: resolvedTargetIndex,
-      injectionTextLength: String(record?.injectionText || "").length,
-      selectedNodeCount: Array.isArray(record?.selectedNodeIds)
-        ? record.selectedNodeIds.length
-        : 0,
-    },
-    `persist-success:${resolvedTargetIndex}`,
-  );
-  return {
-    index: resolvedTargetIndex,
-    record,
-  };
+  return finalRecallInjectionRuntime.persistRecallInjectionRecord({
+    recallInput,
+    result,
+    injectionText,
+    tokenEstimate,
+  });
 }
 
 function ensurePersistedRecallRecordForGeneration({
@@ -5643,189 +5603,14 @@ function ensurePersistedRecallRecordForGeneration({
   recallOptions = null,
   hookName = "",
 } = {}) {
-  const injectionText = String(recallResult?.injectionText || "").trim();
-  if (
-    recallResult?.status !== "completed" ||
-    !recallResult?.didRecall ||
-    !injectionText
-  ) {
-    return {
-      persisted: false,
-      reason: "no-fresh-recall",
-      targetUserMessageIndex: null,
-      record: null,
-    };
-  }
-
-  const chat = getContext()?.chat;
-  if (!Array.isArray(chat) || chat.length === 0) {
-    return {
-      persisted: false,
-      reason: "missing-chat",
-      targetUserMessageIndex: null,
-      record: null,
-    };
-  }
-
-  const frozenRecallOptions =
-    transaction?.frozenRecallOptions &&
-    typeof transaction.frozenRecallOptions === "object"
-      ? transaction.frozenRecallOptions
-      : null;
-  const targetUserMessageIndex = resolveRecallPersistenceTargetUserMessageIndex(
-    chat,
-    {
-      generationType,
-      explicitTargetUserMessageIndex:
-        frozenRecallOptions?.targetUserMessageIndex ??
-        recallOptions?.targetUserMessageIndex ??
-        recallOptions?.explicitTargetUserMessageIndex ??
-        null,
-      candidateTexts: [
-        frozenRecallOptions?.overrideUserMessage,
-        frozenRecallOptions?.userMessage,
-        recallOptions?.overrideUserMessage,
-        recallOptions?.userMessage,
-        recallResult?.recallInput,
-        recallResult?.userMessage,
-        ...(Array.isArray(recallResult?.sourceCandidates)
-          ? recallResult.sourceCandidates.map((candidate) => candidate?.text)
-          : []),
-        lastRecallSentUserMessage?.text,
-      ],
-      preferredRecord: lastRecallSentUserMessage,
-    },
-  );
-
-  if (
-    !Number.isFinite(targetUserMessageIndex) ||
-    !chat[targetUserMessageIndex]?.is_user
-  ) {
-    return {
-      persisted: false,
-      reason: "target-unresolved",
-      targetUserMessageIndex: Number.isFinite(targetUserMessageIndex)
-        ? targetUserMessageIndex
-        : null,
-      record: null,
-    };
-  }
-
-  const selectedNodeIds = normalizeRecallNodeIdList(
-    recallResult?.selectedNodeIds || [],
-  );
-  const existingRecord = readPersistedRecallFromUserMessage(
-    chat,
-    targetUserMessageIndex,
-  );
-  const nextAuthoritativeInputUsed = Boolean(
-    recallResult?.authoritativeInputUsed ??
-      frozenRecallOptions?.authoritativeInputUsed ??
-      recallOptions?.authoritativeInputUsed,
-  );
-  const targetUserFloorText = normalizeRecallInputText(
-    chat[targetUserMessageIndex]?.mes || "",
-  );
-  const nextBoundUserFloorText = normalizeRecallInputText(
-    recallResult?.boundUserFloorText ||
-      frozenRecallOptions?.boundUserFloorText ||
-      recallOptions?.boundUserFloorText ||
-      targetUserFloorText ||
-      "",
-  );
-  const existingBoundUserFloorText = normalizeRecallInputText(
-    existingRecord?.boundUserFloorText || "",
-  );
-  const existingMetadataUpToDate =
-    Boolean(existingRecord?.authoritativeInputUsed) === nextAuthoritativeInputUsed &&
-    (!nextBoundUserFloorText ||
-      existingBoundUserFloorText === nextBoundUserFloorText);
-  if (
-    existingRecord &&
-    String(existingRecord.injectionText || "").trim() === injectionText &&
-    areRecallNodeIdListsEqual(existingRecord.selectedNodeIds, selectedNodeIds) &&
-    String(existingRecord.recallInput || "").trim() &&
-    existingMetadataUpToDate
-  ) {
-    return {
-      persisted: false,
-      reason: "already-up-to-date",
-      targetUserMessageIndex,
-      record: existingRecord,
-    };
-  }
-
-  const nextRecord = buildPersistedRecallRecord(
-    {
-      injectionText,
-      selectedNodeIds,
-      recallInput: String(
-        recallResult?.recallInput ||
-          recallResult?.userMessage ||
-          frozenRecallOptions?.overrideUserMessage ||
-          recallOptions?.overrideUserMessage ||
-          recallOptions?.userMessage ||
-          "",
-      ),
-      recallSource: String(
-        recallResult?.source ||
-          frozenRecallOptions?.lockedSource ||
-          frozenRecallOptions?.overrideSource ||
-          recallOptions?.overrideSource ||
-          "",
-      ),
-      hookName: String(
-        hookName ||
-          recallResult?.hookName ||
-          frozenRecallOptions?.hookName ||
-          recallOptions?.hookName ||
-          "",
-      ),
-      tokenEstimate: estimateTokens(injectionText),
-      manuallyEdited: false,
-      authoritativeInputUsed: nextAuthoritativeInputUsed,
-      boundUserFloorText: nextBoundUserFloorText,
-    },
-    existingRecord,
-  );
-
-  if (!writePersistedRecallToUserMessage(chat, targetUserMessageIndex, nextRecord)) {
-    return {
-      persisted: false,
-      reason: "write-failed",
-      targetUserMessageIndex,
-      record: null,
-    };
-  }
-
-  triggerChatMetadataSave(getContext(), { immediate: false });
-  schedulePersistedRecallMessageUiRefresh();
-  debugPersistedRecallPersistence(
-    "最终阶段已补写召回记录",
-    {
-      targetUserMessageIndex,
-      hookName:
-        String(
-          hookName ||
-            recallResult?.hookName ||
-            frozenRecallOptions?.hookName ||
-            recallOptions?.hookName ||
-            "",
-        ) || "",
-      injectionTextLength: injectionText.length,
-      selectedNodeCount: selectedNodeIds.length,
-    },
-    `finalize-persist:${targetUserMessageIndex}`,
-  );
-
-  return {
-    persisted: true,
-    reason: "backfilled",
-    targetUserMessageIndex,
-    record: nextRecord,
-  };
+  return finalRecallInjectionRuntime.ensurePersistedRecallRecordForGeneration({
+    generationType,
+    recallResult,
+    transaction,
+    recallOptions,
+    hookName,
+  });
 }
-
 function removeMessageRecallRecord(messageIndex) {
   const chat = getContext()?.chat;
   if (!Array.isArray(chat)) return false;
@@ -5966,90 +5751,10 @@ function rewriteRecallPayloadWithInjection(
   promptData = null,
   injectionText = "",
 ) {
-  const normalizedInjectionText = normalizeRecallInputText(injectionText);
-  if (!normalizedInjectionText) {
-    return {
-      applied: false,
-      path: "",
-      field: "",
-      reason: "empty-injection-text",
-    };
-  }
-
-  const finalMesSend = Array.isArray(promptData?.finalMesSend)
-    ? promptData.finalMesSend
-    : null;
-  if (Array.isArray(finalMesSend) && finalMesSend.length > 0) {
-    for (let index = finalMesSend.length - 1; index >= 0; index--) {
-      const entry = finalMesSend[index];
-      if (!entry || typeof entry !== "object") continue;
-      if (entry.injected === true) continue;
-      const messageText = normalizeRecallInputText(
-        entry.message || entry.mes || entry.content || "",
-      );
-      if (!messageText) continue;
-
-      entry.extensionPrompts = Array.isArray(entry.extensionPrompts)
-        ? entry.extensionPrompts
-        : [];
-      const alreadyPresent = entry.extensionPrompts.some((chunk) =>
-        String(chunk || "").includes(normalizedInjectionText),
-      );
-      if (!alreadyPresent) {
-        entry.extensionPrompts.push(`${normalizedInjectionText}\n`);
-      }
-      return {
-        applied: true,
-        path: "finalMesSend",
-        field: `finalMesSend[${index}].extensionPrompts`,
-        reason: alreadyPresent
-          ? "rewrite-already-present"
-          : "finalMesSend-extensionPrompt-appended",
-        targetIndex: index,
-      };
-    }
-
-    return {
-      applied: false,
-      path: "finalMesSend",
-      field: "",
-      reason: "no-rewritable-finalMesSend-entry",
-    };
-  }
-
-  if (
-    typeof promptData?.combinedPrompt === "string" &&
-    promptData.combinedPrompt.trim()
-  ) {
-    if (!promptData.combinedPrompt.includes(normalizedInjectionText)) {
-      promptData.combinedPrompt = `${normalizedInjectionText}\n\n${promptData.combinedPrompt}`;
-    }
-    return {
-      applied: true,
-      path: "combinedPrompt",
-      field: "combinedPrompt",
-      reason: "combinedPrompt-prefixed",
-    };
-  }
-
-  if (typeof promptData?.prompt === "string" && promptData.prompt.trim()) {
-    if (!promptData.prompt.includes(normalizedInjectionText)) {
-      promptData.prompt = `${normalizedInjectionText}\n\n${promptData.prompt}`;
-    }
-    return {
-      applied: true,
-      path: "prompt",
-      field: "prompt",
-      reason: "prompt-prefixed",
-    };
-  }
-
-  return {
-    applied: false,
-    path: "",
-    field: "",
-    reason: "prompt-payload-unavailable",
-  };
+  return finalRecallInjectionRuntime.rewriteRecallPayloadWithInjection(
+    promptData,
+    injectionText,
+  );
 }
 
 function rewriteRecallPayloadWithAuthoritativeUserInput(
@@ -6057,103 +5762,12 @@ function rewriteRecallPayloadWithAuthoritativeUserInput(
   authoritativeText = "",
   boundUserFloorText = "",
 ) {
-  const normalizedAuthoritativeText = normalizeRecallInputText(authoritativeText);
-  const normalizedBoundUserFloorText = normalizeRecallInputText(boundUserFloorText);
-  if (!normalizedAuthoritativeText) {
-    return {
-      applied: false,
-      changed: false,
-      path: "",
-      field: "",
-      reason: "empty-authoritative-text",
-    };
-  }
-
-  const finalMesSend = Array.isArray(promptData?.finalMesSend)
-    ? promptData.finalMesSend
-    : null;
-  if (!Array.isArray(finalMesSend) || finalMesSend.length <= 0) {
-    return {
-      applied: false,
-      changed: false,
-      path: "",
-      field: "",
-      reason: "finalMesSend-unavailable",
-    };
-  }
-
-  let fallbackIndex = -1;
-  let matchedIndex = -1;
-  for (let index = finalMesSend.length - 1; index >= 0; index--) {
-    const entry = finalMesSend[index];
-    if (!entry || typeof entry !== "object") continue;
-    if (entry.injected === true) continue;
-
-    const messageText = normalizeRecallInputText(
-      entry.message || entry.mes || entry.content || "",
-    );
-    if (!messageText) continue;
-
-    if (fallbackIndex < 0) {
-      fallbackIndex = index;
-    }
-
-    if (
-      messageText === normalizedAuthoritativeText ||
-      (normalizedBoundUserFloorText &&
-        messageText === normalizedBoundUserFloorText)
-    ) {
-      matchedIndex = index;
-      break;
-    }
-  }
-
-  const targetIndex =
-    matchedIndex >= 0
-      ? matchedIndex
-      : normalizedBoundUserFloorText
-        ? -1
-        : fallbackIndex;
-  if (targetIndex < 0) {
-    return {
-      applied: false,
-      changed: false,
-      path: "finalMesSend",
-      field: "",
-      reason: normalizedBoundUserFloorText
-        ? "bound-user-floor-text-not-found"
-        : "no-rewritable-finalMesSend-entry",
-    };
-  }
-
-  const entry = finalMesSend[targetIndex];
-  const fieldName = Object.prototype.hasOwnProperty.call(entry, "message")
-    ? "message"
-    : Object.prototype.hasOwnProperty.call(entry, "mes")
-      ? "mes"
-      : Object.prototype.hasOwnProperty.call(entry, "content")
-        ? "content"
-        : "message";
-  const previousText = normalizeRecallInputText(
-    entry?.[fieldName] || entry?.message || entry?.mes || entry?.content || "",
+  return finalRecallInjectionRuntime.rewriteRecallPayloadWithAuthoritativeUserInput(
+    promptData,
+    authoritativeText,
+    boundUserFloorText,
   );
-  const changed = previousText !== normalizedAuthoritativeText;
-  if (changed) {
-    entry[fieldName] = normalizedAuthoritativeText;
-  }
-
-  return {
-    applied: true,
-    changed,
-    path: "finalMesSend",
-    field: `finalMesSend[${targetIndex}].${fieldName}`,
-    reason: changed
-      ? "finalMesSend-authoritative-user-rewritten"
-      : "authoritative-user-already-matched",
-    targetIndex,
-  };
 }
-
 function readGenerationRecallTransactionFinalResolution(transaction) {
   return generationRecallTransactionRuntime.readGenerationRecallTransactionFinalResolution(
     transaction,
@@ -6176,368 +5790,14 @@ function applyFinalRecallInjectionForGeneration({
   promptData = null,
   hookName = "",
 } = {}) {
-  const existingFinalResolution =
-    readGenerationRecallTransactionFinalResolution(transaction);
-  if (existingFinalResolution) {
-    if (
-      promptData &&
-      transaction?.frozenRecallOptions?.authoritativeInputUsed === true
-    ) {
-      const recallResult =
-        freshRecallResult ||
-        getGenerationRecallTransactionResult(transaction) ||
-        null;
-      const inputRewrite = rewriteRecallPayloadWithAuthoritativeUserInput(
-        promptData,
-        transaction?.frozenRecallOptions?.overrideUserMessage || "",
-        transaction?.frozenRecallOptions?.boundUserFloorText || "",
-      );
-      const rewrite = rewriteRecallPayloadWithInjection(
-        promptData,
-        existingFinalResolution.usedText || recallResult?.injectionText || "",
-      );
-      const nextFinalResolution = {
-        ...existingFinalResolution,
-        deliveryMode: "deferred",
-        applicationMode:
-          rewrite.applied || inputRewrite.applied
-            ? "rewrite"
-            : existingFinalResolution.applicationMode,
-        rewrite,
-        inputRewrite,
-      };
-      recordInjectionSnapshot("recall", {
-        taskType: "recall",
-        source:
-          String(
-            recallResult?.source ||
-              transaction?.frozenRecallOptions?.lockedSource ||
-              transaction?.frozenRecallOptions?.overrideSource ||
-              "",
-          ).trim() || "unknown",
-        sourceLabel:
-          String(
-            recallResult?.sourceLabel ||
-              transaction?.frozenRecallOptions?.lockedSourceLabel ||
-              transaction?.frozenRecallOptions?.overrideSourceLabel ||
-              "",
-          ).trim() || "未知",
-        reason:
-          String(
-            recallResult?.reason ||
-              transaction?.frozenRecallOptions?.lockedReason ||
-              transaction?.frozenRecallOptions?.overrideReason ||
-              "",
-          ).trim() || "final-application-reused",
-        sourceCandidates: Array.isArray(recallResult?.sourceCandidates)
-          ? recallResult.sourceCandidates.map((candidate) => ({ ...candidate }))
-          : Array.isArray(transaction?.frozenRecallOptions?.sourceCandidates)
-            ? transaction.frozenRecallOptions.sourceCandidates.map((candidate) => ({
-                ...candidate,
-              }))
-            : [],
-        hookName: String(hookName || recallResult?.hookName || "").trim(),
-        selectedNodeIds: recallResult?.selectedNodeIds || [],
-        retrievalMeta: recallResult?.retrievalMeta || {},
-        llmMeta: recallResult?.llmMeta || {},
-        stats: recallResult?.stats || {},
-        injectionText: nextFinalResolution.usedText || "",
-        deliveryMode: nextFinalResolution.deliveryMode || "",
-        applicationMode: nextFinalResolution.applicationMode || "none",
-        transport: nextFinalResolution.transport || {
-          applied: false,
-          source: "none",
-          mode: "none",
-        },
-        rewrite: nextFinalResolution.rewrite || {
-          applied: false,
-          path: "",
-          field: "",
-          reason: "final-resolution-reused",
-        },
-        inputRewrite,
-        targetUserMessageIndex: nextFinalResolution.targetUserMessageIndex,
-        sourceKind: nextFinalResolution.source || "none",
-        authoritativeInputUsed: true,
-        boundUserFloorText: String(
-          transaction?.frozenRecallOptions?.boundUserFloorText || "",
-        ),
-      });
-      storeGenerationRecallTransactionFinalResolution(
-        transaction,
-        nextFinalResolution,
-      );
-      refreshPanelLiveState();
-      schedulePersistedRecallMessageUiRefresh();
-      return nextFinalResolution;
-    }
-    return existingFinalResolution;
-  }
-
-  const recallResult =
-    freshRecallResult ||
-    getGenerationRecallTransactionResult(transaction) ||
-    null;
-  const hookResolvedDeliveryMode =
-    String(
-      resolveGenerationRecallDeliveryMode(
-        hookName,
-        generationType,
-        transaction?.frozenRecallOptions || {},
-      ),
-    ).trim() || "immediate";
-  const deliveryMode =
-    String(
-      promptData && hookName === "GENERATE_BEFORE_COMBINE_PROMPTS"
-        ? hookResolvedDeliveryMode
-        : recallResult?.deliveryMode ||
-            transaction?.lastDeliveryMode ||
-            hookResolvedDeliveryMode,
-    ).trim() || "immediate";
-  const chat = getContext()?.chat;
-
-  let transport = {
-    applied: false,
-    source: "none",
-    mode: "none",
-  };
-  let targetUserMessageIndex = null;
-  let resolved = {
-    source: "none",
-    injectionText: "",
-    record: null,
-  };
-  const authoritativeInputRewrite =
-    deliveryMode === "deferred" &&
-    transaction?.frozenRecallOptions?.authoritativeInputUsed === true
-      ? rewriteRecallPayloadWithAuthoritativeUserInput(
-          promptData,
-          transaction?.frozenRecallOptions?.overrideUserMessage || "",
-          transaction?.frozenRecallOptions?.boundUserFloorText || "",
-        )
-      : {
-          applied: false,
-          changed: false,
-          path: "",
-          field: "",
-          reason:
-            deliveryMode === "deferred"
-              ? "authoritative-input-unused"
-              : "non-deferred-delivery",
-        };
-  const rewrite = {
-    applied: false,
-    path: "",
-    field: "",
-    reason: "no-recall-source",
-  };
-  let applicationMode = "none";
-
-  if (!Array.isArray(chat)) {
-    transport = applyModuleInjectionPrompt("", getSettings()) || transport;
-    const emptyResolution = {
-      source: "none",
-      isFallback: false,
-      targetUserMessageIndex: null,
-      usedText: "",
-      deliveryMode,
-      applicationMode: "none",
-      rewrite,
-      transport,
-    };
-    storeGenerationRecallTransactionFinalResolution(
-      transaction,
-      emptyResolution,
-    );
-    return emptyResolution;
-  }
-
-  const ensuredPersistence = ensurePersistedRecallRecordForGeneration({
+  return finalRecallInjectionRuntime.applyFinalRecallInjectionForGeneration({
     generationType,
-    recallResult,
+    freshRecallResult,
     transaction,
-    recallOptions: transaction?.frozenRecallOptions || null,
+    promptData,
     hookName,
   });
-
-  targetUserMessageIndex = resolveRecallPersistenceTargetUserMessageIndex(chat, {
-    generationType,
-    explicitTargetUserMessageIndex:
-      transaction?.frozenRecallOptions?.targetUserMessageIndex,
-    candidateTexts: [
-      transaction?.frozenRecallOptions?.overrideUserMessage,
-      recallResult?.recallInput,
-      recallResult?.userMessage,
-      recallResult?.sourceCandidates?.[0]?.text,
-      lastRecallSentUserMessage?.text,
-    ],
-    preferredRecord: lastRecallSentUserMessage,
-  });
-  if (Number.isFinite(ensuredPersistence?.targetUserMessageIndex)) {
-    targetUserMessageIndex = ensuredPersistence.targetUserMessageIndex;
-  }
-
-  const persistedRecord = Number.isFinite(targetUserMessageIndex)
-    ? readPersistedRecallFromUserMessage(chat, targetUserMessageIndex)
-    : null;
-  resolved = resolveFinalRecallInjectionSource({
-    freshRecallResult: recallResult,
-    persistedRecord,
-  });
-
-  if (resolved.source === "fresh" && deliveryMode === "deferred") {
-    const rewriteResult = rewriteRecallPayloadWithInjection(
-      promptData,
-      resolved.injectionText || "",
-    );
-    Object.assign(rewrite, rewriteResult);
-    lastInjectionContent = resolved.injectionText || "";
-    if (rewriteResult.applied) {
-      applicationMode = "rewrite";
-      transport = clearLiveRecallInjectionPromptForRewrite() || {
-        applied: false,
-        source: "rewrite-cleared",
-        mode: "rewrite-cleared",
-      };
-      runtimeStatus = createUiStatus(
-        "召回已改写",
-        `本轮发送载荷已 rewrite · ${rewriteResult.path || rewriteResult.field || "payload"}`,
-        "success",
-      );
-    } else {
-      applicationMode = "fallback-injection";
-      transport =
-        applyModuleInjectionPrompt(
-          resolved.injectionText || "",
-          getSettings(),
-        ) || transport;
-      runtimeStatus = createUiStatus(
-        "召回回退",
-        `rewrite 未命中，已回退注入 · ${rewriteResult.reason}`,
-        "warning",
-      );
-    }
-  } else if (resolved.source === "fresh") {
-    applicationMode = "injection";
-    transport =
-      applyModuleInjectionPrompt(resolved.injectionText || "", getSettings()) ||
-      transport;
-    lastInjectionContent = resolved.injectionText || "";
-    rewrite.reason = "immediate-injection";
-    runtimeStatus = createUiStatus(
-      "召回已注入",
-      "本轮已使用最新召回结果",
-      "success",
-    );
-  } else if (resolved.source === "persisted") {
-    applicationMode = "persisted-injection";
-    transport =
-      applyModuleInjectionPrompt(resolved.injectionText || "", getSettings()) ||
-      transport;
-    lastInjectionContent = resolved.injectionText || "";
-    rewrite.reason = "persisted-record-fallback";
-    runtimeStatus = createUiStatus(
-      "召回回退",
-      "已使用消息楼层持久化注入",
-      "info",
-    );
-  } else {
-    transport = applyModuleInjectionPrompt("", getSettings()) || transport;
-    lastInjectionContent = "";
-    runtimeStatus = createUiStatus("待命", "当前无有效注入内容", "idle");
-  }
-
-  if (
-    resolved.source === "persisted" &&
-    Number.isFinite(targetUserMessageIndex)
-  ) {
-    bumpPersistedRecallGenerationCount(chat, targetUserMessageIndex);
-    triggerChatMetadataSave(getContext(), { immediate: false });
-  }
-
-  recordInjectionSnapshot("recall", {
-    taskType: "recall",
-    source:
-      String(
-        recallResult?.source ||
-          transaction?.frozenRecallOptions?.lockedSource ||
-          transaction?.frozenRecallOptions?.overrideSource ||
-          "",
-      ).trim() || "unknown",
-    sourceLabel:
-      String(
-        recallResult?.sourceLabel ||
-          transaction?.frozenRecallOptions?.lockedSourceLabel ||
-          transaction?.frozenRecallOptions?.overrideSourceLabel ||
-          "",
-      ).trim() || "未知",
-    reason:
-      String(
-        recallResult?.reason ||
-          transaction?.frozenRecallOptions?.lockedReason ||
-          transaction?.frozenRecallOptions?.overrideReason ||
-          "",
-      ).trim() || "final-application",
-    sourceCandidates: Array.isArray(recallResult?.sourceCandidates)
-      ? recallResult.sourceCandidates.map((candidate) => ({ ...candidate }))
-      : Array.isArray(transaction?.frozenRecallOptions?.sourceCandidates)
-        ? transaction.frozenRecallOptions.sourceCandidates.map((candidate) => ({
-            ...candidate,
-          }))
-        : [],
-    hookName: String(hookName || recallResult?.hookName || "").trim(),
-    selectedNodeIds: recallResult?.selectedNodeIds || [],
-    retrievalMeta: recallResult?.retrievalMeta || {},
-    llmMeta: recallResult?.llmMeta || {},
-    stats: recallResult?.stats || {},
-    injectionText: resolved.injectionText || "",
-    deliveryMode,
-    applicationMode,
-    transport,
-    rewrite,
-    inputRewrite: authoritativeInputRewrite,
-    targetUserMessageIndex,
-    sourceKind: resolved.source,
-    authoritativeInputUsed: Boolean(
-      recallResult?.authoritativeInputUsed ??
-        transaction?.frozenRecallOptions?.authoritativeInputUsed,
-    ),
-    boundUserFloorText: String(
-      recallResult?.boundUserFloorText ||
-        transaction?.frozenRecallOptions?.boundUserFloorText ||
-        "",
-    ),
-  });
-
-  refreshPanelLiveState();
-  schedulePersistedRecallMessageUiRefresh();
-
-  const finalResolution = {
-    source: resolved.source,
-    isFallback:
-      resolved.source === "persisted" ||
-      applicationMode === "fallback-injection",
-    targetUserMessageIndex,
-    usedText: resolved.injectionText || "",
-    deliveryMode,
-    applicationMode,
-    rewrite,
-    transport,
-    inputRewrite: authoritativeInputRewrite,
-    authoritativeInputUsed: Boolean(
-      recallResult?.authoritativeInputUsed ??
-        transaction?.frozenRecallOptions?.authoritativeInputUsed,
-    ),
-    boundUserFloorText: String(
-      recallResult?.boundUserFloorText ||
-        transaction?.frozenRecallOptions?.boundUserFloorText ||
-        "",
-    ),
-  };
-  storeGenerationRecallTransactionFinalResolution(transaction, finalResolution);
-  return finalResolution;
 }
-
 function clearLiveRecallInjectionPromptForRewrite() {
   try {
     return (
