@@ -2,6 +2,8 @@
 
 > 让 AI 真正记住你们的故事。
 
+**中文** · [English](README.en.md)
+
 ST-BME（Bionic Memory Ecology）是一个 **SillyTavern 第三方前端扩展**。它会把长期聊天中出现的角色、事件、地点、规则、主线、反思和总结抽取成一张可视化记忆图谱，并在下一轮生成前自动召回最相关的记忆注入 prompt。
 
 ---

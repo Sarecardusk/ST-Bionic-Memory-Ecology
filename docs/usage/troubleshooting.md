@@ -1,5 +1,7 @@
 # 排障指南
 
+**中文** · [English](troubleshooting.en.md)
+
 本文从 [README](../../README.md) 拆出 ST-BME 常见用户问题与处理方式，便于按症状快速定位。
 
 ### 面板打不开

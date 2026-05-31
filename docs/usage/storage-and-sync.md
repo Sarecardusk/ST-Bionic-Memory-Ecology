@@ -1,5 +1,7 @@
 # 数据存储与同步
 
+**中文** · [English](storage-and-sync.en.md)
+
 本文从 [README](../../README.md) 拆出 ST-BME 的数据存储、云端镜像与持久召回卡片说明；durable snapshot contract 和 forward-compat 细节见 [存储与格式架构文档](../architecture/storage-and-formats.md)。
 
 ### 本地主存储

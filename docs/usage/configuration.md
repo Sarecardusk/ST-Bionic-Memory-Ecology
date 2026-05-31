@@ -1,5 +1,7 @@
 # 主要配置
 
+**中文** · [English](configuration.en.md)
+
 本文从 [README](../../README.md) 拆出 ST-BME 的主要用户配置说明，保留设置名称、默认值和表格，便于按功能查阅。
 
 ### 记忆 LLM

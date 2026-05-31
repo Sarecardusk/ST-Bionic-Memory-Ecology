@@ -8,12 +8,12 @@
 ## 文档地图
 
 ### usage/ — 使用手册
-面向用户："怎么配、怎么用、出问题怎么查"。从精简后的 README 下沉的详细内容。
+面向用户："怎么配、怎么用、出问题怎么查"。从精简后的 README 下沉的详细内容。中英双语（`.md` 中文 / `.en.md` English）。
 
-- [`configuration.md`](usage/configuration.md) — 完整配置参考：记忆 LLM、Embedding、提取/召回/认知/维护设置、任务预设、ENA、隐藏/渲染、Native
-- [`panel.md`](usage/panel.md) — 面板导览：总览、任务、操作、配置、图谱区域
-- [`troubleshooting.md`](usage/troubleshooting.md) — 排障指南
-- [`storage-and-sync.md`](usage/storage-and-sync.md) — 数据存储、云端镜像、兼容兜底、持久召回卡片
+- [`configuration.md`](usage/configuration.md) · [EN](usage/configuration.en.md) — 完整配置参考：记忆 LLM、Embedding、提取/召回/认知/维护设置、任务预设、ENA、隐藏/渲染、Native
+- [`panel.md`](usage/panel.md) · [EN](usage/panel.en.md) — 面板导览：总览、任务、操作、配置、图谱区域
+- [`troubleshooting.md`](usage/troubleshooting.md) · [EN](usage/troubleshooting.en.md) — 排障指南
+- [`storage-and-sync.md`](usage/storage-and-sync.md) · [EN](usage/storage-and-sync.en.md) — 数据存储、云端镜像、兼容兜底、持久召回卡片
 
 ### architecture/ — 架构与控制平面
 跨文件的结构、数据路径、不变量。这些内容变化慢，是理解"为什么这样组织"的入口。
@@ -56,3 +56,9 @@
 1. **离代码越近，腐烂越慢。** 单个函数的 API 细节留在模块头注释里（改代码自然会改它），不抄进这里。本目录只写"跨文件的算法原理、不变量、功能行为"。
 2. **不写一改就过期的内容。** 避免"某函数第几行做什么"这种描述；算法文档引用文件位置时，描述的是"哪个算法在哪个文件"，而非逐行。
 3. **改了行为就更新对应文档。** 算法参数、不变量、功能边界发生变化时，更新这里；纯重构（不改行为）通常不需要动文档。
+
+## 双语约定
+
+- **中文为源，英文跟随。** `.md` 是中文权威版，`.en.md` 是英文翻译。改文档先改中文 `.md`，再同步对应 `.en.md`。
+- 目前英文覆盖范围：根 `README`、`docs/usage/` 用户手册。`architecture/` / `algorithms/` / `features/` / `contributing/` 暂为中文，按需再加英文。
+- 英文文件里指向其它有 `.en.md` 的文档时，链到英文兄弟文件；指向暂无英文版的开发者文档时，链到中文版即可。
