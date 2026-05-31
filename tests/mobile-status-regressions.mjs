@@ -1,43 +1,13 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import vm from "node:vm";
 import { onManualExtractController } from "../maintenance/extraction-controller.js";
 import { onRebuildController } from "../ui/ui-actions-controller.js";
+import { syncVectorStateController } from "../vector/vector-sync-controller.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const indexPath = path.resolve(__dirname, "../index.js");
-const indexSource = await fs.readFile(indexPath, "utf8");
-
-function extractSnippet(startMarker, endMarker) {
-  const start = indexSource.indexOf(startMarker);
-  const end = indexSource.indexOf(endMarker);
-  if (start < 0 || end < 0 || end <= start) {
-    throw new Error(`无法提取 index.js 片段: ${startMarker} -> ${endMarker}`);
-  }
-  return indexSource.slice(start, end).replace(/^export\s+/gm, "");
-}
-
-const statusSnippet = extractSnippet(
-  "function setRuntimeStatus(",
-  "function notifyExtractionIssue(",
-);
-const vectorSnippet = extractSnippet(
-  "async function syncVectorState({",
-  "async function ensureVectorReadyIfNeeded(",
-);
-const manualExtractSnippet = extractSnippet(
-  "async function onManualExtract(options = {}) {",
-  "async function onReroll(",
-);
-const rebuildSnippet = extractSnippet(
-  "async function onRebuild() {",
-  "async function onManualCompress() {",
-);
-
+// Shared status facade that mirrors index.js setRuntimeStatus / setLastXStatus
+// semantics the way controllers consume them (status setters are injected
+// dependencies). No index.js slicing — controllers are imported directly.
 function createBaseStatusContext() {
-  return {
+  const context = {
     console,
     Date,
     createUiStatus(text = "待命", meta = "", level = "idle") {
@@ -54,6 +24,16 @@ function createBaseStatusContext() {
     lastRecallStatus: { text: "待命", meta: "", level: "idle" },
     lastStatusToastAt: {},
     STATUS_TOAST_THROTTLE_MS: 1500,
+    getContext() {
+      return {};
+    },
+    resolveOperationalChatId(context, graph, explicitChatId = "") {
+      return (
+        String(explicitChatId || "").trim() ||
+        String(graph?.historyState?.chatId || "").trim() ||
+        "chat-mobile"
+      );
+    },
     _panelModule: {
       updateFloatingBallStatus() {},
     },
@@ -67,13 +47,39 @@ function createBaseStatusContext() {
       error() {},
     },
   };
-}
 
-function testIndexDefinesLastProcessedAssistantFloorHelper() {
-  assert.match(
-    indexSource,
-    /function\s+getLastProcessedAssistantFloor\s*\(/,
-  );
+  context.setRuntimeStatus = function (text, meta, level = "info") {
+    this.runtimeStatus = this.createUiStatus(text, meta, level);
+  };
+  context.setLastExtractionStatus = function (
+    text,
+    meta,
+    level = "info",
+    { syncRuntime = true } = {},
+  ) {
+    this.lastExtractionStatus = this.createUiStatus(text, meta, level);
+    if (syncRuntime) this.setRuntimeStatus(text, meta, level);
+  };
+  context.setLastVectorStatus = function (
+    text,
+    meta,
+    level = "info",
+    { syncRuntime = false } = {},
+  ) {
+    this.lastVectorStatus = this.createUiStatus(text, meta, level);
+    if (syncRuntime) this.setRuntimeStatus(text, meta, level);
+  };
+  context.setLastRecallStatus = function (
+    text,
+    meta,
+    level = "info",
+    { syncRuntime = true } = {},
+  ) {
+    this.lastRecallStatus = this.createUiStatus(text, meta, level);
+    if (syncRuntime) this.setRuntimeStatus(text, meta, level);
+  };
+
+  return context;
 }
 
 async function testVectorSyncTerminalStateUpdatesRuntime() {
@@ -86,6 +92,9 @@ async function testVectorSyncTerminalStateUpdatesRuntime() {
       },
     },
     ensureCurrentGraphRuntimeState() {
+      return context.currentGraph;
+    },
+    getCurrentGraph() {
       return context.currentGraph;
     },
     getEmbeddingConfig() {
@@ -113,16 +122,9 @@ async function testVectorSyncTerminalStateUpdatesRuntime() {
       return false;
     },
     markVectorStateDirty() {},
-    result: null,
   };
-  vm.createContext(context);
-  vm.runInContext(
-    `${statusSnippet}\n${vectorSnippet}\nresult = { syncVectorState };`,
-    context,
-    { filename: indexPath },
-  );
 
-  const result = await context.result.syncVectorState({ force: true });
+  const result = await syncVectorStateController(context, { force: true });
   assert.equal(result.stats.indexed, 12);
   assert.equal(context.lastVectorStatus.text, "向量完成");
   assert.equal(context.runtimeStatus.text, "向量完成");
@@ -145,6 +147,15 @@ async function testManualExtractNoBatchesDoesNotStayRunning() {
     getGraphPersistenceState() {
       return { pendingPersist: false };
     },
+    getCurrentGraph() {
+      return context.currentGraph;
+    },
+    getIsExtracting() {
+      return context.isExtracting;
+    },
+    setIsExtracting(value) {
+      context.isExtracting = value;
+    },
     ensureGraphMutationReady() {
       return true;
     },
@@ -153,6 +164,9 @@ async function testManualExtractNoBatchesDoesNotStayRunning() {
     },
     normalizeGraphRuntimeState(graph) {
       return graph;
+    },
+    setCurrentGraph(graph) {
+      context.currentGraph = graph;
     },
     createEmptyGraph() {
       return {};
@@ -190,16 +204,9 @@ async function testManualExtractNoBatchesDoesNotStayRunning() {
     },
     onManualExtractController,
     finishStageAbortController() {},
-    result: null,
   };
-  vm.createContext(context);
-  vm.runInContext(
-    `${statusSnippet}\n${manualExtractSnippet}\nresult = { onManualExtract };`,
-    context,
-    { filename: indexPath },
-  );
 
-  await context.result.onManualExtract();
+  await onManualExtractController(context, { drainAll: false });
   assert.equal(context.isExtracting, false);
   assert.equal(context.lastExtractionStatus.text, "无待提取内容");
   assert.equal(context.runtimeStatus.text, "无待提取内容");
@@ -605,6 +612,12 @@ async function testManualRebuildSetsTerminalRuntimeStatus() {
       assert.equal(this?.__confirmHost, true);
       return true;
     },
+    getCurrentGraph() {
+      return context.currentGraph;
+    },
+    setCurrentGraph(graph) {
+      context.currentGraph = graph;
+    },
     ensureGraphMutationReady() {
       return true;
     },
@@ -672,16 +685,9 @@ async function testManualRebuildSetsTerminalRuntimeStatus() {
       return await task();
     },
     onRebuildController,
-    result: null,
   };
-  vm.createContext(context);
-  vm.runInContext(
-    `${statusSnippet}\n${rebuildSnippet}\nresult = { onRebuild };`,
-    context,
-    { filename: indexPath },
-  );
 
-  await context.result.onRebuild();
+  await onRebuildController(context);
   assert.equal(context.lastExtractionStatus.text, "图谱重建完成");
   assert.equal(context.runtimeStatus.text, "图谱重建完成");
   assert.equal(context.runtimeStatus.level, "success");
@@ -692,7 +698,6 @@ async function testManualRebuildSetsTerminalRuntimeStatus() {
   assert.equal(savedNeedRefresh, false);
 }
 
-testIndexDefinesLastProcessedAssistantFloorHelper();
 await testVectorSyncTerminalStateUpdatesRuntime();
 await testManualExtractNoBatchesDoesNotStayRunning();
 await testManualExtractIgnoresSupersededPendingPersistence();
