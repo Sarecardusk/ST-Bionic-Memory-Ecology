@@ -496,6 +496,112 @@ export function createFinalRecallInjection(deps = {}) {
     };
   }
 
+  function reapplyPersistedRecallBlock({
+    generationType = "normal",
+    generationContext = null,
+    promptData = null,
+    hookName = "",
+  } = {}) {
+    const settings = getSettings() || {};
+    if (!settings.enabled || !settings.recallEnabled) {
+      return { applied: false, reason: "disabled" };
+    }
+
+    const chat = getContext()?.chat;
+    if (!Array.isArray(chat)) {
+      return { applied: false, reason: "no-chat" };
+    }
+
+    const targetUserMessageIndex = deps.resolveGenerationTargetUserMessageIndex(
+      chat,
+      {
+        generationType,
+        generationContext,
+      },
+    );
+    if (!Number.isFinite(targetUserMessageIndex)) {
+      return { applied: false, reason: "no-parent-floor" };
+    }
+
+    const targetMessage = chat[targetUserMessageIndex];
+    if (!targetMessage?.is_user) {
+      return { applied: false, reason: "parent-not-user" };
+    }
+
+    const record = deps.readPersistedRecallFromUserMessage(
+      chat,
+      targetUserMessageIndex,
+    );
+    if (!record?.injectionText) {
+      return { applied: false, reason: "no-record" };
+    }
+
+    const currentFloorText = normalizeRecallInputText(targetMessage.mes || "");
+    const bound = normalizeRecallInputText(record.boundUserFloorText || "");
+    const recInput = normalizeRecallInputText(record.recallInput || "");
+    if (bound) {
+      if (bound !== currentFloorText) {
+        return { applied: false, reason: "bound-mismatch" };
+      }
+    } else if (recInput && recInput !== currentFloorText) {
+      return { applied: false, reason: "legacy-recall-input-mismatch" };
+    }
+
+    const injectionText = String(record.injectionText || "").trim();
+    let transport = {
+      applied: false,
+      source: "none",
+      mode: "none",
+    };
+    if (promptData) {
+      const rewrite = rewriteRecallPayloadWithInjection(promptData, injectionText);
+      if (rewrite.applied) {
+        deps.clearLiveRecallInjectionPromptForRewrite?.();
+        transport = rewrite;
+      } else {
+        transport =
+          deps.applyModuleInjectionPrompt(injectionText, getSettings()) || transport;
+      }
+    } else {
+      transport =
+        deps.applyModuleInjectionPrompt(injectionText, getSettings()) || transport;
+    }
+
+    setLastInjectionContent(injectionText);
+    deps.bumpPersistedRecallGenerationCount(chat, targetUserMessageIndex);
+    deps.triggerChatMetadataSave(getContext(), { immediate: false });
+    deps.recordInjectionSnapshot("recall", {
+      taskType: "recall",
+      source: "persisted-user-floor",
+      sourceLabel: "复用用户楼层召回",
+      reason: "deterministic-reapply",
+      hookName: String(hookName || "").trim(),
+      selectedNodeIds: record.selectedNodeIds || [],
+      injectionText,
+      applicationMode: promptData ? "rewrite" : "persisted-injection",
+      transport,
+      sourceKind: "persisted",
+      targetUserMessageIndex,
+      boundUserFloorText: bound,
+    });
+    setRuntimeStatus(deps.createUiStatus(
+      "召回已复用",
+      "本轮 reroll 复用了用户楼层已存召回",
+      "success",
+    ));
+    deps.refreshPanelLiveState();
+    deps.schedulePersistedRecallMessageUiRefresh();
+
+    return {
+      applied: true,
+      source: "persisted",
+      injectionText,
+      targetUserMessageIndex,
+      transport,
+      reason: "deterministic-reapply",
+    };
+  }
+
   function applyFinalRecallInjectionForGeneration({
     generationType = "normal",
     freshRecallResult = null,
@@ -871,6 +977,7 @@ export function createFinalRecallInjection(deps = {}) {
     ensurePersistedRecallRecordForGeneration,
     rewriteRecallPayloadWithInjection,
     rewriteRecallPayloadWithAuthoritativeUserInput,
+    reapplyPersistedRecallBlock,
     applyFinalRecallInjectionForGeneration,
     getLastInjectionContent,
   };

@@ -1771,6 +1771,8 @@ const finalRecallInjectionRuntime = createFinalRecallInjection({
   resolveFinalRecallInjectionSource,
   resolveGenerationRecallDeliveryMode: (...args) =>
     resolveGenerationRecallDeliveryMode(...args),
+  resolveGenerationTargetUserMessageIndex: (...args) =>
+    resolveGenerationTargetUserMessageIndex(...args),
   resolveRecallPersistenceTargetUserMessageIndex: (...args) =>
     resolveRecallPersistenceTargetUserMessageIndex(...args),
   schedulePersistedRecallMessageUiRefresh: (...args) =>
@@ -5512,6 +5514,9 @@ function applyFinalRecallInjectionForGeneration({
     promptData,
     hookName,
   });
+}
+function reapplyPersistedRecallBlock(args = {}) {
+  return finalRecallInjectionRuntime.reapplyPersistedRecallBlock(args);
 }
 function clearLiveRecallInjectionPromptForRewrite() {
   try {
@@ -16294,6 +16299,7 @@ async function onGenerationAfterCommands(type, params = {}, dryRun = false) {
       isTavernHelperPromptViewerRefreshActive,
       markCurrentGenerationTrivialSkip,
       markGenerationRecallTransactionHookState,
+      reapplyPersistedRecallBlock,
       resolveGenerationRecallDeliveryMode,
       runRecall,
       storeGenerationRecallTransactionResult,
@@ -16328,6 +16334,7 @@ async function onBeforeCombinePrompts(promptData = null) {
       isTavernHelperPromptViewerRefreshActive,
       markCurrentGenerationTrivialSkip,
       markGenerationRecallTransactionHookState,
+      reapplyPersistedRecallBlock,
       resolveGenerationRecallDeliveryMode,
       runRecall,
       storeGenerationRecallTransactionResult,

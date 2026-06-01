@@ -577,6 +577,15 @@ export async function onGenerationAfterCommandsController(
     return;
   }
 
+  const generationContext = runtime.getGenerationContext?.() || null;
+  const kind = generationContext?.kind || "";
+  if (kind === "no-new-user") {
+    return {
+      skipped: true,
+      reason: "no-new-user-deferred-to-before-combine",
+    };
+  }
+
   const frozenInputSnapshot =
     generationType === "normal"
       ? runtime.consumeHostGenerationInputSnapshot?.({ preserve: true }) ||
@@ -585,7 +594,6 @@ export async function onGenerationAfterCommandsController(
 
   const context = runtime.getContext();
   const chat = context?.chat;
-  const generationContext = runtime.getGenerationContext?.() || null;
 
   const recallOptions = runtime.buildGenerationAfterCommandsRecallInput(
     generationContext?.type || type,
@@ -780,6 +788,16 @@ export async function onBeforeCombinePromptsController(
   }
 
   if (effectiveGenerationKind === "no-new-user") {
+    const reapplied = runtime.reapplyPersistedRecallBlock?.({
+      generationType: effectiveGenerationType,
+      generationContext,
+      promptData,
+      hookName: "GENERATE_BEFORE_COMBINE_PROMPTS",
+    });
+    if (reapplied?.applied) {
+      return reapplied;
+    }
+
     const recallOptions =
       runtime.buildGenerationAfterCommandsRecallInput(
         effectiveGenerationType,

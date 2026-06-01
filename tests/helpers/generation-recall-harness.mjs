@@ -555,6 +555,7 @@ export async function createGenerationRecallHarness(options = {}) {
     resolveFinalRecallInjectionSource,
     resolveGenerationRecallDeliveryMode: (...args) =>
       generationRecallTransactionRuntime.resolveGenerationRecallDeliveryMode(...args),
+    resolveGenerationTargetUserMessageIndex,
     resolveRecallPersistenceTargetUserMessageIndex,
     schedulePersistedRecallMessageUiRefresh,
     setLastInjectionContent: (value = "") => {
@@ -659,6 +660,8 @@ export async function createGenerationRecallHarness(options = {}) {
     markGenerationRecallTransactionHookState: (...args) =>
       generationRecallTransactionRuntime.markGenerationRecallTransactionHookState(...args),
     normalizeRecallInputText,
+    reapplyPersistedRecallBlock: (...args) =>
+      finalRecallInjectionRuntime.reapplyPersistedRecallBlock(...args),
     refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
     resolveGenerationRecallDeliveryMode: (...args) =>
       generationRecallTransactionRuntime.resolveGenerationRecallDeliveryMode(...args),
@@ -820,6 +823,8 @@ export async function createGenerationRecallHarness(options = {}) {
       finalRecallInjectionRuntime.persistRecallInjectionRecord(...args),
     ensurePersistedRecallRecordForGeneration: (...args) =>
       finalRecallInjectionRuntime.ensurePersistedRecallRecordForGeneration(...args),
+    reapplyPersistedRecallBlock: (...args) =>
+      finalRecallInjectionRuntime.reapplyPersistedRecallBlock(...args),
     findRecentGenerationRecallTransactionForChat: (...args) =>
       generationRecallTransactionRuntime.findRecentGenerationRecallTransactionForChat(...args),
     getGenerationRecallTransactionResult: (...args) =>
