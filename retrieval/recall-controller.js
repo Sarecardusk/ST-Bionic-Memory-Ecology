@@ -1,6 +1,6 @@
 // ST-BME: 召回输入解析与注入控制器（纯函数）
 
-import { debugLog, debugWarn } from "../runtime/debug-logging.js";
+import { debugLog } from "../runtime/debug-logging.js";
 import { isSystemMessageForExtraction } from "../maintenance/chat-history.js";
 
 export function buildRecallRecentMessagesController(
@@ -162,12 +162,6 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
   }
 
   if (!Number.isFinite(targetUserMessageIndex)) {
-    debugWarn("[ST-BME][reroll-trace] no target user floor resolved", {
-      generationType,
-      recallSource,
-      currentRecallInputText: currentRecallInputText.slice(0, 60),
-      chatLength: Array.isArray(chat) ? chat.length : null,
-    });
     return null;
   }
 
@@ -176,12 +170,6 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
 
   const record = readPersistedRecallFromUserMessage(chat, targetUserMessageIndex);
   if (!record?.injectionText) {
-    debugWarn("[ST-BME][reroll-trace] target floor has no persisted recall record", {
-      generationType,
-      recallSource,
-      targetUserMessageIndex,
-      targetUserFloorText: String(targetMessage?.mes || "").slice(0, 60),
-    });
     return null;
   }
 
@@ -244,33 +232,8 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
     !canReuseUnboundTargetRecord &&
     !canTrustUserFloorRecord
   ) {
-    debugWarn("[ST-BME][reroll-trace] reuse REJECTED", {
-      generationType,
-      recallSource,
-      targetUserMessageIndex,
-      isActiveInputSource,
-      isNoNewUserGeneration,
-      hasRecord: Boolean(record?.injectionText),
-      currentUserFloorText: currentUserFloorText.slice(0, 60),
-      currentRecallInputText: currentRecallInputText.slice(0, 60),
-      recordRecallInput: recordRecallInput.slice(0, 60),
-      boundUserFloorText: boundUserFloorText.slice(0, 60),
-      matchesPersistedRecord,
-      canReuseUnboundTargetRecord,
-      canTrustUserFloorRecord,
-      recordRecallInputMismatch,
-    });
     return null;
   }
-
-  debugWarn("[ST-BME][reroll-trace] reuse ACCEPTED", {
-    generationType,
-    recallSource,
-    targetUserMessageIndex,
-    matchesPersistedRecord,
-    canReuseUnboundTargetRecord,
-    canTrustUserFloorRecord,
-  });
 
   return {
     record,
