@@ -83,11 +83,18 @@
 
 **reroll 不变量：**
 
-> reroll 助手楼层时，若上方用户楼层未变且存在可复用的持久召回记录，则跳过预召回历史恢复和新向量检索；但被 reroll 的助手楼层的**图谱回滚必须保留**（走既有 `onReroll` 路径）。
+> reroll 助手楼层时，若上方用户楼层未变且存在可复用的持久召回记录，则复用父 user 楼层 `message.extra.bme_recall` 中的注入块；但被 reroll 的助手楼层的**图谱回滚必须保留**（走既有 `onReroll` 路径）。
 
 换句话说：召回注入可以复用，但图谱状态该回滚还得回滚。两者不能混为一谈——这是"reroll 乱召回"修复的核心。
 
-设计纪律：**信任宿主生成类型，不用输入源猜 reroll**。`GENERATION_STARTED` / `GENERATION_AFTER_COMMANDS` 传入的 `type` 是权威信号：`swipe`、`regenerate`、`continue` 属于 no-new-user 生成，优先绑定上方可见 user 楼层的持久召回；`normal` 才代表新输入，需要 fresh recall。`MESSAGE_DELETED` 在 regenerate 代际中只作为预期删除处理，不会擦掉本轮召回事务。
+设计纪律：**计算与注入解耦，信任宿主生成类型，不用输入源猜 reroll**。`GENERATION_STARTED` / `GENERATION_AFTER_COMMANDS` 传入的 `type` 是权威信号：`swipe`、`regenerate`、`continue` 属于 no-new-user 生成，优先绑定上方可见 user 楼层的持久召回；`normal` 才代表新输入，需要 fresh recall。`MESSAGE_DELETED` 在 regenerate 代际中只作为预期删除处理，不会擦掉本轮召回事务。
+
+no-new-user 的稳定路径分两段：
+
+1. `GENERATION_AFTER_COMMANDS` 不做召回计算，直接跳过并把工作推迟到 before-combine。
+2. `GENERATE_BEFORE_COMBINE_PROMPTS` 先调用 `reapplyPersistedRecallBlock`，从父 user 楼层的 `message.extra.bme_recall` 确定性重放召回块；命中后立即返回，不进入 transaction / `runRecall`。若没有记录或记录已陈旧，再落回既有 transaction + compute 兼容路径。
+
+旧的召回事务机制仍保留为 fresh normal 和 fallback compute 的基础设施；它不再是 reroll 已存召回注入的唯一门闸。
 
 ## 副本一致性模型
 
