@@ -618,7 +618,11 @@ function ensureFabMountedAtRoot() {
 
 function getViewportMetrics() {
   const viewport = window.visualViewport;
+  const left = Math.max(0, Math.round(viewport?.offsetLeft || 0));
+  const top = Math.max(0, Math.round(viewport?.offsetTop || 0));
   return {
+    left,
+    top,
     width: Math.max(
       1,
       Math.round(viewport?.width || window.innerWidth || 0),
@@ -663,29 +667,95 @@ function getFabSize(fab = _fabEl) {
 }
 
 function getDefaultFabPosition(fab = _fabEl) {
-  const { width: viewportWidth, height: viewportHeight } = getViewportMetrics();
+  const safe = getFabSafeArea(fab);
   const { width, height } = getFabSize(fab);
-  const sideGap = _isMobile() ? 14 : 16;
-  const bottomGap = _isMobile() ? 96 : 80;
+  if (!_isMobile()) {
+    const viewport = getViewportMetrics();
+    const desktopPreferredBottomGap = 80;
+    return clampFabPosition({
+      x: viewport.left + viewport.width - width - 16,
+      y: viewport.top + viewport.height - height - desktopPreferredBottomGap,
+    }, fab);
+  }
 
   return {
-    x: Math.max(sideGap, viewportWidth - width - sideGap),
-    y: Math.max(sideGap, viewportHeight - height - bottomGap),
+    x: safe.maxX,
+    y: safe.maxY,
+  };
+}
+
+function getElementViewportRectById(id) {
+  const element = document.getElementById(id);
+  if (!element) return null;
+  const rect = element.getBoundingClientRect?.();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function getFabSafeInsets() {
+  if (!_isMobile()) {
+    return {
+      top: 10,
+      right: 10,
+      bottom: 10,
+      left: 10,
+    };
+  }
+
+  const topBar = getElementViewportRectById("top-bar") || getElementViewportRectById("top-settings-holder");
+  const sendShell = getElementViewportRectById("send_form") || getElementViewportRectById("form_sheld");
+  const viewport = getViewportMetrics();
+  const viewportBottom = viewport.top + viewport.height;
+  const topInset = Math.max(12, topBar ? Math.ceil(topBar.bottom + 8 - viewport.top) : 54);
+  const bottomInset = Math.max(
+    72,
+    sendShell ? Math.ceil(viewportBottom - sendShell.top + 12) : 96,
+  );
+
+  return {
+    top: topInset,
+    right: 12,
+    bottom: bottomInset,
+    left: 12,
+  };
+}
+
+function getFabSafeArea(fab = _fabEl) {
+  const viewport = getViewportMetrics();
+  const { width, height } = getFabSize(fab);
+  const insets = getFabSafeInsets();
+  const minX = viewport.left + insets.left;
+  const minY = viewport.top + insets.top;
+  const maxX = Math.max(minX, viewport.left + viewport.width - width - insets.right);
+  const maxY = Math.max(minY, viewport.top + viewport.height - height - insets.bottom);
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    viewport,
+    insets,
   };
 }
 
 function clampFabPosition(position = {}, fab = _fabEl) {
-  const { width: viewportWidth, height: viewportHeight } = getViewportMetrics();
-  const { width, height } = getFabSize(fab);
-  const margin = _isMobile() ? 10 : 8;
-  const maxX = Math.max(margin, viewportWidth - width - margin);
-  const maxY = Math.max(margin, viewportHeight - height - margin);
-  const x = Number.isFinite(position?.x) ? position.x : maxX;
-  const y = Number.isFinite(position?.y) ? position.y : maxY;
+  const safe = getFabSafeArea(fab);
+  const x = Number.isFinite(position?.x) ? position.x : safe.maxX;
+  const y = Number.isFinite(position?.y) ? position.y : safe.maxY;
 
   return {
-    x: Math.min(Math.max(margin, Math.round(x)), Math.round(maxX)),
-    y: Math.min(Math.max(margin, Math.round(y)), Math.round(maxY)),
+    x: Math.min(Math.max(Math.round(safe.minX), Math.round(x)), Math.round(safe.maxX)),
+    y: Math.min(Math.max(Math.round(safe.minY), Math.round(y)), Math.round(safe.maxY)),
   };
 }
 
