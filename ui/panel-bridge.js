@@ -2,6 +2,8 @@ import { debugLog } from "../runtime/debug-logging.js";
 
 const MENU_ENTRY_RETRY_MS = 400;
 const MENU_ENTRY_MAX_ATTEMPTS = 30;
+const OPTIONS_MENU_ENTRY_ID = "option_st_bme_panel";
+const EXTENSIONS_MENU_ENTRY_ID = "st_bme_extensions_menu_entry";
 
 function resolvePanelTheme(settings) {
   return settings?.panelTheme || "crimson";
@@ -26,25 +28,30 @@ export function openPanelController(runtime) {
   runtime.getPanelModule()?.openPanel?.();
 }
 
-function injectOptionsMenuEntry(runtime) {
-  const doc = runtime.document;
-  if (!doc || doc.getElementById("option_st_bme_panel")) {
-    return true;
-  }
-  const menuItem = doc.createElement("a");
-  menuItem.id = "option_st_bme_panel";
-  menuItem.innerHTML =
-    '<i class="fa-lg fa-solid fa-brain"></i><span>记忆图谱</span>';
-  menuItem.addEventListener("click", async () => {
+function bindOpenPanelClick(runtime, element) {
+  element.addEventListener("click", async () => {
     try {
       await ensurePanelBridgeReady(runtime);
       openPanelController(runtime);
       runtime.$?.("#options")?.hide?.();
+      runtime.$?.("#extensionsMenu")?.hide?.();
     } catch (error) {
       runtime.console.error("[ST-BME] 点击菜单打开面板失败:", error);
       globalThis.toastr?.error?.("记忆图谱面板加载失败，请查看控制台报错", "ST-BME");
     }
   });
+}
+
+function injectOptionsMenuEntry(runtime) {
+  const doc = runtime.document;
+  if (!doc || doc.getElementById(OPTIONS_MENU_ENTRY_ID)) {
+    return true;
+  }
+  const menuItem = doc.createElement("a");
+  menuItem.id = OPTIONS_MENU_ENTRY_ID;
+  menuItem.innerHTML =
+    '<i class="fa-lg fa-solid fa-brain"></i><span>记忆图谱</span>';
+  bindOpenPanelClick(runtime, menuItem);
 
   const anchor = doc.getElementById("option_toggle_logprobs");
   const optionsContent = doc.querySelector("#options .options-content");
@@ -58,6 +65,36 @@ function injectOptionsMenuEntry(runtime) {
     return true;
   }
   return false;
+}
+
+function injectExtensionsMenuEntry(runtime) {
+  const doc = runtime.document;
+  if (!doc) return false;
+
+  const existing = doc.getElementById(EXTENSIONS_MENU_ENTRY_ID);
+  const menu = doc.getElementById("extensionsMenu");
+  const button = doc.getElementById("extensionsMenuButton");
+  if (existing) {
+    if (button?.style) button.style.display = "flex";
+    runtime.$?.("#extensionsMenuButton")?.css?.("display", "flex");
+    return true;
+  }
+  if (!menu) return false;
+
+  const menuItem = doc.createElement("div");
+  menuItem.id = EXTENSIONS_MENU_ENTRY_ID;
+  menuItem.className = "list-group-item flex-container flexGap5";
+  menuItem.innerHTML =
+    '<div class="fa-solid fa-brain extensionsMenuExtensionButton"></div><span>记忆图谱</span>';
+  bindOpenPanelClick(runtime, menuItem);
+  menu.appendChild(menuItem);
+
+  // SillyTavern shows the magic-wand button only while #extensionsMenu has
+  // visible children. Its polling can stop before late third-party entries are
+  // injected, so make the button visible after adding BME's entry.
+  if (button?.style) button.style.display = "flex";
+  runtime.$?.("#extensionsMenuButton")?.css?.("display", "flex");
+  return true;
 }
 
 function injectFloatingBootstrap(runtime) {
@@ -101,7 +138,9 @@ function scheduleOptionsMenuInjection(runtime, attempt = 0) {
   }
 
   try {
-    if (injectOptionsMenuEntry(runtime)) {
+    const optionsReady = injectOptionsMenuEntry(runtime);
+    const extensionsReady = injectExtensionsMenuEntry(runtime);
+    if (optionsReady && extensionsReady) {
       return;
     }
   } catch (error) {
@@ -110,7 +149,7 @@ function scheduleOptionsMenuInjection(runtime, attempt = 0) {
 
   if (attempt >= MENU_ENTRY_MAX_ATTEMPTS) {
     runtime.console.warn(
-      "[ST-BME] 操控面板菜单入口注入失败：宿主 options DOM 长时间未就绪",
+      "[ST-BME] 操控面板菜单入口注入失败：宿主菜单 DOM 长时间未就绪",
     );
     return;
   }
