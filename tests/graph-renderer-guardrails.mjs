@@ -47,6 +47,20 @@ function flushNextRaf(ms = 16) {
   return true;
 }
 
+function flushRafsUntilIdle({ maxFrames = 80, ms = 16 } = {}) {
+  let frames = 0;
+  while (flushNextRaf(ms)) {
+    frames += 1;
+    assert.ok(frames <= maxFrames, `RAF loop exceeded ${maxFrames} frames`);
+  }
+  return frames;
+}
+
+function assertNoPendingRafOrTimers(reason) {
+  assert.equal(rafCallbacks.size, 0, `${reason}: pending RAF callbacks remain`);
+  assert.equal(timerCallbacks.size, 0, `${reason}: pending timers remain`);
+}
+
 function advanceMockTime(ms = 0) {
   mockNow += ms;
   let ran = false;
@@ -190,6 +204,76 @@ function assertRendererNodesInsideRegions(renderer) {
     const r = node.regionRect;
     assert.ok(node.x >= r.x - 0.001 && node.x <= r.x + r.w + 0.001, `${node.id} x inside region`);
     assert.ok(node.y >= r.y - 0.001 && node.y <= r.y + r.h + 0.001, `${node.id} y inside region`);
+  }
+}
+
+function createAnimatedLayoutRenderer({ reducedMotion = false, configOff = false } = {}) {
+  const previousMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => ({
+    matches: Boolean(reducedMotion),
+    addEventListener() {},
+    removeEventListener() {},
+  });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: {
+      graphUseNativeLayout: false,
+      graphNativeForceDisable: true,
+      graphAnimatedLayout: !configOff,
+      graphLayoutAnimation: !configOff,
+      graphLayoutAnimationEnabled: !configOff,
+    },
+    layoutConfig: {
+      neuralIterations: 24,
+      animatedLayout: !configOff,
+      layoutAnimation: !configOff,
+      layoutAnimationEnabled: !configOff,
+      layoutAnimationDurationMs: 64,
+      layoutAnimationMaxFrames: 8,
+      layoutAnimationIterationsPerFrame: 3,
+      layoutAnimationMinInitialIterations: 4,
+    },
+  });
+  return {
+    renderer,
+    restoreMatchMedia: () => {
+      globalThis.window.matchMedia = previousMatchMedia;
+    },
+  };
+}
+
+function readLayoutAnimationDiagnostics(renderer) {
+  const diagnostics = renderer.getLastLayoutDiagnostics?.() || null;
+  const animationDiagnostics = diagnostics?.layoutAnimation
+    ?? diagnostics?.layoutAnimationDiagnostics
+    ?? diagnostics?.animation
+    ?? null;
+  return { diagnostics, animationDiagnostics };
+}
+
+function assertLayoutAnimationNotRunning(renderer, reason) {
+  const { diagnostics, animationDiagnostics } = readLayoutAnimationDiagnostics(renderer);
+  if (!animationDiagnostics || typeof animationDiagnostics !== "object") return;
+  const mode = animationDiagnostics.mode ?? diagnostics?.layoutAnimationMode;
+  const status = animationDiagnostics.status ?? diagnostics?.layoutAnimationStatus;
+  if (mode != null) assert.equal(typeof mode, "string", `${reason}: layout animation mode is string`);
+  if (status != null) assert.equal(typeof status, "string", `${reason}: layout animation status is string`);
+  assert.notEqual(status, "running", `${reason}: layout animation is not running`);
+  assert.notEqual(status, "scheduled", `${reason}: layout animation is not scheduled`);
+}
+
+function assertLayoutAnimationDiagnosticsShape(renderer) {
+  const { diagnostics, animationDiagnostics } = readLayoutAnimationDiagnostics(renderer);
+  assert.ok(diagnostics, "layout diagnostics exist");
+  if (!animationDiagnostics || typeof animationDiagnostics !== "object") return;
+  const mode = animationDiagnostics.mode ?? diagnostics.layoutAnimationMode;
+  const status = animationDiagnostics.status ?? diagnostics.layoutAnimationStatus;
+  if (mode != null) assert.equal(typeof mode, "string");
+  if (status != null) assert.equal(typeof status, "string");
+  if (animationDiagnostics.reducedMotion != null) {
+    assert.equal(typeof animationDiagnostics.reducedMotion, "boolean");
+  }
+  if (animationDiagnostics.frameCount != null) {
+    assert.equal(Number.isFinite(Number(animationDiagnostics.frameCount)), true);
   }
 }
 
@@ -435,6 +519,84 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assert.equal(diagnostics.layoutSeedModeCounts.fallbackFragment, 0);
   assert.equal(diagnostics.layoutSeedModeCounts.reused, 3);
   renderer.destroy();
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer({ reducedMotion: true });
+  try {
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    assertLayoutAnimationNotRunning(renderer, "reduced motion disables animated layout");
+    assertNoPendingRafOrTimers("reduced motion animated layout disabled");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer({ configOff: true });
+  try {
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    assertLayoutAnimationNotRunning(renderer, "config off disables animated layout");
+    assertNoPendingRafOrTimers("config off animated layout disabled");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph(), { userPovAliases: ["Host"] });
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    renderer.setEnabled(false);
+    assertLayoutAnimationNotRunning(renderer, "disable cancels animated layout");
+    assertNoPendingRafOrTimers("disable cancels animated layout callbacks");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph(), { userPovAliases: ["Host"] });
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    renderer.destroy();
+    assertLayoutAnimationNotRunning(renderer, "destroy cancels animated layout");
+    assertNoPendingRafOrTimers("destroy cancels animated layout callbacks");
+  } finally {
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph(), { userPovAliases: ["Host"] });
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    const frameCount = flushRafsUntilIdle({ maxFrames: 80, ms: 16 });
+    assert.ok(frameCount > 0, "animated layout actually used RAF frames");
+    assert.ok(frameCount <= 80, "animated layout RAFs are bounded");
+    assertLayoutAnimationNotRunning(renderer, "bounded animated layout settles");
+    assertNoPendingRafOrTimers("bounded animated layout settles without RAF/timer leaks");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    assertLayoutAnimationDiagnosticsShape(renderer);
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
 }
 
 console.log("graph-renderer guardrail tests passed");

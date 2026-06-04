@@ -1,5 +1,5 @@
 // ST-BME: Canvas 图谱渲染器 — 分区「神经视图」布局
-// 零依赖：客观层 / 角色 POV / 用户 POV 分区内 Vogel 初值 + 一次性力导向稳定，无帧循环抖动
+// 零依赖：客观层 / 角色 POV / 用户 POV 分区内 Vogel 初值 + 有预算的短力导向动画
 
 import { getNodeColors, LIGHT_PANEL_THEMES, THEMES } from './themes.js';
 import {
@@ -38,7 +38,7 @@ const DEFAULT_LAYOUT_CONFIG = {
     gridColor: 'rgba(255,255,255,0.028)',
     /** 主画布左侧客观区占比（余下为右侧 POV 列） */
     objectiveWidthRatio: 0.62,
-    /** 分区内类神经布局：力导向迭代次数（无持续动画，仅一次性稳定） */
+    /** 分区内类神经布局：力导向迭代次数 */
     neuralIterations: 120,
     neuralRepulsion: 2800,
     neuralSpringK: 0.048,
@@ -46,6 +46,20 @@ const DEFAULT_LAYOUT_CONFIG = {
     neuralCenterGravity: 0.014,
     /** 节点最小间距（除半径外） */
     neuralMinGap: 12,
+    /** 小/中图加载后短暂继续布局，模拟 GitNexus 式自然展开，但受预算硬限制 */
+    animatedLayout: true,
+    layoutAnimation: true,
+    layoutAnimationEnabled: true,
+    layoutAnimationMaxNodes: 520,
+    layoutAnimationMaxEdges: 3600,
+    layoutAnimationDurationMs: 1400,
+    layoutAnimationMaxFrames: 120,
+    layoutAnimationIterationsPerFrame: 2,
+    layoutAnimationInitialIterationRatio: 0.38,
+    layoutAnimationMinInitialIterations: 8,
+    layoutAnimationRestartWindowMs: 5000,
+    layoutAnimationRestartMax: 2,
+    layoutAnimationCooldownMs: 9000,
 };
 
 const ADAPTIVE_NEURAL_LAYOUT_POLICY = Object.freeze({
@@ -332,6 +346,16 @@ export class GraphRenderer {
         );
         this._nativeLayoutBridge = null;
         this._layoutSolveRevision = 0;
+        this._layoutAnimId = null;
+        this._layoutAnimationState = null;
+        this._layoutAnimationCooldownUntil = 0;
+        this._layoutAnimationStarts = [];
+        this._lastLayoutAnimationDiagnostics = {
+            enabled: false,
+            status: 'idle',
+            reason: 'not-started',
+            frameCount: 0,
+        };
         this._lastLayoutDiagnostics = null;
         this._lastLayoutReuseStats = { reused: 0, total: 0, ratio: 0 };
         this._lastLayoutSeedModeCounts = {
@@ -395,6 +419,7 @@ export class GraphRenderer {
         const prevSelectedId = this.selectedNode?.id || null;
         const solveRevision = this._nextLayoutSolveRevision();
         const previousLayoutSeedByNodeId = this._captureLayoutSeedByNodeId();
+        this._cancelLayoutAnimation('graph-load-replaced');
         this._nativeLayoutBridge?.cancelPending?.('graph-load-replaced');
         this._lastGraph = graph;
         this._lastLayoutHints = layoutHints && typeof layoutHints === 'object'
@@ -534,6 +559,10 @@ export class GraphRenderer {
             this.nodes.length,
             this.edges.length,
         );
+        const animationPlan = this._resolveLayoutAnimationPlan(neuralPlan, {
+            shouldTryNativeLayout,
+            solveRevision,
+        });
 
         let solvePath = neuralPlan.skip ? 'skipped' : 'js-main';
         let solveMs = 0;
@@ -555,8 +584,13 @@ export class GraphRenderer {
                 );
             } else {
                 const solveStartedAt = performance.now();
-                this._simulateNeuralWithinRegions(neuralPlan.iterations);
+                this._simulateNeuralWithinRegions(
+                    animationPlan.shouldAnimate
+                        ? animationPlan.initialIterations
+                        : neuralPlan.iterations,
+                );
                 solveMs = Math.max(0, performance.now() - solveStartedAt);
+                if (animationPlan.shouldAnimate) solvePath = 'js-main-animated';
             }
         }
 
@@ -580,8 +614,20 @@ export class GraphRenderer {
                 layoutReuseCount: Number(layoutReuse?.reused || 0),
                 layoutReuseTotal: Number(layoutReuse?.total || this.nodes.length || 0),
                 layoutReuseRatio: Number(layoutReuse?.ratio || 0),
+                layoutAnimation: animationPlan.diagnostics,
                 at: Date.now(),
             });
+            if (animationPlan.shouldAnimate) {
+                this._startAnimatedLayout({
+                    ...animationPlan,
+                    loadStartedAt,
+                    prepareFinishedAt,
+                    layoutFinishedAt,
+                    solveStartedAt: performance.now(),
+                    layoutReuse,
+                    baseLayoutDiagnostics,
+                });
+            }
             return;
         }
 
@@ -732,6 +778,7 @@ export class GraphRenderer {
             this._setLastLayoutDiagnostics(this._lastLayoutDiagnostics);
         }
         this._cancelAnim();
+        this._cancelLayoutAnimation('renderer-disabled');
         this.dragNode = null;
         this.isDragging = false;
         this.isPanning = false;
@@ -1227,6 +1274,128 @@ export class GraphRenderer {
         return this._layoutSolveRevision;
     }
 
+    _isLayoutAnimationConfigEnabled() {
+        return !(
+            this.config?.animatedLayout === false
+            || this.config?.layoutAnimation === false
+            || this.config?.layoutAnimationEnabled === false
+            || this.runtimeConfig?.graphAnimatedLayout === false
+            || this.runtimeConfig?.graphLayoutAnimation === false
+            || this.runtimeConfig?.graphLayoutAnimationEnabled === false
+        );
+    }
+
+    _consumeLayoutAnimationBudget(now = this._nowMs()) {
+        const windowMs = Math.max(0, Number(this.config.layoutAnimationRestartWindowMs) || 5000);
+        const maxStarts = Math.max(0, Math.trunc(Number(this.config.layoutAnimationRestartMax) || 2));
+        const cooldownMs = Math.max(0, Number(this.config.layoutAnimationCooldownMs) || 9000);
+        if (now < Number(this._layoutAnimationCooldownUntil || 0)) {
+            return {
+                allowed: false,
+                reason: 'cooldown',
+                cooldownUntil: this._layoutAnimationCooldownUntil,
+            };
+        }
+        this._layoutAnimationStarts = (this._layoutAnimationStarts || [])
+            .filter((startedAt) => now - startedAt < windowMs);
+        if (this._layoutAnimationStarts.length >= maxStarts) {
+            this._layoutAnimationCooldownUntil = now + cooldownMs;
+            return {
+                allowed: false,
+                reason: 'budget-exhausted',
+                cooldownUntil: this._layoutAnimationCooldownUntil,
+            };
+        }
+        this._layoutAnimationStarts.push(now);
+        return {
+            allowed: true,
+            reason: 'allowed',
+            cooldownUntil: this._layoutAnimationCooldownUntil,
+        };
+    }
+
+    _resolveLayoutAnimationPlan(neuralPlan = {}, context = {}) {
+        const iterations = Math.max(0, Math.trunc(Number(neuralPlan?.iterations) || 0));
+        const baseDiagnostics = {
+            enabled: false,
+            status: 'disabled',
+            reason: 'not-evaluated',
+            reducedMotion: this._isReducedMotion(),
+            frameCount: 0,
+            remainingIterations: 0,
+            cooldownUntil: Number(this._layoutAnimationCooldownUntil || 0),
+        };
+
+        const disabled = (reason, extra = {}) => ({
+            shouldAnimate: false,
+            initialIterations: iterations,
+            remainingIterations: 0,
+            diagnostics: {
+                ...baseDiagnostics,
+                ...extra,
+                reason,
+                status: 'disabled',
+            },
+        });
+
+        if (neuralPlan?.skip || iterations <= 0) return disabled('simulation-skipped');
+        if (!this.enabled) return disabled('renderer-disabled');
+        if (!this._isLayoutAnimationConfigEnabled()) return disabled('config-disabled');
+        if (baseDiagnostics.reducedMotion) return disabled('reduced-motion');
+        if (context?.shouldTryNativeLayout) return disabled('native-worker');
+
+        const nodeCount = this.nodes.length;
+        const edgeCount = this.edges.length;
+        const maxNodes = Math.max(0, Number(this.config.layoutAnimationMaxNodes) || 520);
+        const maxEdges = Math.max(0, Number(this.config.layoutAnimationMaxEdges) || 3600);
+        if (nodeCount > maxNodes || edgeCount > maxEdges) {
+            return disabled('graph-too-large', { nodeCount, edgeCount, maxNodes, maxEdges });
+        }
+
+        const ratio = Math.max(0.05, Math.min(0.95, Number(this.config.layoutAnimationInitialIterationRatio) || 0.38));
+        const minInitial = Math.max(1, Math.trunc(Number(this.config.layoutAnimationMinInitialIterations) || 8));
+        const initialIterations = Math.max(
+            1,
+            Math.min(iterations, Math.max(minInitial, Math.round(iterations * ratio))),
+        );
+        const remainingIterations = Math.max(0, iterations - initialIterations);
+        if (remainingIterations <= 0) {
+            return disabled('no-remaining-iterations', { initialIterations });
+        }
+
+        const budget = this._consumeLayoutAnimationBudget(this._nowMs());
+        if (!budget.allowed) {
+            return disabled(budget.reason || 'layout-budget-denied', {
+                cooldownUntil: budget.cooldownUntil,
+            });
+        }
+
+        const maxMs = Math.max(160, Math.min(6000, Number(this.config.layoutAnimationDurationMs) || 1400));
+        const maxFrames = Math.max(1, Math.min(360, Math.trunc(Number(this.config.layoutAnimationMaxFrames) || 120)));
+        const iterationsPerFrame = Math.max(1, Math.min(8, Math.trunc(Number(this.config.layoutAnimationIterationsPerFrame) || 2)));
+        return {
+            shouldAnimate: true,
+            solveRevision: context?.solveRevision,
+            initialIterations,
+            remainingIterations,
+            maxMs,
+            maxFrames,
+            iterationsPerFrame,
+            diagnostics: {
+                ...baseDiagnostics,
+                enabled: true,
+                status: 'scheduled',
+                reason: 'scheduled',
+                initialIterations,
+                remainingIterations,
+                maxMs,
+                maxFrames,
+                iterationsPerFrame,
+                cooldownUntil: budget.cooldownUntil,
+            },
+        };
+    }
+
     _ensureNativeLayoutBridge() {
         if (this._nativeLayoutBridge) {
             this._nativeLayoutBridge.updateRuntimeOptions(this.runtimeConfig);
@@ -1420,11 +1589,160 @@ export class GraphRenderer {
         };
     }
 
+    _startAnimatedLayout(plan = {}) {
+        if (!plan?.shouldAnimate || !this.enabled) return false;
+        this._cancelLayoutAnimation('replaced');
+
+        const startedAt = this._nowMs();
+        const state = {
+            solveRevision: Number(plan.solveRevision || this._layoutSolveRevision),
+            startedAt,
+            remainingIterations: Math.max(0, Math.trunc(Number(plan.remainingIterations) || 0)),
+            maxMs: Math.max(1, Number(plan.maxMs) || 1400),
+            maxFrames: Math.max(1, Math.trunc(Number(plan.maxFrames) || 120)),
+            iterationsPerFrame: Math.max(1, Math.trunc(Number(plan.iterationsPerFrame) || 2)),
+            frameCount: 0,
+            solveMs: 0,
+            loadStartedAt: Number(plan.loadStartedAt) || startedAt,
+            prepareFinishedAt: Number(plan.prepareFinishedAt) || startedAt,
+            layoutFinishedAt: Number(plan.layoutFinishedAt) || startedAt,
+            layoutReuse: plan.layoutReuse && typeof plan.layoutReuse === 'object'
+                ? plan.layoutReuse
+                : this._lastLayoutReuseStats,
+            baseLayoutDiagnostics: plan.baseLayoutDiagnostics && typeof plan.baseLayoutDiagnostics === 'object'
+                ? { ...plan.baseLayoutDiagnostics }
+                : {},
+        };
+        if (state.remainingIterations <= 0) return false;
+
+        this._layoutAnimationState = state;
+        this._updateLayoutAnimationDiagnostics({ status: 'scheduled', reason: 'scheduled' });
+        this._scheduleLayoutAnimationFrame();
+        return true;
+    }
+
+    _scheduleLayoutAnimationFrame() {
+        if (!this.enabled || this._layoutAnimId || !this._layoutAnimationState) return;
+        this._layoutAnimId = requestAnimationFrame((timestamp) => {
+            this._layoutAnimId = null;
+            this._tickLayoutAnimation(timestamp);
+        });
+    }
+
+    _tickLayoutAnimation(timestamp = this._nowMs()) {
+        const state = this._layoutAnimationState;
+        if (!state) return;
+        if (!this.enabled || state.solveRevision !== this._layoutSolveRevision) {
+            this._cancelLayoutAnimation('stale-or-disabled');
+            return;
+        }
+
+        const elapsedMs = Math.max(0, Number(timestamp || this._nowMs()) - state.startedAt);
+        if (elapsedMs >= state.maxMs || state.frameCount >= state.maxFrames) {
+            this._finishLayoutAnimation('budget-complete');
+            return;
+        }
+
+        const iterations = Math.min(state.iterationsPerFrame, state.remainingIterations);
+        const frameStartedAt = performance.now();
+        this._simulateNeuralWithinRegions(iterations, { minIterations: 1 });
+        state.solveMs += Math.max(0, performance.now() - frameStartedAt);
+        state.remainingIterations = Math.max(0, state.remainingIterations - iterations);
+        state.frameCount += 1;
+        this._updateLayoutAnimationDiagnostics({ status: 'running', reason: 'running' });
+        this._render();
+
+        if (state.remainingIterations <= 0) {
+            this._finishLayoutAnimation('settled');
+            return;
+        }
+        this._scheduleLayoutAnimationFrame();
+    }
+
+    _finishLayoutAnimation(reason = 'settled') {
+        const state = this._layoutAnimationState;
+        if (!state) return;
+        this._layoutAnimationState = null;
+        this._updateLayoutAnimationDiagnostics({
+            status: 'idle',
+            reason,
+            frameCount: state.frameCount,
+            remainingIterations: state.remainingIterations,
+            solveMs: state.solveMs,
+        });
+        this._setLastLayoutDiagnostics({
+            mode: 'js-main-animated',
+            ...state.baseLayoutDiagnostics,
+            prepareMs: Math.max(0, state.prepareFinishedAt - state.loadStartedAt),
+            layoutSeedMs: Math.max(0, state.layoutFinishedAt - state.prepareFinishedAt),
+            solveMs: Math.max(0, Number(this._lastLayoutDiagnostics?.solveMs || 0) + state.solveMs),
+            totalMs: Math.max(0, performance.now() - state.loadStartedAt),
+            layoutReuseCount: Number(state.layoutReuse?.reused || 0),
+            layoutReuseTotal: Number(state.layoutReuse?.total || this.nodes.length || 0),
+            layoutReuseRatio: Number(state.layoutReuse?.ratio || 0),
+            layoutAnimation: this._lastLayoutAnimationDiagnostics,
+            at: Date.now(),
+        });
+        if (this.enabled) this._render();
+    }
+
+    _updateLayoutAnimationDiagnostics(patch = {}) {
+        const state = this._layoutAnimationState;
+        this._lastLayoutAnimationDiagnostics = {
+            ...this._lastLayoutAnimationDiagnostics,
+            enabled: Boolean(state || this._lastLayoutAnimationDiagnostics?.enabled),
+            status: state ? 'running' : 'idle',
+            reason: '',
+            reducedMotion: this._isReducedMotion(),
+            frameCount: Number(state?.frameCount || 0),
+            remainingIterations: Number(state?.remainingIterations || 0),
+            cooldownUntil: Number(this._layoutAnimationCooldownUntil || 0),
+            ...patch,
+        };
+        if (this._lastLayoutDiagnostics) {
+            this._lastLayoutDiagnostics = {
+                ...this._lastLayoutDiagnostics,
+                layoutAnimation: { ...this._lastLayoutAnimationDiagnostics },
+            };
+            recordGraphLayoutDebugSnapshot({
+                ...this._lastLayoutDiagnostics,
+                enabled: this.enabled !== false,
+            });
+        }
+    }
+
+    _cancelLayoutAnimation(reason = 'cancelled') {
+        if (this._layoutAnimId) {
+            cancelAnimationFrame(this._layoutAnimId);
+            this._layoutAnimId = null;
+        }
+        if (this._layoutAnimationState) {
+            const state = this._layoutAnimationState;
+            this._layoutAnimationState = null;
+            this._updateLayoutAnimationDiagnostics({
+                enabled: true,
+                status: 'cancelled',
+                reason,
+                frameCount: state.frameCount,
+                remainingIterations: state.remainingIterations,
+            });
+        }
+    }
+
     /**
-     * 分区内一次性力导向：斥力 + 同区边弹簧 + 弱向心，稳定后停止（无帧循环）
+     * 分区内力导向：斥力 + 同区边弹簧 + 弱向心。可一次性跑完，也可被短 RAF 动画分帧调用。
      */
-    _simulateNeuralWithinRegions(iterations) {
-        const iters = Math.max(8, Math.min(220, iterations || 80));
+    _simulateNeuralWithinRegions(iterations, options = {}) {
+        const minIterations = Number.isFinite(Number(options.minIterations))
+            ? Math.max(1, Math.trunc(Number(options.minIterations)))
+            : 8;
+        const iters = Math.max(minIterations, Math.min(220, Math.trunc(iterations || 80)));
+        for (let it = 0; it < iters; it++) {
+            this._simulateNeuralIteration();
+        }
+    }
+
+    _simulateNeuralIteration() {
         const repulsion = this.config.neuralRepulsion ?? 2800;
         const springK = this.config.neuralSpringK ?? 0.048;
         const damping = this.config.neuralDamping ?? 0.88;
@@ -1433,79 +1751,77 @@ export class GraphRenderer {
         const springIdeal = this._idealSpringLengthsByRegion();
         const nodes = this.nodes;
 
-        for (let it = 0; it < iters; it++) {
-            for (const n of nodes) {
-                n._fx = 0;
-                n._fy = 0;
-            }
+        for (const n of nodes) {
+            n._fx = 0;
+            n._fy = 0;
+        }
 
-            for (let i = 0; i < nodes.length; i++) {
-                for (let j = i + 1; j < nodes.length; j++) {
-                    const a = nodes[i];
-                    const b = nodes[j];
-                    if (a.regionKey !== b.regionKey) continue;
-                    let dx = b.x - a.x;
-                    let dy = b.y - a.y;
-                    let distSq = dx * dx + dy * dy;
-                    if (distSq < 0.25) distSq = 0.25;
-                    const dist = Math.sqrt(distSq);
-                    const minSep =
-                        this._nodeRadius(a) + this._nodeRadius(b) + extraGap;
-                    let f = repulsion / distSq;
-                    if (dist < minSep) {
-                        f += (minSep - dist) * 0.22;
-                    }
-                    const fx = (dx / dist) * f;
-                    const fy = (dy / dist) * f;
-                    a._fx -= fx;
-                    a._fy -= fy;
-                    b._fx += fx;
-                    b._fy += fy;
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const a = nodes[i];
+                const b = nodes[j];
+                if (a.regionKey !== b.regionKey) continue;
+                let dx = b.x - a.x;
+                let dy = b.y - a.y;
+                let distSq = dx * dx + dy * dy;
+                if (distSq < 0.25) distSq = 0.25;
+                const dist = Math.sqrt(distSq);
+                const minSep =
+                    this._nodeRadius(a) + this._nodeRadius(b) + extraGap;
+                let f = repulsion / distSq;
+                if (dist < minSep) {
+                    f += (minSep - dist) * 0.22;
                 }
-            }
-
-            for (const edge of this.edges) {
-                const { from, to, strength } = edge;
-                if (from.regionKey !== to.regionKey) continue;
-                const ideal =
-                    springIdeal.get(from.regionKey) ?? 68;
-                let dx = to.x - from.x;
-                let dy = to.y - from.y;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
-                const displacement = dist - ideal * (0.82 + 0.18 * strength);
-                const f = springK * displacement * (0.45 + 0.55 * strength);
                 const fx = (dx / dist) * f;
                 const fy = (dy / dist) * f;
-                from._fx += fx;
-                from._fy += fy;
-                to._fx -= fx;
-                to._fy -= fy;
+                a._fx -= fx;
+                a._fy -= fy;
+                b._fx += fx;
+                b._fy += fy;
             }
+        }
 
-            for (const node of nodes) {
-                const rect = node.regionRect;
-                if (!rect) continue;
-                const ccx = rect.x + rect.w / 2;
-                const ccy = rect.y + rect.h / 2;
-                node._fx += (ccx - node.x) * cg;
-                node._fy += (ccy - node.y) * cg;
-            }
+        for (const edge of this.edges) {
+            const { from, to, strength } = edge;
+            if (from.regionKey !== to.regionKey) continue;
+            const ideal =
+                springIdeal.get(from.regionKey) ?? 68;
+            let dx = to.x - from.x;
+            let dy = to.y - from.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+            const displacement = dist - ideal * (0.82 + 0.18 * strength);
+            const f = springK * displacement * (0.45 + 0.55 * strength);
+            const fx = (dx / dist) * f;
+            const fy = (dy / dist) * f;
+            from._fx += fx;
+            from._fy += fy;
+            to._fx -= fx;
+            to._fy -= fy;
+        }
 
-            for (const node of nodes) {
-                node.vx = (node.vx + node._fx) * damping;
-                node.vy = (node.vy + node._fy) * damping;
-                const sp = Math.hypot(node.vx, node.vy);
-                const cap = 3.8;
-                if (sp > cap) {
-                    node.vx = (node.vx / sp) * cap;
-                    node.vy = (node.vy / sp) * cap;
-                }
-                node.x += node.vx;
-                node.y += node.vy;
-                delete node._fx;
-                delete node._fy;
-                this._clampNodeToRegion(node);
+        for (const node of nodes) {
+            const rect = node.regionRect;
+            if (!rect) continue;
+            const ccx = rect.x + rect.w / 2;
+            const ccy = rect.y + rect.h / 2;
+            node._fx += (ccx - node.x) * cg;
+            node._fy += (ccy - node.y) * cg;
+        }
+
+        for (const node of nodes) {
+            node.vx = (node.vx + node._fx) * damping;
+            node.vy = (node.vy + node._fy) * damping;
+            const sp = Math.hypot(node.vx, node.vy);
+            const cap = 3.8;
+            if (sp > cap) {
+                node.vx = (node.vx / sp) * cap;
+                node.vy = (node.vy / sp) * cap;
             }
+            node.x += node.vx;
+            node.y += node.vy;
+            delete node._fx;
+            delete node._fy;
+            this._clampNodeToRegion(node);
         }
     }
 
@@ -2043,6 +2359,8 @@ export class GraphRenderer {
 
     stopAnimation() {
         this._cancelAnim();
+        this._cancelLayoutAnimation('stop-animation');
+        this._cancelHighlightAnimationFrame();
     }
 
     _bindEvents() {
@@ -2309,6 +2627,7 @@ export class GraphRenderer {
     destroy() {
         this._nextLayoutSolveRevision();
         this._cancelAnim();
+        this._cancelLayoutAnimation('destroy');
         this._clearTransientHighlights({ cancelAnimation: true });
         this._nativeLayoutBridge?.dispose?.();
         this._nativeLayoutBridge = null;
