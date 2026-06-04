@@ -605,6 +605,37 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
 
 {
   const graph = createStarSeedGraph({ includeFragment: true });
+  const selections = [];
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: {
+      neuralIterations: 8,
+      cameraFocusDurationMs: 32,
+    },
+    onNodeSelect: (node) => selections.push(node?.id || null),
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.highlightNode("star-core");
+  flushRafsUntilIdle({ maxFrames: 10, ms: 16 });
+  assert.equal(renderer.selectedNode?.id, "star-core");
+  assert.ok(renderer.scale > 1, "selected node focus zooms in before overview reset");
+  renderer._onMouseDown({ clientX: 639, clientY: 359 });
+  renderer._onMouseUp();
+  assert.equal(renderer.selectedNode, null, "blank click clears selected node focus");
+  assert.equal(selections.at(-1), null, "blank click notifies panel to close node detail");
+  flushRafsUntilIdle({ maxFrames: 10, ms: 16 });
+  assert.equal(Math.round(renderer.scale * 100) / 100, 1, "blank click returns camera scale to overview");
+  assert.equal(Math.round(renderer.offsetX), 0, "blank click returns camera x offset to overview");
+  assert.equal(Math.round(renderer.offsetY), 0, "blank click returns camera y offset to overview");
+  advanceMockTime(200);
+  flushRafsUntilIdle({ maxFrames: 5, ms: 16 });
+  assertNoPendingRafOrTimers("blank click overview animation settles");
+  renderer.destroy();
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
   const renderer = new GraphRenderer(createCanvas(), {
     runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
     layoutConfig: { neuralIterations: 8 },

@@ -405,6 +405,8 @@ export class GraphRenderer {
         this.isDragging = false;
         this.isPanning = false;
         this.lastMouse = { x: 0, y: 0 };
+        this._dragStartMouse = null;
+        this._pointerDownNode = null;
         /** @type {{ startX: number, startY: number, lastX: number, lastY: number, nodeCandidate: object|null, moved: boolean } | null} */
         this._touchSession = null;
         this._suppressMouseUntil = 0;
@@ -815,6 +817,34 @@ export class GraphRenderer {
             targetOffsetY,
             durationMs: Math.max(120, Math.min(900, Number(this.config.cameraFocusDurationMs) || 360)),
             reason: 'node-focus',
+        });
+    }
+
+    _returnToOverview({ animate = true } = {}) {
+        if (!this.enabled) return;
+        this.selectedNode = null;
+        if (this.onNodeSelect) this.onNodeSelect(null);
+        const targetScale = 1;
+        const targetOffsetX = 0;
+        const targetOffsetY = 0;
+        if (
+            animate === false
+            || this.config.cameraFocusAnimation === false
+            || this._isReducedMotion()
+        ) {
+            this._cancelCameraAnimation('overview-immediate');
+            this.scale = targetScale;
+            this.offsetX = targetOffsetX;
+            this.offsetY = targetOffsetY;
+            this._render();
+            return;
+        }
+        this._startCameraAnimation({
+            targetScale,
+            targetOffsetX,
+            targetOffsetY,
+            durationMs: Math.max(120, Math.min(900, Number(this.config.cameraFocusDurationMs) || 360)),
+            reason: 'overview',
         });
     }
 
@@ -2661,6 +2691,8 @@ export class GraphRenderer {
                 if (this.onNodeSelect) this.onNodeSelect(sess.nodeCandidate);
                 if (this.onNodeClick) this.onNodeClick(sess.nodeCandidate);
                 this._render();
+            } else if (!sess.moved && !sess.nodeCandidate && this.selectedNode) {
+                this._returnToOverview();
             }
         });
         c.addEventListener('touchcancel', () => {
@@ -2719,6 +2751,7 @@ export class GraphRenderer {
         const node = this._findNodeAt(x, y);
         this.lastMouse = { x: e.clientX, y: e.clientY };
         this._dragStartMouse = { x: e.clientX, y: e.clientY };
+        this._pointerDownNode = node || null;
 
         if (node) {
             this._markGraphMoveInteraction();
@@ -2774,11 +2807,21 @@ export class GraphRenderer {
                     if (this.onNodeClick) this.onNodeClick(this.dragNode);
                 }
             }
+        } else if (this.isPanning && !this._pointerDownNode) {
+            const start = this._dragStartMouse || { x: 0, y: 0 };
+            const last = this.lastMouse || start;
+            const dx = last.x - start.x;
+            const dy = last.y - start.y;
+            const movedDistance = Math.sqrt(dx * dx + dy * dy);
+            if (movedDistance < 6 && this.selectedNode) {
+                this._returnToOverview();
+            }
         }
         this.dragNode = null;
         this.isDragging = false;
         this.isPanning = false;
         this._dragStartMouse = null;
+        this._pointerDownNode = null;
         this._render();
     }
 
@@ -2809,6 +2852,8 @@ export class GraphRenderer {
             if (this.onNodeSelect) this.onNodeSelect(node);
             if (this.onNodeDoubleClick) this.onNodeDoubleClick(node);
             this._render();
+        } else if (this.selectedNode) {
+            this._returnToOverview();
         }
     }
 
