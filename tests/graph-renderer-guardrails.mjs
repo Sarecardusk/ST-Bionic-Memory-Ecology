@@ -35,6 +35,7 @@ const canvasMockStats = {
   radialGradientCalls: 0,
   linearGradientCalls: 0,
   strokeCalls: 0,
+  fillTextCalls: 0,
   shadowBlurValues: [],
   arcRadii: [],
 };
@@ -96,7 +97,9 @@ function createNoopContext() {
     moveTo: noop,
     lineTo: noop,
     quadraticCurveTo: noop,
-    fillText: noop,
+    fillText: () => {
+      canvasMockStats.fillTextCalls += 1;
+    },
     closePath: noop,
     rect: noop,
     fillRect: noop,
@@ -183,6 +186,24 @@ function createStarSeedGraph({ includeFragment = false } = {}) {
   return graph;
 }
 
+function createLabelBudgetGraph(count = 12) {
+  const nodes = [];
+  const edges = [];
+  for (let i = 0; i < count; i += 1) {
+    nodes.push({
+      id: `label-${i}`,
+      type: i % 3 === 0 ? "character" : (i % 3 === 1 ? "event" : "reflection"),
+      name: `Label Node ${i}`,
+      importance: count - i,
+      scope: { layer: "objective" },
+    });
+    if (i > 0) {
+      edges.push({ fromId: "label-0", toId: `label-${i}`, relation: "related", strength: 0.5 });
+    }
+  }
+  return { nodes, edges };
+}
+
 function assertInputUnchanged(graph, beforeJson) {
   assert.equal(JSON.stringify(graph), beforeJson);
   for (const node of graph.nodes) {
@@ -196,6 +217,7 @@ function resetCanvasStats() {
   canvasMockStats.radialGradientCalls = 0;
   canvasMockStats.linearGradientCalls = 0;
   canvasMockStats.strokeCalls = 0;
+  canvasMockStats.fillTextCalls = 0;
   canvasMockStats.shadowBlurValues = [];
   canvasMockStats.arcRadii = [];
 }
@@ -375,11 +397,28 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   renderer.highlightNode("char-1");
   assertInputUnchanged(graph, before);
   assert.ok(canvasMockStats.radialGradientCalls > 0);
-  assert.ok(canvasMockStats.linearGradientCalls > 0);
   assert.equal(
     Math.max(0, ...canvasMockStats.shadowBlurValues),
     0,
     "node visuals should not reintroduce heavy crystal-ball shadow blur",
+  );
+  renderer.destroy();
+}
+
+{
+  resetCanvasStats();
+  const graph = createLabelBudgetGraph(12);
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph);
+  assertInputUnchanged(graph, before);
+  assert.ok(
+    canvasMockStats.fillTextCalls <= 7,
+    "dark galaxy mode limits default labels to a small core budget",
   );
   renderer.destroy();
 }

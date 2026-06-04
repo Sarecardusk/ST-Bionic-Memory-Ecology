@@ -17,6 +17,17 @@ import {
     normalizeGraphNativeRuntimeOptions,
 } from './graph-native-bridge.js';
 
+const GALAXY_COLORS = {
+    character: '#ff4f8b',
+    event: '#438cff',
+    location: '#10b981',
+    thread: '#8b5cf6',
+    rule: '#f59e0b',
+    synopsis: '#d946ef',
+    reflection: '#06b6d4',
+    default: '#64748b',
+};
+
 /**
  * @typedef {Object} GraphNode
  * @property {string} id
@@ -1836,6 +1847,7 @@ export class GraphRenderer {
     // ==================== 渲染 ====================
 
     _drawRegionPanels(ctx) {
+        if (!LIGHT_PANEL_THEMES.has(this.themeName)) return;
         for (const p of this._regionPanels) {
             const pw = Number(p.w) || 0;
             const ph = Number(p.h) || 0;
@@ -1884,15 +1896,19 @@ export class GraphRenderer {
         const cx = mx + nx * bend;
         const cy = my + ny * bend;
 
+        const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
         const relationColor = edgeColorForRelation(edge.relation);
-        const baseAlpha = sameZone ? 0.026 + strength * 0.052 : 0.02 + strength * 0.045;
-        const alpha = isDimmed ? 0.012 : (isConnectedToSelection ? 0.28 + strength * 0.14 : baseAlpha);
+        const edgeColor = isLightTheme ? relationColor : (GALAXY_COLORS[from.type] || GALAXY_COLORS.default);
+        const unselectedColor = isLightTheme ? '#9eb2cf' : edgeColor;
+
+        const baseAlpha = sameZone ? 0.04 + strength * 0.06 : 0.03 + strength * 0.05;
+        const alpha = isDimmed ? (isLightTheme ? 0.012 : 0.01) : (isConnectedToSelection ? 0.35 + strength * 0.25 : baseAlpha);
 
         if (isConnectedToSelection) {
             ctx.beginPath();
             ctx.moveTo(from.x, from.y);
             ctx.quadraticCurveTo(cx, cy, to.x, to.y);
-            ctx.strokeStyle = colorWithAlpha(relationColor, 0.055 + strength * 0.055);
+            ctx.strokeStyle = colorWithAlpha(edgeColor, isLightTheme ? 0.055 + strength * 0.055 : 0.15 + strength * 0.15);
             ctx.lineWidth = 1.35 + strength * 0.95;
             ctx.stroke();
         }
@@ -1900,7 +1916,7 @@ export class GraphRenderer {
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
         ctx.quadraticCurveTo(cx, cy, to.x, to.y);
-        ctx.strokeStyle = colorWithAlpha(isConnectedToSelection ? relationColor : '#9eb2cf', alpha);
+        ctx.strokeStyle = colorWithAlpha(isConnectedToSelection ? edgeColor : unselectedColor, alpha);
         ctx.lineWidth = isConnectedToSelection
             ? 0.7 + strength * 0.72
             : 0.28 + strength * 0.44;
@@ -1938,9 +1954,18 @@ export class GraphRenderer {
 
         this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i, focus));
 
+        const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
+        const coreLabelNodes = isLightTheme
+            ? null
+            : new Set(
+            [...this.nodes]
+                .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+                .slice(0, 7)
+        );
+
         for (const node of this.nodes) {
             const baseRadius = this._nodeVisualRadius(node);
-            const color = this.colors[node.type] || this.colors.event;
+            const color = isLightTheme ? (this.colors[node.type] || this.colors.event) : (GALAXY_COLORS[node.type] || GALAXY_COLORS.default);
             const isSelected = node === this.selectedNode;
             const isHovered = node === this.hoveredNode;
             const isDimmed = focus.selectedNode && !focus.connectedNodes.has(node);
@@ -2005,29 +2030,32 @@ export class GraphRenderer {
                     : 0.52;
                 maxLabelW = Math.max(36, Math.min(220, rect.w * frac));
             }
-            const labelDraw = this._ellipsisLabel(
-                ctx,
-                node.label || node.name,
-                maxLabelW,
-            );
-            if (isHovered || isSelected) {
-                const metrics = ctx.measureText(labelDraw);
-                const pillW = Math.min(maxLabelW + 10, metrics.width + 12);
-                const pillH = 16;
-                const pillX = node.x - pillW / 2;
-                const pillY = node.y + r + 6.5;
-                ctx.beginPath();
-                roundRectPath(ctx, pillX, pillY, pillW, pillH, 5);
-                ctx.fillStyle = isSelected
-                    ? 'rgba(8, 10, 16, 0.64)'
-                    : 'rgba(8, 10, 16, 0.52)';
-                ctx.fill();
-                ctx.strokeStyle = 'rgba(238, 246, 255, 0.09)';
-                ctx.lineWidth = 1;
-                ctx.stroke();
+            const showLabel = isLightTheme || isHovered || isSelected || coreLabelNodes.has(node);
+            if (showLabel) {
+                const labelDraw = this._ellipsisLabel(
+                    ctx,
+                    node.label || node.name,
+                    maxLabelW,
+                );
+                if (isHovered || isSelected) {
+                    const metrics = ctx.measureText(labelDraw);
+                    const pillW = Math.min(maxLabelW + 10, metrics.width + 12);
+                    const pillH = 16;
+                    const pillX = node.x - pillW / 2;
+                    const pillY = node.y + r + 6.5;
+                    ctx.beginPath();
+                    roundRectPath(ctx, pillX, pillY, pillW, pillH, 5);
+                    ctx.fillStyle = isSelected
+                        ? 'rgba(8, 10, 16, 0.64)'
+                        : 'rgba(8, 10, 16, 0.52)';
+                    ctx.fill();
+                    ctx.strokeStyle = 'rgba(238, 246, 255, 0.09)';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                }
+                ctx.fillStyle = `rgba(218,229,242,${isHovered || isSelected ? 0.88 : 0.52})`;
+                ctx.fillText(labelDraw, node.x, node.y + r + 14);
             }
-            ctx.fillStyle = `rgba(218,229,242,${isHovered || isSelected ? 0.88 : 0.52})`;
-            ctx.fillText(labelDraw, node.x, node.y + r + 14);
             ctx.restore();
         }
 
@@ -2181,40 +2209,19 @@ export class GraphRenderer {
             ctx,
             'createRadialGradient',
             [
-                width * 0.52,
-                height * 0.36,
+                width * 0.5,
+                height * 0.5,
                 0,
-                width * 0.52,
-                height * 0.36,
-                Math.max(width, height) * 0.82,
+                width * 0.5,
+                height * 0.5,
+                Math.max(width, height) * 0.8,
             ],
             [
-                [0, colorWithAlpha(theme.primary || '#224b84', 0.12)],
-                [0.34, colorWithAlpha(theme.secondary || '#141c48', 0.075)],
-                [0.72, colorWithAlpha(theme.surfaceLow || '#070b1a', 0.58)],
-                [1, theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)'],
+                [0, '#0a0a10'],
+                [0.5, '#08080d'],
+                [1, '#06060a'],
             ],
-            theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)',
-        );
-        ctx.fillRect(0, 0, width, height);
-
-        ctx.fillStyle = createCanvasGradient(
-            ctx,
-            'createRadialGradient',
-            [
-                width * 0.82,
-                height * 0.18,
-                0,
-                width * 0.82,
-                height * 0.18,
-                Math.max(width, height) * 0.46,
-            ],
-            [
-                [0, colorWithAlpha(theme.accent3 || '#b073ff', 0.055)],
-                [0.5, colorWithAlpha(theme.accent2 || '#57c7ff', 0.032)],
-                [1, 'rgba(0, 0, 0, 0)'],
-            ],
-            'rgba(0, 0, 0, 0)',
+            '#06060a'
         );
         ctx.fillRect(0, 0, width, height);
     }
@@ -2340,6 +2347,7 @@ export class GraphRenderer {
     }
 
     _drawGrid(W, H) {
+        if (!LIGHT_PANEL_THEMES.has(this.themeName)) return;
         const sp = this.config.gridSpacing;
         if (!sp || sp <= 0) return;
 
@@ -2375,13 +2383,17 @@ export class GraphRenderer {
         const base = this._nodeRadius(node);
         const importance = Number(node?.importance || 5);
         const type = String(node?.type || '').toLowerCase();
+        let r;
         if (type === 'character' || importance >= 9) {
-            return Math.min(8, Math.max(4.8, base * 0.58));
+            r = base * 0.58;
+            return Math.min(8, r);
         }
-        if (type === 'event' || importance >= 6) {
-            return Math.min(7, Math.max(4.2, base * 0.52));
+        if (importance >= 6) {
+            r = base * 0.52;
+            return Math.min(6.5, r);
         }
-        return Math.min(6.2, Math.max(3.4, base * 0.46));
+        r = base * 0.45;
+        return Math.min(4.5, r);
     }
 
     _ellipsisLabel(ctx, text, maxW) {
