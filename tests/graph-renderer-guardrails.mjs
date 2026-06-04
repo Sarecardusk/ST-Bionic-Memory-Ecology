@@ -35,7 +35,9 @@ const canvasMockStats = {
   radialGradientCalls: 0,
   linearGradientCalls: 0,
   strokeCalls: 0,
+  fillTextCalls: 0,
   shadowBlurValues: [],
+  arcRadii: [],
 };
 
 function flushNextRaf(ms = 16) {
@@ -45,6 +47,20 @@ function flushNextRaf(ms = 16) {
   mockNow += ms;
   callback(mockNow);
   return true;
+}
+
+function flushRafsUntilIdle({ maxFrames = 80, ms = 16 } = {}) {
+  let frames = 0;
+  while (flushNextRaf(ms)) {
+    frames += 1;
+    assert.ok(frames <= maxFrames, `RAF loop exceeded ${maxFrames} frames`);
+  }
+  return frames;
+}
+
+function assertNoPendingRafOrTimers(reason) {
+  assert.equal(rafCallbacks.size, 0, `${reason}: pending RAF callbacks remain`);
+  assert.equal(timerCallbacks.size, 0, `${reason}: pending timers remain`);
 }
 
 function advanceMockTime(ms = 0) {
@@ -70,7 +86,9 @@ function createNoopContext() {
     translate: noop,
     scale: noop,
     beginPath: noop,
-    arc: noop,
+    arc: (_x, _y, radius) => {
+      canvasMockStats.arcRadii.push(Number(radius) || 0);
+    },
     arcTo: noop,
     fill: noop,
     stroke: () => {
@@ -79,7 +97,9 @@ function createNoopContext() {
     moveTo: noop,
     lineTo: noop,
     quadraticCurveTo: noop,
-    fillText: noop,
+    fillText: () => {
+      canvasMockStats.fillTextCalls += 1;
+    },
     closePath: noop,
     rect: noop,
     fillRect: noop,
@@ -166,6 +186,24 @@ function createStarSeedGraph({ includeFragment = false } = {}) {
   return graph;
 }
 
+function createLabelBudgetGraph(count = 12) {
+  const nodes = [];
+  const edges = [];
+  for (let i = 0; i < count; i += 1) {
+    nodes.push({
+      id: `label-${i}`,
+      type: i % 3 === 0 ? "character" : (i % 3 === 1 ? "event" : "reflection"),
+      name: `Label Node ${i}`,
+      importance: count - i,
+      scope: { layer: "objective" },
+    });
+    if (i > 0) {
+      edges.push({ fromId: "label-0", toId: `label-${i}`, relation: "related", strength: 0.5 });
+    }
+  }
+  return { nodes, edges };
+}
+
 function assertInputUnchanged(graph, beforeJson) {
   assert.equal(JSON.stringify(graph), beforeJson);
   for (const node of graph.nodes) {
@@ -179,7 +217,9 @@ function resetCanvasStats() {
   canvasMockStats.radialGradientCalls = 0;
   canvasMockStats.linearGradientCalls = 0;
   canvasMockStats.strokeCalls = 0;
+  canvasMockStats.fillTextCalls = 0;
   canvasMockStats.shadowBlurValues = [];
+  canvasMockStats.arcRadii = [];
 }
 
 function assertRendererNodesInsideRegions(renderer) {
@@ -190,6 +230,76 @@ function assertRendererNodesInsideRegions(renderer) {
     const r = node.regionRect;
     assert.ok(node.x >= r.x - 0.001 && node.x <= r.x + r.w + 0.001, `${node.id} x inside region`);
     assert.ok(node.y >= r.y - 0.001 && node.y <= r.y + r.h + 0.001, `${node.id} y inside region`);
+  }
+}
+
+function createAnimatedLayoutRenderer({ reducedMotion = false, configOff = false } = {}) {
+  const previousMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => ({
+    matches: Boolean(reducedMotion),
+    addEventListener() {},
+    removeEventListener() {},
+  });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: {
+      graphUseNativeLayout: false,
+      graphNativeForceDisable: true,
+      graphAnimatedLayout: !configOff,
+      graphLayoutAnimation: !configOff,
+      graphLayoutAnimationEnabled: !configOff,
+    },
+    layoutConfig: {
+      neuralIterations: 24,
+      animatedLayout: !configOff,
+      layoutAnimation: !configOff,
+      layoutAnimationEnabled: !configOff,
+      layoutAnimationDurationMs: 64,
+      layoutAnimationMaxFrames: 8,
+      layoutAnimationIterationsPerFrame: 3,
+      layoutAnimationMinInitialIterations: 4,
+    },
+  });
+  return {
+    renderer,
+    restoreMatchMedia: () => {
+      globalThis.window.matchMedia = previousMatchMedia;
+    },
+  };
+}
+
+function readLayoutAnimationDiagnostics(renderer) {
+  const diagnostics = renderer.getLastLayoutDiagnostics?.() || null;
+  const animationDiagnostics = diagnostics?.layoutAnimation
+    ?? diagnostics?.layoutAnimationDiagnostics
+    ?? diagnostics?.animation
+    ?? null;
+  return { diagnostics, animationDiagnostics };
+}
+
+function assertLayoutAnimationNotRunning(renderer, reason) {
+  const { diagnostics, animationDiagnostics } = readLayoutAnimationDiagnostics(renderer);
+  if (!animationDiagnostics || typeof animationDiagnostics !== "object") return;
+  const mode = animationDiagnostics.mode ?? diagnostics?.layoutAnimationMode;
+  const status = animationDiagnostics.status ?? diagnostics?.layoutAnimationStatus;
+  if (mode != null) assert.equal(typeof mode, "string", `${reason}: layout animation mode is string`);
+  if (status != null) assert.equal(typeof status, "string", `${reason}: layout animation status is string`);
+  assert.notEqual(status, "running", `${reason}: layout animation is not running`);
+  assert.notEqual(status, "scheduled", `${reason}: layout animation is not scheduled`);
+}
+
+function assertLayoutAnimationDiagnosticsShape(renderer) {
+  const { diagnostics, animationDiagnostics } = readLayoutAnimationDiagnostics(renderer);
+  assert.ok(diagnostics, "layout diagnostics exist");
+  if (!animationDiagnostics || typeof animationDiagnostics !== "object") return;
+  const mode = animationDiagnostics.mode ?? diagnostics.layoutAnimationMode;
+  const status = animationDiagnostics.status ?? diagnostics.layoutAnimationStatus;
+  if (mode != null) assert.equal(typeof mode, "string");
+  if (status != null) assert.equal(typeof status, "string");
+  if (animationDiagnostics.reducedMotion != null) {
+    assert.equal(typeof animationDiagnostics.reducedMotion, "boolean");
+  }
+  if (animationDiagnostics.frameCount != null) {
+    assert.equal(Number.isFinite(Number(animationDiagnostics.frameCount)), true);
   }
 }
 
@@ -287,11 +397,28 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   renderer.highlightNode("char-1");
   assertInputUnchanged(graph, before);
   assert.ok(canvasMockStats.radialGradientCalls > 0);
-  assert.ok(canvasMockStats.linearGradientCalls > 0);
   assert.equal(
     Math.max(0, ...canvasMockStats.shadowBlurValues),
     0,
     "node visuals should not reintroduce heavy crystal-ball shadow blur",
+  );
+  renderer.destroy();
+}
+
+{
+  resetCanvasStats();
+  const graph = createLabelBudgetGraph(12);
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph);
+  assertInputUnchanged(graph, before);
+  assert.ok(
+    canvasMockStats.fillTextCalls <= 7,
+    "dark galaxy mode limits default labels to a small core budget",
   );
   renderer.destroy();
 }
@@ -335,6 +462,10 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assert.ok(flushNextRaf());
   assert.ok(canvasMockStats.radialGradientCalls > 0);
   assert.ok(canvasMockStats.strokeCalls > 0);
+  assert.ok(
+    Math.max(0, ...canvasMockStats.arcRadii) <= 18,
+    "transient recall/extraction highlights stay close to node body, not large crystal-ball rings",
+  );
   diagnostics = renderer.getTransientHighlightDiagnostics();
   assert.equal(diagnostics.count, 3);
   mockNow += 120;
@@ -435,6 +566,172 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assert.equal(diagnostics.layoutSeedModeCounts.fallbackFragment, 0);
   assert.equal(diagnostics.layoutSeedModeCounts.reused, 3);
   renderer.destroy();
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: {
+      neuralIterations: 8,
+      cameraFocusDurationMs: 120,
+    },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.highlightNode("star-core");
+  renderer.destroy();
+  assertNoPendingRafOrTimers("destroy cancels unsettled camera focus animation");
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: {
+      neuralIterations: 8,
+      cameraFocusDurationMs: 32,
+    },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.highlightNode("star-core");
+  const frames = flushRafsUntilIdle({ maxFrames: 10, ms: 16 });
+  assert.ok(frames > 0, "camera focus uses bounded RAF animation");
+  assert.ok(renderer.scale >= 1, "camera focus does not zoom out selected node");
+  assertNoPendingRafOrTimers("camera focus animation settles");
+  renderer.destroy();
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.zoomIn();
+  assert.ok(timerCallbacks.size > 0, "edge dim restore timer is scheduled while moving/zooming");
+  renderer.setEnabled(false);
+  assertNoPendingRafOrTimers("disable clears edge dim restore timer");
+  renderer.destroy();
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  const darkObjectivePanel = renderer._regionPanels.find((panel) => panel.key === "objective");
+  renderer.setTheme("paperDawn");
+  const lightObjectivePanel = renderer._regionPanels.find((panel) => panel.key === "objective");
+  assert.ok(darkObjectivePanel && lightObjectivePanel, "theme switch keeps objective panel metadata");
+  assert.notEqual(
+    Math.round(darkObjectivePanel.w),
+    Math.round(lightObjectivePanel.w),
+    "dark/light theme switch recomputes galaxy versus legacy layout regions",
+  );
+  renderer.destroy();
+}
+
+{
+  const graph = createLabelBudgetGraph(18);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: {
+      graphUseNativeLayout: true,
+      graphNativeForceDisable: false,
+      graphNativeLayoutThresholdNodes: 1,
+      graphNativeLayoutThresholdEdges: 1,
+    },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  const diagnostics = renderer.getLastLayoutDiagnostics();
+  assert.notEqual(diagnostics.mode, "native-worker", "dark galaxy mode disables native layout until cross-region spring parity exists");
+  renderer.destroy();
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer({ reducedMotion: true });
+  try {
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    assertLayoutAnimationNotRunning(renderer, "reduced motion disables animated layout");
+    assertNoPendingRafOrTimers("reduced motion animated layout disabled");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer({ configOff: true });
+  try {
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    assertLayoutAnimationNotRunning(renderer, "config off disables animated layout");
+    assertNoPendingRafOrTimers("config off animated layout disabled");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph(), { userPovAliases: ["Host"] });
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    renderer.setEnabled(false);
+    assertLayoutAnimationNotRunning(renderer, "disable cancels animated layout");
+    assertNoPendingRafOrTimers("disable cancels animated layout callbacks");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph(), { userPovAliases: ["Host"] });
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    renderer.destroy();
+    assertLayoutAnimationNotRunning(renderer, "destroy cancels animated layout");
+    assertNoPendingRafOrTimers("destroy cancels animated layout callbacks");
+  } finally {
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph(), { userPovAliases: ["Host"] });
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    const frameCount = flushRafsUntilIdle({ maxFrames: 80, ms: 16 });
+    assert.ok(frameCount > 0, "animated layout actually used RAF frames");
+    assert.ok(frameCount <= 80, "animated layout RAFs are bounded");
+    assertLayoutAnimationNotRunning(renderer, "bounded animated layout settles");
+    assertNoPendingRafOrTimers("bounded animated layout settles without RAF/timer leaks");
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
+}
+
+{
+  const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer();
+  try {
+    renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
+    assertLayoutAnimationDiagnosticsShape(renderer);
+  } finally {
+    renderer.destroy();
+    restoreMatchMedia();
+  }
 }
 
 console.log("graph-renderer guardrail tests passed");

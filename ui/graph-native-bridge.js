@@ -5,6 +5,9 @@ const DEFAULT_NATIVE_RUNTIME_OPTIONS = Object.freeze({
   graphNativeLayoutWorkerTimeoutMs: 260,
   nativeEngineFailOpen: true,
   graphNativeForceDisable: false,
+  graphAnimatedLayout: true,
+  graphLayoutAnimation: true,
+  graphLayoutAnimationEnabled: true,
 });
 
 function clampPositiveInt(value, fallback, { min = 1, max = 120000 } = {}) {
@@ -56,6 +59,18 @@ export function normalizeGraphNativeRuntimeOptions(options = {}) {
     graphNativeForceDisable: normalizeBoolean(
       source.graphNativeForceDisable,
       DEFAULT_NATIVE_RUNTIME_OPTIONS.graphNativeForceDisable,
+    ),
+    graphAnimatedLayout: normalizeBoolean(
+      source.graphAnimatedLayout,
+      DEFAULT_NATIVE_RUNTIME_OPTIONS.graphAnimatedLayout,
+    ),
+    graphLayoutAnimation: normalizeBoolean(
+      source.graphLayoutAnimation,
+      DEFAULT_NATIVE_RUNTIME_OPTIONS.graphLayoutAnimation,
+    ),
+    graphLayoutAnimationEnabled: normalizeBoolean(
+      source.graphLayoutAnimationEnabled,
+      DEFAULT_NATIVE_RUNTIME_OPTIONS.graphLayoutAnimationEnabled,
     ),
   };
 }
