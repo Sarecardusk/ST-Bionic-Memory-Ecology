@@ -12,6 +12,11 @@ globalThis.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
+const canvasMockStats = {
+  radialGradientCalls: 0,
+  linearGradientCalls: 0,
+};
+
 function createNoopContext() {
   const noop = () => {};
   return {
@@ -35,7 +40,14 @@ function createNoopContext() {
     fillRect: noop,
     strokeRect: noop,
     measureText: (text = "") => ({ width: String(text).length * 6 }),
-    createRadialGradient: () => ({ addColorStop: noop }),
+    createRadialGradient: () => {
+      canvasMockStats.radialGradientCalls += 1;
+      return { addColorStop: noop };
+    },
+    createLinearGradient: () => {
+      canvasMockStats.linearGradientCalls += 1;
+      return { addColorStop: noop };
+    },
     set fillStyle(_value) {},
     set strokeStyle(_value) {},
     set lineWidth(_value) {},
@@ -159,6 +171,43 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assert.equal(diagnostics.activeEdgeCount, 2);
   assert.equal(diagnostics.archivedNodeCount, 1);
   assert.equal(diagnostics.skippedEdgeCount, 4);
+  renderer.destroy();
+}
+
+{
+  const graph = createGraphFixture();
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: {
+      minNodeRadius: 4,
+      maxNodeRadius: 14,
+      neuralIterations: 8,
+    },
+  });
+
+  const radius = renderer._nodeRadius({ type: "character", importance: 10 });
+  assert.equal(radius, 14);
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.highlightNode("char-1");
+  assertInputUnchanged(graph, before);
+  assert.ok(canvasMockStats.radialGradientCalls > 0);
+  assert.ok(canvasMockStats.linearGradientCalls > 0);
+  renderer.destroy();
+}
+
+{
+  const graph = createGraphFixture();
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    theme: "paperDawn",
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  assert.doesNotThrow(() => renderer.loadGraph(graph, { userPovAliases: ["Host"] }));
+  renderer.highlightNode("objective-1");
+  assertInputUnchanged(graph, before);
   renderer.destroy();
 }
 

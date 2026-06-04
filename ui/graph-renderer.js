@@ -1,7 +1,7 @@
 // ST-BME: Canvas 图谱渲染器 — 分区「神经视图」布局
 // 零依赖：客观层 / 角色 POV / 用户 POV 分区内 Vogel 初值 + 一次性力导向稳定，无帧循环抖动
 
-import { getNodeColors } from './themes.js';
+import { getNodeColors, LIGHT_PANEL_THEMES, THEMES } from './themes.js';
 import {
     isUsableGraphCanvasSize,
     remapPositionBetweenRects,
@@ -138,6 +138,56 @@ const SCOPE_OUTLINE_COLORS = {
     character: '#ffb347',
     user: '#7dff9b',
 };
+
+const EDGE_RELATION_COLORS = {
+    updates: '#7cf8ff',
+    temporal_update: '#7cf8ff',
+    evolves: '#b79cff',
+    same: '#8fffd2',
+    related: '#7aa7ff',
+};
+
+function colorWithAlpha(color, alpha = 1) {
+    const a = Math.max(0, Math.min(1, Number(alpha) || 0));
+    const hex = String(color || '').trim();
+    const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
+    if (match) {
+        let body = match[1];
+        if (body.length === 3) {
+            body = body.split('').map((c) => c + c).join('');
+        }
+        const value = Number.parseInt(body, 16);
+        const r = (value >> 16) & 255;
+        const g = (value >> 8) & 255;
+        const b = value & 255;
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+    if (hex.startsWith('rgb(')) {
+        return hex.replace(/^rgb\((.*)\)$/i, `rgba($1, ${a})`);
+    }
+    if (hex.startsWith('rgba(')) return hex;
+    return `rgba(255, 255, 255, ${a})`;
+}
+
+function edgeColorForRelation(relation) {
+    const key = String(relation || 'related').trim().toLowerCase();
+    return EDGE_RELATION_COLORS[key] || EDGE_RELATION_COLORS.related;
+}
+
+function createCanvasGradient(ctx, methodName, args = [], stops = [], fallback = 'rgba(0, 0, 0, 0)') {
+    if (ctx && typeof ctx[methodName] === 'function') {
+        try {
+            const gradient = ctx[methodName](...args);
+            if (gradient && typeof gradient.addColorStop === 'function') {
+                for (const [offset, color] of stops) {
+                    gradient.addColorStop(offset, color);
+                }
+                return gradient;
+            }
+        } catch {}
+    }
+    return fallback;
+}
 
 function hashId(id) {
     let h = 0;
@@ -1253,23 +1303,36 @@ export class GraphRenderer {
             const ph = Number(p.h) || 0;
             if (pw < 2 || ph < 2) continue;
             ctx.beginPath();
-            roundRectPath(ctx, p.x, p.y, pw, ph, 12);
-            ctx.fillStyle = p.tint;
+            roundRectPath(ctx, p.x, p.y, pw, ph, 16);
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createLinearGradient',
+                [p.x, p.y, p.x + pw, p.y + ph],
+                [
+                    [0, p.tint],
+                    [0.62, 'rgba(6, 10, 22, 0.22)'],
+                    [1, 'rgba(87, 199, 255, 0.035)'],
+                ],
+                p.tint,
+            );
             ctx.fill();
-            ctx.strokeStyle = 'rgba(87, 199, 255, 0.12)';
+            ctx.strokeStyle = 'rgba(141, 213, 255, 0.14)';
             ctx.lineWidth = 1;
             ctx.stroke();
 
-            ctx.fillStyle = 'rgba(228, 225, 230, 0.55)';
-            ctx.font = '600 10px Inter, sans-serif';
+            ctx.fillStyle = 'rgba(222, 239, 255, 0.64)';
+            ctx.font = '700 10px Inter, sans-serif';
             ctx.textAlign = 'left';
             ctx.fillText(p.label, p.x + 12, p.y + 16);
         }
     }
 
-    _drawSynapseEdge(ctx, edge, idx) {
+    _drawSynapseEdge(ctx, edge, idx, focus = null) {
         const { from, to, strength } = edge;
         const sameZone = from.regionKey === to.regionKey;
+        const selectedNode = focus?.selectedNode || null;
+        const isConnectedToSelection = !!selectedNode && (from === selectedNode || to === selectedNode);
+        const isDimmed = !!selectedNode && !isConnectedToSelection;
         const mx = (from.x + to.x) / 2;
         const my = (from.y + to.y) / 2;
         const dx = to.x - from.x;
@@ -1283,12 +1346,26 @@ export class GraphRenderer {
         const cx = mx + nx * bend;
         const cy = my + ny * bend;
 
-        const alpha = sameZone ? 0.06 + strength * 0.14 : 0.05 + strength * 0.1;
+        const relationColor = edgeColorForRelation(edge.relation);
+        const baseAlpha = sameZone ? 0.035 + strength * 0.09 : 0.026 + strength * 0.07;
+        const alpha = isDimmed ? 0.018 : (isConnectedToSelection ? 0.38 + strength * 0.28 : baseAlpha);
+
+        if (isConnectedToSelection) {
+            ctx.beginPath();
+            ctx.moveTo(from.x, from.y);
+            ctx.quadraticCurveTo(cx, cy, to.x, to.y);
+            ctx.strokeStyle = colorWithAlpha(relationColor, 0.12 + strength * 0.12);
+            ctx.lineWidth = 2.8 + strength * 2.2;
+            ctx.stroke();
+        }
+
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
         ctx.quadraticCurveTo(cx, cy, to.x, to.y);
-        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
-        ctx.lineWidth = 0.45 + strength * 1.35;
+        ctx.strokeStyle = colorWithAlpha(isConnectedToSelection ? relationColor : '#c9dcff', alpha);
+        ctx.lineWidth = isConnectedToSelection
+            ? 1.35 + strength * 2.15
+            : 0.35 + strength * 0.82;
         ctx.stroke();
     }
 
@@ -1307,6 +1384,8 @@ export class GraphRenderer {
         ctx.save();
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+        this._drawDeepSpaceBackground(ctx, W, H);
+
         ctx.translate(this.offsetX, this.offsetY);
         ctx.scale(this.scale, this.scale);
 
@@ -1316,13 +1395,17 @@ export class GraphRenderer {
 
         this._drawGrid(W, H);
 
-        this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i));
+        const focus = this._buildFocusState();
+
+        this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i, focus));
 
         for (const node of this.nodes) {
-            const r = this._nodeRadius(node);
+            const baseRadius = this._nodeVisualRadius(node);
             const color = this.colors[node.type] || this.colors.event;
             const isSelected = node === this.selectedNode;
             const isHovered = node === this.hoveredNode;
+            const isDimmed = focus.selectedNode && !focus.connectedNodes.has(node);
+            const r = (isSelected ? baseRadius * 1.12 : baseRadius) * (isDimmed ? 0.6 : 1);
             const scope = normalizeMemoryScope(node.raw?.scope);
             const outlineColor = scope.layer === 'pov'
                 ? (scope.ownerType === 'user'
@@ -1330,26 +1413,67 @@ export class GraphRenderer {
                     : SCOPE_OUTLINE_COLORS.character)
                 : SCOPE_OUTLINE_COLORS.objective;
 
+            ctx.save();
+            if (isDimmed) ctx.globalAlpha = 0.2;
+
             if (isSelected || isHovered) {
+                const glowRadius = r + (isSelected ? 20 : 13);
                 ctx.beginPath();
-                ctx.arc(node.x, node.y, r + 9, 0, Math.PI * 2);
-                const glow = ctx.createRadialGradient(node.x, node.y, r, node.x, node.y, r + 9);
-                glow.addColorStop(0, color + '55');
-                glow.addColorStop(1, color + '00');
-                ctx.fillStyle = glow;
+                ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+                ctx.fillStyle = createCanvasGradient(
+                    ctx,
+                    'createRadialGradient',
+                    [node.x, node.y, Math.max(1, r * 0.45), node.x, node.y, glowRadius],
+                    [
+                        [0, colorWithAlpha(color, isSelected ? 0.52 : 0.34)],
+                        [0.55, colorWithAlpha(color, isSelected ? 0.22 : 0.14)],
+                        [1, colorWithAlpha(color, 0)],
+                    ],
+                    colorWithAlpha(color, isSelected ? 0.24 : 0.14),
+                );
                 ctx.fill();
+
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, r + (isSelected ? 6 : 4), 0, Math.PI * 2);
+                ctx.strokeStyle = colorWithAlpha(isSelected ? '#ffffff' : color, isSelected ? 0.72 : 0.5);
+                ctx.lineWidth = isSelected ? 2.4 : 1.6;
+                ctx.stroke();
             }
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-            ctx.fillStyle = isSelected ? color : color + 'dd';
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [
+                    node.x - r * 0.32,
+                    node.y - r * 0.34,
+                    Math.max(1, r * 0.16),
+                    node.x,
+                    node.y,
+                    r,
+                ],
+                [
+                    [0, colorWithAlpha('#ffffff', isSelected ? 0.86 : 0.68)],
+                    [0.18, colorWithAlpha(color, isSelected ? 1 : 0.94)],
+                    [1, colorWithAlpha(color, isSelected ? 0.68 : 0.52)],
+                ],
+                colorWithAlpha(color, isSelected ? 1 : 0.86),
+            );
             ctx.fill();
 
-            ctx.strokeStyle = isSelected ? '#fff' : outlineColor;
-            ctx.lineWidth = isSelected ? 2.25 : 1.35;
+            ctx.strokeStyle = isSelected ? '#fff' : colorWithAlpha(outlineColor, isHovered ? 0.9 : 0.64);
+            ctx.lineWidth = isSelected ? 2.8 : (isHovered ? 1.8 : 1.1);
             ctx.stroke();
 
-            ctx.fillStyle = `rgba(255,255,255,${isHovered || isSelected ? 0.94 : 0.66})`;
+            ctx.shadowColor = colorWithAlpha(color, isSelected ? 0.5 : 0.2);
+            ctx.shadowBlur = isSelected ? 16 : 7;
+            ctx.beginPath();
+            ctx.arc(node.x - r * 0.28, node.y - r * 0.34, Math.max(1.4, r * 0.16), 0, Math.PI * 2);
+            ctx.fillStyle = colorWithAlpha('#ffffff', isSelected ? 0.7 : 0.5);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
             ctx.font = `${this.config.labelFontSize}px Inter, sans-serif`;
             ctx.textAlign = 'center';
             const rect = node.regionRect;
@@ -1366,10 +1490,130 @@ export class GraphRenderer {
                 node.label || node.name,
                 maxLabelW,
             );
+            if (isHovered || isSelected) {
+                const metrics = ctx.measureText(labelDraw);
+                const pillW = Math.min(maxLabelW + 12, metrics.width + 14);
+                const pillH = 17;
+                const pillX = node.x - pillW / 2;
+                const pillY = node.y + r + 6;
+                ctx.beginPath();
+                roundRectPath(ctx, pillX, pillY, pillW, pillH, 8);
+                ctx.fillStyle = isSelected
+                    ? 'rgba(7, 14, 32, 0.88)'
+                    : 'rgba(7, 14, 32, 0.72)';
+                ctx.fill();
+                ctx.strokeStyle = colorWithAlpha(color, isSelected ? 0.48 : 0.32);
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            ctx.fillStyle = `rgba(238,247,255,${isHovered || isSelected ? 0.96 : 0.62})`;
             ctx.fillText(labelDraw, node.x, node.y + r + 14);
+            ctx.restore();
         }
 
         ctx.restore();
+    }
+
+    _drawDeepSpaceBackground(ctx, W, H) {
+        const width = Math.max(1, Number(W) || 1);
+        const height = Math.max(1, Number(H) || 1);
+        const theme = THEMES[this.themeName] || THEMES.crimson;
+        const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
+        if (isLightTheme) {
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [
+                    width * 0.52,
+                    height * 0.36,
+                    0,
+                    width * 0.52,
+                    height * 0.36,
+                    Math.max(width, height) * 0.82,
+                ],
+                [
+                    [0, colorWithAlpha(theme.primary, 0.08)],
+                    [0.42, colorWithAlpha(theme.secondary, 0.045)],
+                    [1, theme.surfaceLowest || theme.surfaceLow || '#f8fafc'],
+                ],
+                theme.surfaceLowest || theme.surfaceLow || '#f8fafc',
+            );
+            ctx.fillRect(0, 0, width, height);
+
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [
+                    width * 0.82,
+                    height * 0.18,
+                    0,
+                    width * 0.82,
+                    height * 0.18,
+                    Math.max(width, height) * 0.46,
+                ],
+                [
+                    [0, colorWithAlpha(theme.accent2 || theme.primary, 0.055)],
+                    [1, 'rgba(255, 255, 255, 0)'],
+                ],
+                'rgba(255, 255, 255, 0)',
+            );
+            ctx.fillRect(0, 0, width, height);
+            return;
+        }
+
+        ctx.fillStyle = createCanvasGradient(
+            ctx,
+            'createRadialGradient',
+            [
+                width * 0.52,
+                height * 0.36,
+                0,
+                width * 0.52,
+                height * 0.36,
+                Math.max(width, height) * 0.82,
+            ],
+            [
+                [0, colorWithAlpha(theme.primary || '#224b84', 0.2)],
+                [0.34, colorWithAlpha(theme.secondary || '#141c48', 0.12)],
+                [0.72, colorWithAlpha(theme.surfaceLow || '#070b1a', 0.5)],
+                [1, theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)'],
+            ],
+            theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)',
+        );
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.fillStyle = createCanvasGradient(
+            ctx,
+            'createRadialGradient',
+            [
+                width * 0.82,
+                height * 0.18,
+                0,
+                width * 0.82,
+                height * 0.18,
+                Math.max(width, height) * 0.46,
+            ],
+            [
+                [0, colorWithAlpha(theme.accent3 || '#b073ff', 0.12)],
+                [0.5, colorWithAlpha(theme.accent2 || '#57c7ff', 0.055)],
+                [1, 'rgba(0, 0, 0, 0)'],
+            ],
+            'rgba(0, 0, 0, 0)',
+        );
+        ctx.fillRect(0, 0, width, height);
+    }
+
+    _buildFocusState() {
+        const selectedNode = this.selectedNode || null;
+        const connectedNodes = new Set();
+        if (selectedNode) {
+            connectedNodes.add(selectedNode);
+            for (const edge of this.edges) {
+                if (edge.from === selectedNode && edge.to) connectedNodes.add(edge.to);
+                if (edge.to === selectedNode && edge.from) connectedNodes.add(edge.from);
+            }
+        }
+        return { selectedNode, connectedNodes };
     }
 
     _scheduleRender() {
@@ -1410,6 +1654,19 @@ export class GraphRenderer {
         const min = this.config.minNodeRadius;
         const max = this.config.maxNodeRadius;
         return min + ((node.importance || 5) / 10) * (max - min);
+    }
+
+    _nodeVisualRadius(node) {
+        const base = this._nodeRadius(node);
+        const importance = Number(node?.importance || 5);
+        const type = String(node?.type || '').toLowerCase();
+        if (type === 'character' || importance >= 9) {
+            return Math.min(base * 1.18, base + 4);
+        }
+        if (type === 'event' || importance >= 6) {
+            return Math.min(base * 1.08, base + 2);
+        }
+        return base;
     }
 
     _ellipsisLabel(ctx, text, maxW) {
