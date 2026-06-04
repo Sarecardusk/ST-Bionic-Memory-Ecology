@@ -2,7 +2,9 @@
 
 import { GraphRenderer } from "./graph-renderer.js";
 import {
+  buildGraphStructureFingerprint,
   buildVisibleGraphRefreshToken,
+  classifyGraphRefresh,
   resolveVisibleGraphWorkspaceMode,
 } from "./panel-graph-refresh-utils.js";
 import {
@@ -353,13 +355,18 @@ let fetchedDirectEmbeddingModels = [];
 let viewportSyncBound = false;
 let popupRuntimePromise = null;
 const GRAPH_LIVE_REFRESH_THROTTLE_MS = 240;
+const GRAPH_EXTRACTION_REFRESH_THROTTLE_MS = 700;
 let _pendingRafRefreshId = null;
 let _lastRafRefreshAt = 0;
 const PANEL_LIVE_STATE_REFRESH_MIN_MS = 80;
 let pendingVisibleGraphRefreshTimer = null;
 let pendingVisibleGraphRefreshToken = "";
+let pendingVisibleGraphRefreshFingerprint = "";
 let pendingVisibleGraphRefreshForce = false;
+let pendingVisibleGraphRefreshFinal = false;
+let pendingVisibleGraphRefreshHard = false;
 let lastVisibleGraphRefreshToken = "";
+let lastVisibleGraphStructureFingerprint = "";
 let lastVisibleGraphRefreshAt = 0;
 let lastGraphTransientHighlightSignature = "";
 let lastGraphTransientHighlightRenderer = null;
@@ -762,13 +769,33 @@ function _getCurrentGraphRefreshToken() {
   });
 }
 
+function _getCurrentGraphStructureFingerprint() {
+  return buildGraphStructureFingerprint(_getGraph?.());
+}
+
+function _isExtractionUiRunning() {
+  const status = typeof _getLastExtractionStatus === "function"
+    ? _getLastExtractionStatus() || {}
+    : {};
+  if (String(status?.level || "").trim().toLowerCase() === "running") return true;
+  const text = `${status?.text || ""} ${status?.meta || ""}`;
+  return /提取.*(中|进行|生成|收尾|判定|准备)/.test(text);
+}
+
+function _isGraphCanvasVisibleMode(visibleMode = _getVisibleGraphWorkspaceMode()) {
+  return visibleMode === "desktop:graph" || visibleMode === "mobile:graph";
+}
+
 function _clearScheduledVisibleGraphRefresh() {
   if (pendingVisibleGraphRefreshTimer) {
     clearTimeout(pendingVisibleGraphRefreshTimer);
     pendingVisibleGraphRefreshTimer = null;
   }
   pendingVisibleGraphRefreshToken = "";
+  pendingVisibleGraphRefreshFingerprint = "";
   pendingVisibleGraphRefreshForce = false;
+  pendingVisibleGraphRefreshFinal = false;
+  pendingVisibleGraphRefreshHard = false;
 }
 
 function _isGraphRenderingEnabled() {
@@ -844,7 +871,7 @@ function _toggleGraphRenderingEnabled() {
   _refreshGraphAvailabilityState();
 }
 
-function _refreshVisibleGraphWorkspace({ force = false } = {}) {
+function _refreshVisibleGraphWorkspace({ force = false, final = false, hard = false } = {}) {
   const visibleMode = _getVisibleGraphWorkspaceMode();
   if (visibleMode === "hidden") {
     _refreshGraphLayoutDiagnosticsUi();
@@ -853,8 +880,40 @@ function _refreshVisibleGraphWorkspace({ force = false } = {}) {
 
   const graph = _getGraph?.();
   const nextToken = _getCurrentGraphRefreshToken();
-  if (!force && nextToken === lastVisibleGraphRefreshToken) {
-    return { refreshed: false, reason: "unchanged", token: nextToken };
+  const nextFingerprint = _getCurrentGraphStructureFingerprint();
+  const classification = classifyGraphRefresh({
+    previousToken: lastVisibleGraphRefreshToken,
+    nextToken,
+    previousFingerprint: lastVisibleGraphStructureFingerprint,
+    nextFingerprint,
+    force,
+    final,
+    hard,
+    visibleMode,
+  });
+
+  if (classification.action === "skip") {
+    return {
+      refreshed: false,
+      reason: "unchanged",
+      token: nextToken,
+      fingerprint: nextFingerprint,
+    };
+  }
+
+  if (classification.action === "highlight-only" && _isGraphCanvasVisibleMode(visibleMode)) {
+    _syncGraphTransientHighlights({ visibleMode });
+    _refreshGraphLayoutDiagnosticsUi();
+    lastVisibleGraphRefreshToken = nextToken;
+    lastVisibleGraphStructureFingerprint = nextFingerprint;
+    lastVisibleGraphRefreshAt = Date.now();
+    return {
+      refreshed: true,
+      reason: "highlight-only",
+      token: nextToken,
+      fingerprint: nextFingerprint,
+      visibleMode,
+    };
   }
 
   const hints = { userPovAliases: _hostUserPovAliasHintsForGraph() };
@@ -882,11 +941,17 @@ function _refreshVisibleGraphWorkspace({ force = false } = {}) {
   _refreshGraphLayoutDiagnosticsUi();
 
   lastVisibleGraphRefreshToken = nextToken;
+  lastVisibleGraphStructureFingerprint = nextFingerprint;
   lastVisibleGraphRefreshAt = Date.now();
   return {
     refreshed: true,
-    reason: force ? "forced" : "changed",
+    reason:
+      classification.action === "hard-refresh" ? "hard"
+      : classification.action === "final-refresh" ? "final"
+      : force ? "forced"
+      : "changed",
     token: nextToken,
+    fingerprint: nextFingerprint,
     visibleMode,
   };
 }
@@ -913,40 +978,94 @@ function _syncGraphTransientHighlights({ renderer = null, visibleMode = null, fo
 
 function _flushScheduledVisibleGraphRefresh() {
   const shouldForce = pendingVisibleGraphRefreshForce === true;
+  const shouldFinal = pendingVisibleGraphRefreshFinal === true;
+  const shouldHard = pendingVisibleGraphRefreshHard === true;
   _clearScheduledVisibleGraphRefresh();
-  return _refreshVisibleGraphWorkspace({ force: shouldForce });
+  return _refreshVisibleGraphWorkspace({
+    force: shouldForce,
+    final: shouldFinal,
+    hard: shouldHard,
+  });
 }
 
-function _scheduleVisibleGraphWorkspaceRefresh({ force = false } = {}) {
+function _scheduleVisibleGraphWorkspaceRefresh({ force = false, final = false, hard = false } = {}) {
   const nextToken = _getCurrentGraphRefreshToken();
+  const nextFingerprint = _getCurrentGraphStructureFingerprint();
+  const visibleMode = _getVisibleGraphWorkspaceMode();
   if (nextToken === "hidden") {
     _clearScheduledVisibleGraphRefresh();
     return { scheduled: false, reason: "hidden" };
   }
 
-  if (force) {
-    _clearScheduledVisibleGraphRefresh();
-    return _refreshVisibleGraphWorkspace({ force: true });
+  const classification = classifyGraphRefresh({
+    previousToken: lastVisibleGraphRefreshToken,
+    nextToken,
+    previousFingerprint: lastVisibleGraphStructureFingerprint,
+    nextFingerprint,
+    force,
+    final,
+    hard,
+    visibleMode,
+  });
+
+  if (classification.action === "skip") {
+    return {
+      scheduled: false,
+      reason: "unchanged",
+      token: nextToken,
+      fingerprint: nextFingerprint,
+    };
   }
 
-  if (nextToken === lastVisibleGraphRefreshToken) {
-    return { scheduled: false, reason: "unchanged", token: nextToken };
+  if (classification.action === "highlight-only" && _isGraphCanvasVisibleMode(visibleMode)) {
+    _syncGraphTransientHighlights({ visibleMode });
+    _refreshGraphLayoutDiagnosticsUi();
+    lastVisibleGraphRefreshToken = nextToken;
+    lastVisibleGraphStructureFingerprint = nextFingerprint;
+    lastVisibleGraphRefreshAt = Date.now();
+    return {
+      scheduled: false,
+      reason: "highlight-only",
+      token: nextToken,
+      fingerprint: nextFingerprint,
+    };
+  }
+
+  if (hard || final || force) {
+    _clearScheduledVisibleGraphRefresh();
+    return _refreshVisibleGraphWorkspace({
+      force: force || final || hard,
+      final,
+      hard,
+    });
   }
 
   if (
     pendingVisibleGraphRefreshTimer &&
     pendingVisibleGraphRefreshToken === nextToken &&
+    pendingVisibleGraphRefreshFingerprint === nextFingerprint &&
     pendingVisibleGraphRefreshForce !== true
   ) {
-    return { scheduled: true, reason: "pending", token: nextToken };
+    return {
+      scheduled: true,
+      reason: "pending",
+      token: nextToken,
+      fingerprint: nextFingerprint,
+    };
   }
 
+  const throttleMs = _isExtractionUiRunning()
+    ? GRAPH_EXTRACTION_REFRESH_THROTTLE_MS
+    : GRAPH_LIVE_REFRESH_THROTTLE_MS;
   const delay = Math.max(
     0,
-    GRAPH_LIVE_REFRESH_THROTTLE_MS - (Date.now() - lastVisibleGraphRefreshAt),
+    throttleMs - (Date.now() - lastVisibleGraphRefreshAt),
   );
   pendingVisibleGraphRefreshToken = nextToken;
+  pendingVisibleGraphRefreshFingerprint = nextFingerprint;
   pendingVisibleGraphRefreshForce = false;
+  pendingVisibleGraphRefreshFinal = false;
+  pendingVisibleGraphRefreshHard = false;
 
   if (pendingVisibleGraphRefreshTimer) {
     clearTimeout(pendingVisibleGraphRefreshTimer);
@@ -965,6 +1084,7 @@ function _scheduleVisibleGraphWorkspaceRefresh({ force = false } = {}) {
     scheduled: true,
     reason: "throttled",
     token: nextToken,
+    fingerprint: nextFingerprint,
     delay,
   };
 }
@@ -1295,6 +1415,7 @@ export function closePanel() {
   _closeMemoryPopup();
   _clearScheduledVisibleGraphRefresh();
   lastVisibleGraphRefreshToken = "";
+  lastVisibleGraphStructureFingerprint = "";
 }
 
 /**
@@ -5555,7 +5676,12 @@ function _hostUserPovAliasHintsForGraph() {
 }
 
 function _refreshGraph(options = {}) {
-  return _refreshVisibleGraphWorkspace({ force: options.force !== false });
+  const final = options.final === true || options.force !== false;
+  return _refreshVisibleGraphWorkspace({
+    force: options.force !== false,
+    final,
+    hard: options.hard === true,
+  });
 }
 
 function _buildLegend() {
