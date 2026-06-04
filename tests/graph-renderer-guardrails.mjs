@@ -35,6 +35,7 @@ const canvasMockStats = {
   radialGradientCalls: 0,
   linearGradientCalls: 0,
   strokeCalls: 0,
+  shadowBlurValues: [],
 };
 
 function flushNextRaf(ms = 16) {
@@ -102,7 +103,9 @@ function createNoopContext() {
     set lineCap(_value) {},
     set lineJoin(_value) {},
     set shadowColor(_value) {},
-    set shadowBlur(_value) {},
+    set shadowBlur(value) {
+      canvasMockStats.shadowBlurValues.push(Number(value) || 0);
+    },
   };
 }
 
@@ -176,6 +179,7 @@ function resetCanvasStats() {
   canvasMockStats.radialGradientCalls = 0;
   canvasMockStats.linearGradientCalls = 0;
   canvasMockStats.strokeCalls = 0;
+  canvasMockStats.shadowBlurValues = [];
 }
 
 function assertRendererNodesInsideRegions(renderer) {
@@ -275,12 +279,20 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   });
 
   const radius = renderer._nodeRadius({ type: "character", importance: 10 });
+  const visualRadius = renderer._nodeVisualRadius({ type: "character", importance: 10 });
   assert.equal(radius, 14);
+  assert.ok(visualRadius <= 8, "visual radius stays small and crisp");
+  assert.ok(visualRadius < radius, "visual radius does not affect layout/collision radius");
   renderer.loadGraph(graph, { userPovAliases: ["Host"] });
   renderer.highlightNode("char-1");
   assertInputUnchanged(graph, before);
   assert.ok(canvasMockStats.radialGradientCalls > 0);
   assert.ok(canvasMockStats.linearGradientCalls > 0);
+  assert.equal(
+    Math.max(0, ...canvasMockStats.shadowBlurValues),
+    0,
+    "node visuals should not reintroduce heavy crystal-ball shadow blur",
+  );
   renderer.destroy();
 }
 
