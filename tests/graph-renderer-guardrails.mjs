@@ -36,6 +36,7 @@ const canvasMockStats = {
   linearGradientCalls: 0,
   strokeCalls: 0,
   shadowBlurValues: [],
+  arcRadii: [],
 };
 
 function flushNextRaf(ms = 16) {
@@ -84,7 +85,9 @@ function createNoopContext() {
     translate: noop,
     scale: noop,
     beginPath: noop,
-    arc: noop,
+    arc: (_x, _y, radius) => {
+      canvasMockStats.arcRadii.push(Number(radius) || 0);
+    },
     arcTo: noop,
     fill: noop,
     stroke: () => {
@@ -194,6 +197,7 @@ function resetCanvasStats() {
   canvasMockStats.linearGradientCalls = 0;
   canvasMockStats.strokeCalls = 0;
   canvasMockStats.shadowBlurValues = [];
+  canvasMockStats.arcRadii = [];
 }
 
 function assertRendererNodesInsideRegions(renderer) {
@@ -419,6 +423,10 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assert.ok(flushNextRaf());
   assert.ok(canvasMockStats.radialGradientCalls > 0);
   assert.ok(canvasMockStats.strokeCalls > 0);
+  assert.ok(
+    Math.max(0, ...canvasMockStats.arcRadii) <= 18,
+    "transient recall/extraction highlights stay close to node body, not large crystal-ball rings",
+  );
   diagnostics = renderer.getTransientHighlightDiagnostics();
   assert.equal(diagnostics.count, 3);
   mockNow += 120;

@@ -1947,8 +1947,9 @@ export class GraphRenderer {
             const activeRadius = isSelected
                 ? Math.min(10, baseRadius * 1.22, baseRadius + 1.8)
                 : (isHovered ? Math.min(9, baseRadius * 1.12, baseRadius + 1.1) : baseRadius);
-            const r = activeRadius * (isDimmed ? 0.62 : 1);
             const transientHighlight = this._transientHighlights.get(node.id) || null;
+            const transientVisual = this._getTransientHighlightVisual(transientHighlight);
+            const r = activeRadius * (isDimmed ? 0.62 : 1) * transientVisual.scale;
             const scope = normalizeMemoryScope(node.raw?.scope);
             const outlineColor = scope.layer === 'pov'
                 ? (scope.ownerType === 'user'
@@ -1960,7 +1961,7 @@ export class GraphRenderer {
             if (isDimmed) ctx.globalAlpha = 0.2;
 
             if (transientHighlight) {
-                this._drawTransientHighlight(ctx, node, r, transientHighlight);
+                this._drawTransientHighlight(ctx, node, r, transientHighlight, transientVisual);
             }
 
             if (isSelected || isHovered) {
@@ -1981,7 +1982,10 @@ export class GraphRenderer {
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-            ctx.fillStyle = colorWithAlpha(color, isSelected ? 0.96 : (isHovered ? 0.9 : 0.82));
+            ctx.fillStyle = colorWithAlpha(
+                transientVisual.color || color,
+                Math.min(1, (isSelected ? 0.96 : (isHovered ? 0.9 : 0.82)) * transientVisual.alpha),
+            );
             ctx.fill();
 
             ctx.strokeStyle = isSelected
@@ -2031,8 +2035,10 @@ export class GraphRenderer {
         this._afterRenderTransientHighlights();
     }
 
-    _drawTransientHighlight(ctx, node, radius, highlight) {
-        if (!highlight || !node) return;
+    _getTransientHighlightVisual(highlight) {
+        if (!highlight) {
+            return { scale: 1, alpha: 1, phase: 0, progress: 1, fade: 0, color: null };
+        }
         const now = this._nowMs();
         const ttl = Math.max(1, Number(highlight.ttlMs) || 1);
         const progress = Math.max(0, Math.min(1, (now - Number(highlight.startedAt || now)) / ttl));
@@ -2040,25 +2046,69 @@ export class GraphRenderer {
         const phase = reducedMotion ? 0.55 : (Math.sin(progress * Math.PI * 4) + 1) / 2;
         const fade = Math.max(0, 1 - progress);
         const kind = highlight.kind || 'recall';
-        const drawPulse = (color, offset, alphaScale = 1) => {
-            const pulse = reducedMotion ? 0.35 : phase;
-            const ringRadius = radius + offset + pulse * 5.5;
+        if (kind === 'extracted') {
+            const birth = reducedMotion ? 1 : Math.min(1, progress / 0.42);
+            return {
+                scale: 0.64 + birth * 0.5 + phase * 0.16 * fade,
+                alpha: 0.72 + birth * 0.28,
+                phase,
+                progress,
+                fade,
+                color: '#b79cff',
+            };
+        }
+        if (kind === 'mixed') {
+            return {
+                scale: 1.16 + phase * 0.32 * fade,
+                alpha: 1,
+                phase,
+                progress,
+                fade,
+                color: phase > 0.5 ? '#7cf8ff' : '#b79cff',
+            };
+        }
+        return {
+            scale: 1.1 + phase * 0.28 * fade,
+            alpha: 1,
+            phase,
+            progress,
+            fade,
+            color: '#7cf8ff',
+        };
+    }
+
+    _drawTransientHighlight(ctx, node, radius, highlight, visual = null) {
+        if (!highlight || !node) return;
+        const reducedMotion = this._isReducedMotion();
+        const pulse = visual || this._getTransientHighlightVisual(highlight);
+        const phase = pulse.phase;
+        const fade = pulse.fade;
+        const kind = highlight.kind || 'recall';
+        const drawThinPulse = (color, offset, alphaScale = 1) => {
+            const pulseAmount = reducedMotion ? 0.2 : phase;
+            const ringRadius = radius + offset + pulseAmount * 2.4;
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
-            ctx.strokeStyle = colorWithAlpha(color, (0.18 + phase * 0.18) * fade * alphaScale);
-            ctx.lineWidth = 0.65 + phase * 0.45;
+            ctx.strokeStyle = colorWithAlpha(color, (0.09 + phase * 0.1) * fade * alphaScale);
+            ctx.lineWidth = 0.45 + phase * 0.25;
             ctx.stroke();
         };
 
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, radius + 1.4 + phase * 1.2, 0, Math.PI * 2);
+        ctx.strokeStyle = colorWithAlpha(pulse.color || '#7cf8ff', (0.2 + phase * 0.16) * fade);
+        ctx.lineWidth = 0.8 + phase * 0.28;
+        ctx.stroke();
+
         if (kind === 'mixed') {
-            drawPulse('#7cf8ff', 4.2, 0.92);
-            drawPulse('#b79cff', 7.5, 0.72);
+            drawThinPulse('#7cf8ff', 3.8, 0.55);
+            drawThinPulse('#b79cff', 5.6, 0.42);
         } else if (kind === 'extracted') {
-            drawPulse('#b79cff', 4.8, 0.82);
-            drawPulse('#75ffb1', 7.8, 0.42);
+            drawThinPulse('#b79cff', 3.6, 0.5);
+            drawThinPulse('#75ffb1', 5.4, 0.28);
         } else {
-            drawPulse('#7cf8ff', 4.5, 0.9);
+            drawThinPulse('#7cf8ff', 4.0, 0.48);
         }
     }
 
