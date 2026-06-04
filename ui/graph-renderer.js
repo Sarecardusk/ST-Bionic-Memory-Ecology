@@ -334,6 +334,13 @@ export class GraphRenderer {
         this._layoutSolveRevision = 0;
         this._lastLayoutDiagnostics = null;
         this._lastLayoutReuseStats = { reused: 0, total: 0, ratio: 0 };
+        this._lastLayoutSeedModeCounts = {
+            core: 0,
+            topic: 0,
+            anchoredFragment: 0,
+            fallbackFragment: 0,
+            reused: 0,
+        };
 
         this._regionPanels = [];
         this._lastGraph = null;
@@ -492,6 +499,13 @@ export class GraphRenderer {
             .reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
         this._regionPanels = this._computeRegionPanels(W, H, parts);
         const layoutReuse = this._applyPreviousLayoutSeed(previousLayoutSeedByNodeId);
+        this._lastLayoutSeedModeCounts = {
+            core: 0,
+            topic: 0,
+            anchoredFragment: 0,
+            fallbackFragment: 0,
+            reused: Number(layoutReuse?.reused || 0),
+        };
         this._layoutAllPartitions(parts);
         const layoutFinishedAt = performance.now();
         const baseLayoutDiagnostics = {
@@ -509,6 +523,7 @@ export class GraphRenderer {
             userPovNodeCount: parts.userPov.length,
             characterPovNodeCount,
             characterPovPanelCount: parts.charMap.size,
+            layoutSeedModeCounts: { ...this._lastLayoutSeedModeCounts },
             sampled: false,
             capped: false,
             renderOnly: true,
@@ -865,20 +880,24 @@ export class GraphRenderer {
     }
 
     _layoutAllPartitions({ objective, userPov, charMap }) {
+        const layoutAdjacencyIndex = this._buildLayoutAdjacencyIndex();
         this._seedNeuralCloudInRect(
             objective.filter((node) => node._layoutSeedReused !== true),
             objective[0]?.regionRect,
+            layoutAdjacencyIndex,
         );
         if (userPov.length) {
             this._seedNeuralCloudInRect(
                 userPov.filter((node) => node._layoutSeedReused !== true),
                 userPov[0]?.regionRect,
+                layoutAdjacencyIndex,
             );
         }
         for (const [, arr] of charMap) {
             this._seedNeuralCloudInRect(
                 arr.filter((node) => node._layoutSeedReused !== true),
                 arr[0]?.regionRect,
+                layoutAdjacencyIndex,
             );
         }
     }
@@ -971,28 +990,158 @@ export class GraphRenderer {
         }
     }
 
+    _getMemoryLayoutRole(node) {
+        const importance = Number(node?.importance || 0);
+        const type = String(node?.type || '').trim().toLowerCase();
+        const raw = node?.raw || {};
+        const accessCount = Number(raw.accessCount ?? raw.recallCount ?? raw.fields?.accessCount ?? raw.fields?.recallCount);
+        const kind = String(raw.fields?.kind ?? raw.kind ?? '').trim().toLowerCase();
+
+        if (
+            importance >= 9
+            || ['character', 'rule', 'synopsis'].includes(type)
+            || (Number.isFinite(accessCount) && accessCount >= 5)
+            || /\b(core|anchor|central|main|primary)\b/.test(kind)
+        ) {
+            return 'core';
+        }
+        if (
+            importance >= 6
+            || ['event', 'thread', 'location', 'reflection'].includes(type)
+        ) {
+            return 'topic';
+        }
+        return 'fragment';
+    }
+
+    _buildLayoutAdjacencyIndex() {
+        const adjacency = new Map();
+        const add = (node, neighbor, strength) => {
+            if (!node?.id || !neighbor) return;
+            const key = String(node.id);
+            if (!adjacency.has(key)) adjacency.set(key, []);
+            adjacency.get(key).push({ neighbor, strength });
+        };
+
+        for (const edge of Array.isArray(this.edges) ? this.edges : []) {
+            if (!edge?.from?.id || !edge?.to?.id) continue;
+            const strength = Math.max(0, Number(edge.strength) || 0);
+            add(edge.from, edge.to, strength);
+            add(edge.to, edge.from, strength);
+        }
+
+        return adjacency;
+    }
+
+    _findLayoutAnchorForNode(node, adjacencyIndex = null, roleCache = null) {
+        if (!node?.regionKey) return null;
+        const adjacent = adjacencyIndex instanceof Map
+            ? adjacencyIndex.get(String(node.id)) || []
+            : [];
+        let best = null;
+        const resolveRole = (neighbor) => {
+            const key = String(neighbor?.id || '');
+            if (roleCache instanceof Map && roleCache.has(key)) return roleCache.get(key);
+            const role = this._getMemoryLayoutRole(neighbor);
+            if (roleCache instanceof Map && key) roleCache.set(key, role);
+            return role;
+        };
+
+        for (const entry of adjacent) {
+            const neighbor = entry?.neighbor || null;
+            if (!neighbor || neighbor.regionKey !== node.regionKey) continue;
+            if (!Number.isFinite(neighbor.x) || !Number.isFinite(neighbor.y)) continue;
+            const role = resolveRole(neighbor);
+            const strength = Math.max(0, Number(entry.strength) || 0);
+            const roleScore = role === 'core' ? 2 : (role === 'topic' ? 1 : 0);
+            const score = roleScore * 1000 + strength;
+            if (!best || score > best.score) {
+                best = { node: neighbor, strength, score };
+            }
+        }
+        return best;
+    }
+
+    _markLayoutSeedMode(mode) {
+        if (!this._lastLayoutSeedModeCounts || typeof this._lastLayoutSeedModeCounts !== 'object') return;
+        this._lastLayoutSeedModeCounts[mode] = Number(this._lastLayoutSeedModeCounts[mode] || 0) + 1;
+    }
+
     /**
-     * 椭圆 Vogel 螺旋初值：有机疏密，Deterministic，无网格感
+     * 记忆星系初值：core 居中，topic 环绕，fragment 靠近已定位锚点；Deterministic，无持久写入
      */
-    _seedNeuralCloudInRect(nodes, rect) {
-        if (!rect || !nodes.length) return;
+    _seedNeuralCloudInRect(nodes, rect, adjacencyIndex = null) {
+        const candidates = Array.isArray(nodes)
+            ? nodes.filter((node) => node && node._layoutSeedReused !== true)
+            : [];
+        if (!rect || !candidates.length) return;
         const pad = Math.max(10, this.config.neuralMinGap);
         const cx = rect.x + rect.w / 2;
         const cy = rect.y + rect.h / 2;
         const rx = Math.max(14, rect.w / 2 - pad);
         const ry = Math.max(14, rect.h / 2 - pad);
-        const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-        const n = sorted.length;
         const golden = Math.PI * (3 - Math.sqrt(5));
-        sorted.forEach((node, i) => {
-            const t = (i + 0.5) / Math.max(n, 1);
-            const radScale = Math.sqrt(t) * 0.9;
-            const phase = ((hashId(node.id) & 0x3ff) / 1024) * 0.62;
-            const theta = i * golden + phase;
-            node.x = cx + Math.cos(theta) * radScale * rx;
-            node.y = cy + Math.sin(theta) * radScale * ry;
+        const sorted = [...candidates].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        const byRole = { core: [], topic: [], fragment: [] };
+        const roleCache = new Map();
+        for (const node of sorted) {
+            const role = this._getMemoryLayoutRole(node);
+            roleCache.set(String(node.id), role);
+            byRole[role].push(node);
+        }
+
+        const placeNode = (node, x, y) => {
+            node.x = Number.isFinite(x) ? x : cx;
+            node.y = Number.isFinite(y) ? y : cy;
             node.vx = 0;
             node.vy = 0;
+            this._clampNodeToRegion(node);
+        };
+
+        byRole.core.forEach((node, i) => {
+            const h = hashId(node.id);
+            const theta = i * golden + ((h & 0x3ff) / 1024) * Math.PI * 2;
+            const radial = Math.min(rx, ry) * (0.035 + ((h >>> 10) & 0xff) / 255 * 0.14);
+            placeNode(node, cx + Math.cos(theta) * radial, cy + Math.sin(theta) * radial);
+            this._markLayoutSeedMode('core');
+        });
+
+        const topicCount = Math.max(1, byRole.topic.length);
+        byRole.topic.forEach((node, i) => {
+            const h = hashId(node.id);
+            const theta = i * golden + ((h & 0x3ff) / 1024) * 0.8;
+            const band = topicCount <= 1 ? 0.42 : 0.32 + (i % 5) * 0.08;
+            const jitter = (((h >>> 10) & 0xff) / 255 - 0.5) * 0.08;
+            const scale = Math.max(0.22, Math.min(0.74, band + jitter));
+            placeNode(node, cx + Math.cos(theta) * rx * scale, cy + Math.sin(theta) * ry * scale);
+            this._markLayoutSeedMode('topic');
+        });
+
+        const fragmentCount = Math.max(1, byRole.fragment.length);
+        byRole.fragment.forEach((node, i) => {
+            const anchor = this._findLayoutAnchorForNode(node, adjacencyIndex, roleCache);
+            const h = hashId(node.id);
+            if (anchor?.node) {
+                const theta = ((h >>> 1) / 0x7fffffff) * Math.PI * 2 + golden;
+                const maxLocalRadius = Math.max(14, Math.min(rx, ry) * 0.38);
+                const strength = Math.max(0, Math.min(1, Number(anchor.strength) || 0));
+                const rawRadius = 24 + (Math.abs(h) % 28) * (1.08 - strength * 0.28);
+                const radius = Math.min(maxLocalRadius, rawRadius);
+                placeNode(
+                    node,
+                    anchor.node.x + Math.cos(theta) * radius,
+                    anchor.node.y + Math.sin(theta) * radius,
+                );
+                this._markLayoutSeedMode('anchoredFragment');
+                return;
+            }
+
+            const t = (i + 0.5) / fragmentCount;
+            const radScale = Math.sqrt(t) * 0.9;
+            const phase = ((h & 0x3ff) / 1024) * 0.62;
+            const theta = i * golden + phase;
+            placeNode(node, cx + Math.cos(theta) * radScale * rx, cy + Math.sin(theta) * radScale * ry);
+            this._markLayoutSeedMode('fallbackFragment');
         });
     }
 

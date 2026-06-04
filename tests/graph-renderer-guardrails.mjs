@@ -138,6 +138,31 @@ function createGraphFixture() {
   };
 }
 
+function createStarSeedGraph({ includeFragment = false } = {}) {
+  const graph = {
+    nodes: [
+      { id: "star-core", type: "character", name: "Core", importance: 10, scope: { layer: "objective" } },
+      { id: "star-topic", type: "event", name: "Topic", importance: 7, scope: { layer: "objective" } },
+      { id: "star-topic-2", type: "thread", name: "Topic 2", importance: 6, scope: { layer: "objective" } },
+    ],
+    edges: [
+      { fromId: "star-core", toId: "star-topic", relation: "related", strength: 0.9 },
+      { fromId: "star-core", toId: "star-topic-2", relation: "related", strength: 0.7 },
+    ],
+  };
+  if (includeFragment) {
+    graph.nodes.push({
+      id: "star-fragment",
+      type: "concept",
+      name: "Fragment",
+      importance: 2,
+      scope: { layer: "objective" },
+    });
+    graph.edges.push({ fromId: "star-topic", toId: "star-fragment", relation: "related", strength: 0.95 });
+  }
+  return graph;
+}
+
 function assertInputUnchanged(graph, beforeJson) {
   assert.equal(JSON.stringify(graph), beforeJson);
   for (const node of graph.nodes) {
@@ -151,6 +176,17 @@ function resetCanvasStats() {
   canvasMockStats.radialGradientCalls = 0;
   canvasMockStats.linearGradientCalls = 0;
   canvasMockStats.strokeCalls = 0;
+}
+
+function assertRendererNodesInsideRegions(renderer) {
+  for (const node of renderer.nodes) {
+    assert.equal(Number.isFinite(node.x), true, `${node.id} x is finite`);
+    assert.equal(Number.isFinite(node.y), true, `${node.id} y is finite`);
+    assert.ok(node.regionRect, `${node.id} has regionRect`);
+    const r = node.regionRect;
+    assert.ok(node.x >= r.x - 0.001 && node.x <= r.x + r.w + 0.001, `${node.id} x inside region`);
+    assert.ok(node.y >= r.y - 0.001 && node.y <= r.y + r.h + 0.001, `${node.id} y inside region`);
+  }
 }
 
 const { GraphRenderer } = await import("../ui/graph-renderer.js");
@@ -342,6 +378,51 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assertInputUnchanged(graph, before);
   renderer.destroy();
   globalThis.window.matchMedia = previousMatchMedia;
+}
+
+{
+  const graph = createStarSeedGraph();
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  assertInputUnchanged(graph, before);
+  assertRendererNodesInsideRegions(renderer);
+  let diagnostics = renderer.getLastLayoutDiagnostics();
+  assert.equal(diagnostics.layoutSeedModeCounts.core, 1);
+  assert.equal(diagnostics.layoutSeedModeCounts.topic, 2);
+  assert.equal(diagnostics.layoutSeedModeCounts.reused, 0);
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  assertInputUnchanged(graph, before);
+  assertRendererNodesInsideRegions(renderer);
+  diagnostics = renderer.getLastLayoutDiagnostics();
+  assert.equal(diagnostics.layoutReuseCount, diagnostics.visibleNodeCount);
+  assert.equal(diagnostics.layoutSeedModeCounts.reused, diagnostics.visibleNodeCount);
+  renderer.destroy();
+}
+
+{
+  const initialGraph = createStarSeedGraph();
+  const nextGraph = createStarSeedGraph({ includeFragment: true });
+  const before = JSON.stringify(nextGraph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(initialGraph, { userPovAliases: ["Host"] });
+  renderer.loadGraph(nextGraph, { userPovAliases: ["Host"] });
+  assertInputUnchanged(nextGraph, before);
+  assertRendererNodesInsideRegions(renderer);
+  const diagnostics = renderer.getLastLayoutDiagnostics();
+  assert.equal(diagnostics.layoutSeedModeCounts.anchoredFragment, 1);
+  assert.equal(diagnostics.layoutSeedModeCounts.fallbackFragment, 0);
+  assert.equal(diagnostics.layoutSeedModeCounts.reused, 3);
+  renderer.destroy();
 }
 
 console.log("graph-renderer guardrail tests passed");
