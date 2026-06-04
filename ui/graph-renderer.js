@@ -359,6 +359,9 @@ export class GraphRenderer {
         this._suppressMouseUntil = 0;
 
         this.animId = null;
+        this._highlightAnimId = null;
+        this._highlightExpiryTimer = null;
+        this._transientHighlights = new Map();
         this.enabled = true;
 
         // Callbacks
@@ -416,6 +419,7 @@ export class GraphRenderer {
         const rawPartitionCounts = countRawNodesByScope(activeRawNodes, this._userPovAliasSet);
 
         if (!this.enabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
             this._setLastLayoutDiagnostics({
                 mode: 'skipped',
                 nodeCount: 0,
@@ -545,6 +549,8 @@ export class GraphRenderer {
             this.selectedNode = this.nodeMap.get(prevSelectedId) || null;
         }
 
+        this._pruneTransientHighlights(this._nowMs());
+
         this._cancelAnim();
         this._render();
 
@@ -587,6 +593,69 @@ export class GraphRenderer {
         this.themeName = themeName;
         this.colors = getNodeColors(themeName);
         if (this.enabled) this._render();
+    }
+
+    setTransientHighlights(payload = {}) {
+        const wasActive = this._transientHighlights?.size > 0;
+        const ttlMs = Math.max(1, Math.min(60000, Number(payload?.ttlMs) || 1800));
+        const reason = String(payload?.reason || '').trim();
+        const now = this._nowMs();
+        const next = new Map();
+        const recallIds = this._normalizeTransientHighlightIds(payload?.recallNodeIds);
+        const extractedIds = this._normalizeTransientHighlightIds(payload?.extractedNodeIds);
+
+        for (const id of extractedIds) {
+            next.set(id, {
+                kind: 'extracted',
+                startedAt: now,
+                expiresAt: now + ttlMs,
+                ttlMs,
+                reason,
+            });
+        }
+        for (const id of recallIds) {
+            const existing = next.get(id);
+            next.set(id, {
+                kind: existing ? 'mixed' : 'recall',
+                startedAt: now,
+                expiresAt: now + ttlMs,
+                ttlMs,
+                reason,
+            });
+        }
+
+        this._transientHighlights = next;
+        this._cancelHighlightAnimationFrame();
+        this._cancelHighlightExpiryTimer();
+
+        if (!this.enabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
+            return;
+        }
+        if (next.size > 0) {
+            this._scheduleRender();
+            if (this._isReducedMotion()) {
+                this._scheduleReducedMotionHighlightExpiry();
+            }
+        } else if (wasActive) {
+            this._scheduleRender();
+        }
+    }
+
+    getTransientHighlightDiagnostics() {
+        const now = this._nowMs();
+        this._pruneTransientHighlights(now);
+        if (this._transientHighlights.size <= 0) {
+            this._cancelHighlightAnimationFrame();
+            this._cancelHighlightExpiryTimer();
+        }
+        return {
+            count: this._transientHighlights.size,
+            activeCount: this._transientHighlights.size,
+            reducedMotion: this._isReducedMotion(),
+            animationScheduled: !!this._highlightAnimId,
+            expiryScheduled: !!this._highlightExpiryTimer,
+        };
     }
 
     setRuntimeConfig(runtimeConfig = {}) {
@@ -635,7 +704,10 @@ export class GraphRenderer {
     setEnabled(enabled = true) {
         const nextEnabled = enabled !== false;
         if (this.enabled === nextEnabled) {
-            if (!nextEnabled) this._clearCanvas();
+            if (!nextEnabled) {
+                this._clearTransientHighlights({ cancelAnimation: true });
+                this._clearCanvas();
+            }
             return;
         }
         this._nextLayoutSolveRevision();
@@ -652,6 +724,7 @@ export class GraphRenderer {
         this._dragStartMouse = null;
         this.hoveredNode = null;
         if (!nextEnabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
             this.nodeMap.clear();
             this.nodes = [];
             this.edges = [];
@@ -1378,6 +1451,7 @@ export class GraphRenderer {
         const dpr = window.devicePixelRatio || 1;
         const W = this.canvas.width / dpr;
         const H = this.canvas.height / dpr;
+        this._pruneTransientHighlights(this._nowMs());
 
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -1406,6 +1480,7 @@ export class GraphRenderer {
             const isHovered = node === this.hoveredNode;
             const isDimmed = focus.selectedNode && !focus.connectedNodes.has(node);
             const r = (isSelected ? baseRadius * 1.12 : baseRadius) * (isDimmed ? 0.6 : 1);
+            const transientHighlight = this._transientHighlights.get(node.id) || null;
             const scope = normalizeMemoryScope(node.raw?.scope);
             const outlineColor = scope.layer === 'pov'
                 ? (scope.ownerType === 'user'
@@ -1415,6 +1490,10 @@ export class GraphRenderer {
 
             ctx.save();
             if (isDimmed) ctx.globalAlpha = 0.2;
+
+            if (transientHighlight) {
+                this._drawTransientHighlight(ctx, node, r, transientHighlight);
+            }
 
             if (isSelected || isHovered) {
                 const glowRadius = r + (isSelected ? 20 : 13);
@@ -1512,6 +1591,71 @@ export class GraphRenderer {
         }
 
         ctx.restore();
+        this._afterRenderTransientHighlights();
+    }
+
+    _drawTransientHighlight(ctx, node, radius, highlight) {
+        if (!highlight || !node) return;
+        const now = this._nowMs();
+        const ttl = Math.max(1, Number(highlight.ttlMs) || 1);
+        const progress = Math.max(0, Math.min(1, (now - Number(highlight.startedAt || now)) / ttl));
+        const reducedMotion = this._isReducedMotion();
+        const phase = reducedMotion ? 0.55 : (Math.sin(progress * Math.PI * 4) + 1) / 2;
+        const fade = Math.max(0, 1 - progress);
+        const kind = highlight.kind || 'recall';
+        const drawPulse = (color, offset, alphaScale = 1) => {
+            const pulse = reducedMotion ? 0.35 : phase;
+            const ringRadius = radius + offset + pulse * 11;
+            const glowRadius = ringRadius + 11;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [node.x, node.y, Math.max(1, radius * 0.8), node.x, node.y, glowRadius],
+                [
+                    [0, colorWithAlpha(color, 0.10 * fade * alphaScale)],
+                    [0.58, colorWithAlpha(color, 0.16 * fade * alphaScale)],
+                    [1, colorWithAlpha(color, 0)],
+                ],
+                colorWithAlpha(color, 0.08 * fade * alphaScale),
+            );
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
+            ctx.strokeStyle = colorWithAlpha(color, (0.28 + phase * 0.34) * fade * alphaScale);
+            ctx.lineWidth = 1.2 + phase * 1.4;
+            ctx.stroke();
+        };
+
+        if (kind === 'mixed') {
+            drawPulse('#7cf8ff', 7, 1);
+            drawPulse('#b79cff', 14, 0.88);
+        } else if (kind === 'extracted') {
+            drawPulse('#b79cff', 9, 0.9);
+            drawPulse('#75ffb1', 15, 0.5);
+        } else {
+            drawPulse('#7cf8ff', 8, 1);
+        }
+    }
+
+    _afterRenderTransientHighlights() {
+        if (!this.enabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
+            return;
+        }
+        const hasActive = this._pruneTransientHighlights(this._nowMs()) > 0;
+        if (!hasActive) {
+            this._cancelHighlightAnimationFrame();
+            this._cancelHighlightExpiryTimer();
+            return;
+        }
+        if (!this._isReducedMotion()) {
+            this._scheduleHighlightAnimationFrame();
+        } else {
+            this._scheduleReducedMotionHighlightExpiry();
+        }
     }
 
     _drawDeepSpaceBackground(ctx, W, H) {
@@ -1614,6 +1758,105 @@ export class GraphRenderer {
             }
         }
         return { selectedNode, connectedNodes };
+    }
+
+    _nowMs() {
+        if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+            return performance.now();
+        }
+        return Date.now();
+    }
+
+    _isReducedMotion() {
+        try {
+            return window?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+        } catch {
+            return false;
+        }
+    }
+
+    _normalizeTransientHighlightIds(input) {
+        const source = Array.isArray(input) ? input : (input == null ? [] : [input]);
+        const ids = new Set();
+        for (const item of source) {
+            let raw = item;
+            if (item && typeof item === 'object') {
+                raw = item.id ?? item.nodeId;
+            }
+            if (raw == null) continue;
+            const id = String(raw).trim();
+            if (id) ids.add(id);
+        }
+        return ids;
+    }
+
+    _pruneTransientHighlights(now = this._nowMs()) {
+        for (const [nodeId, highlight] of this._transientHighlights) {
+            if (!this.nodeMap.has(nodeId) || Number(highlight?.expiresAt || 0) <= now) {
+                this._transientHighlights.delete(nodeId);
+            }
+        }
+        return this._transientHighlights.size;
+    }
+
+    _clearTransientHighlights({ cancelAnimation = false } = {}) {
+        this._transientHighlights.clear();
+        if (cancelAnimation) {
+            this._cancelHighlightAnimationFrame();
+            this._cancelHighlightExpiryTimer();
+        }
+    }
+
+    _cancelHighlightAnimationFrame() {
+        if (this._highlightAnimId) {
+            cancelAnimationFrame(this._highlightAnimId);
+            this._highlightAnimId = null;
+        }
+    }
+
+    _cancelHighlightExpiryTimer() {
+        if (this._highlightExpiryTimer) {
+            clearTimeout(this._highlightExpiryTimer);
+            this._highlightExpiryTimer = null;
+        }
+    }
+
+    _scheduleReducedMotionHighlightExpiry() {
+        if (!this.enabled || this._highlightExpiryTimer || !this._isReducedMotion()) return;
+        if (this._transientHighlights.size <= 0) return;
+        const now = this._nowMs();
+        let nextExpiresAt = Infinity;
+        for (const highlight of this._transientHighlights.values()) {
+            const expiresAt = Number(highlight?.expiresAt || 0);
+            if (expiresAt > now) nextExpiresAt = Math.min(nextExpiresAt, expiresAt);
+        }
+        if (!Number.isFinite(nextExpiresAt)) return;
+        const delay = Math.max(1, Math.ceil(nextExpiresAt - now) + 1);
+        this._highlightExpiryTimer = setTimeout(() => {
+            this._highlightExpiryTimer = null;
+            if (!this.enabled) {
+                this._clearTransientHighlights({ cancelAnimation: true });
+                return;
+            }
+            const hadHighlights = this._transientHighlights.size > 0;
+            const active = this._pruneTransientHighlights(this._nowMs());
+            if (hadHighlights) this._scheduleRender();
+            if (active > 0) this._scheduleReducedMotionHighlightExpiry();
+        }, delay);
+    }
+
+    _scheduleHighlightAnimationFrame() {
+        if (!this.enabled || this._highlightAnimId || this._isReducedMotion()) return;
+        if (this._transientHighlights.size <= 0) return;
+        this._highlightAnimId = requestAnimationFrame(() => {
+            this._highlightAnimId = null;
+            if (!this.enabled) {
+                this._clearTransientHighlights({ cancelAnimation: true });
+                return;
+            }
+            if (this._pruneTransientHighlights(this._nowMs()) <= 0) return;
+            this._render();
+        });
     }
 
     _scheduleRender() {
@@ -1960,6 +2203,7 @@ export class GraphRenderer {
     destroy() {
         this._nextLayoutSolveRevision();
         this._cancelAnim();
+        this._clearTransientHighlights({ cancelAnimation: true });
         this._nativeLayoutBridge?.dispose?.();
         this._nativeLayoutBridge = null;
         recordGraphLayoutDebugSnapshot(

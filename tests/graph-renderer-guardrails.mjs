@@ -4,9 +4,28 @@ globalThis.window = {
   devicePixelRatio: 1,
   matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
 };
-globalThis.performance ??= { now: () => Date.now() };
-globalThis.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 0);
-globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+let mockNow = 1000;
+globalThis.performance = { now: () => mockNow };
+let rafId = 0;
+const rafCallbacks = new Map();
+let timerId = 0;
+const timerCallbacks = new Map();
+globalThis.requestAnimationFrame = (callback) => {
+  const id = ++rafId;
+  rafCallbacks.set(id, callback);
+  return id;
+};
+globalThis.cancelAnimationFrame = (id) => {
+  rafCallbacks.delete(id);
+};
+globalThis.setTimeout = (callback, delay = 0) => {
+  const id = ++timerId;
+  timerCallbacks.set(id, { callback, dueAt: mockNow + Math.max(0, Number(delay) || 0) });
+  return id;
+};
+globalThis.clearTimeout = (id) => {
+  timerCallbacks.delete(id);
+};
 globalThis.ResizeObserver = class ResizeObserver {
   observe() {}
   disconnect() {}
@@ -15,7 +34,30 @@ globalThis.ResizeObserver = class ResizeObserver {
 const canvasMockStats = {
   radialGradientCalls: 0,
   linearGradientCalls: 0,
+  strokeCalls: 0,
 };
+
+function flushNextRaf(ms = 16) {
+  const [id, callback] = rafCallbacks.entries().next().value || [];
+  if (!id) return false;
+  rafCallbacks.delete(id);
+  mockNow += ms;
+  callback(mockNow);
+  return true;
+}
+
+function advanceMockTime(ms = 0) {
+  mockNow += ms;
+  let ran = false;
+  for (const [id, timer] of [...timerCallbacks.entries()].sort((a, b) => a[1].dueAt - b[1].dueAt)) {
+    if (timer.dueAt <= mockNow) {
+      timerCallbacks.delete(id);
+      timer.callback();
+      ran = true;
+    }
+  }
+  return ran;
+}
 
 function createNoopContext() {
   const noop = () => {};
@@ -30,7 +72,9 @@ function createNoopContext() {
     arc: noop,
     arcTo: noop,
     fill: noop,
-    stroke: noop,
+    stroke: () => {
+      canvasMockStats.strokeCalls += 1;
+    },
     moveTo: noop,
     lineTo: noop,
     quadraticCurveTo: noop,
@@ -57,6 +101,8 @@ function createNoopContext() {
     set globalAlpha(_value) {},
     set lineCap(_value) {},
     set lineJoin(_value) {},
+    set shadowColor(_value) {},
+    set shadowBlur(_value) {},
   };
 }
 
@@ -99,6 +145,12 @@ function assertInputUnchanged(graph, beforeJson) {
       assert.equal(Object.prototype.hasOwnProperty.call(node, key), false, `${node.id} gained ${key}`);
     }
   }
+}
+
+function resetCanvasStats() {
+  canvasMockStats.radialGradientCalls = 0;
+  canvasMockStats.linearGradientCalls = 0;
+  canvasMockStats.strokeCalls = 0;
 }
 
 const { GraphRenderer } = await import("../ui/graph-renderer.js");
@@ -209,6 +261,87 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   renderer.highlightNode("objective-1");
   assertInputUnchanged(graph, before);
   renderer.destroy();
+}
+
+{
+  resetCanvasStats();
+  const graph = createGraphFixture();
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.setTransientHighlights({
+    recallNodeIds: ["objective-1", { nodeId: "user-1" }],
+    extractedNodeIds: [{ id: "char-1" }, "objective-1"],
+    ttlMs: 80,
+    reason: "test",
+  });
+  assertInputUnchanged(graph, before);
+  let diagnostics = renderer.getTransientHighlightDiagnostics();
+  assert.equal(diagnostics.count, 3);
+  assert.equal(diagnostics.activeCount, 3);
+  assert.equal(diagnostics.reducedMotion, false);
+  assert.ok(flushNextRaf());
+  assert.ok(canvasMockStats.radialGradientCalls > 0);
+  assert.ok(canvasMockStats.strokeCalls > 0);
+  diagnostics = renderer.getTransientHighlightDiagnostics();
+  assert.equal(diagnostics.count, 3);
+  mockNow += 120;
+  diagnostics = renderer.getTransientHighlightDiagnostics();
+  assert.equal(diagnostics.count, 0);
+  assert.equal(diagnostics.animationScheduled, false);
+  renderer.destroy();
+}
+
+{
+  const graph = createGraphFixture();
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.setTransientHighlights({ recallNodeIds: ["objective-1"], ttlMs: 1000 });
+  assert.equal(renderer.getTransientHighlightDiagnostics().count, 1);
+  renderer.setEnabled(false);
+  const diagnostics = renderer.getTransientHighlightDiagnostics();
+  assert.equal(diagnostics.count, 0);
+  assert.equal(diagnostics.animationScheduled, false);
+  renderer.destroy();
+}
+
+{
+  const previousMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  const graph = createGraphFixture();
+  const before = JSON.stringify(graph);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  resetCanvasStats();
+  renderer.setTransientHighlights({ recallNodeIds: ["objective-1"], ttlMs: 1000 });
+  flushNextRaf();
+  let diagnostics = renderer.getTransientHighlightDiagnostics();
+  assert.equal(diagnostics.reducedMotion, true);
+  assert.equal(diagnostics.count, 1);
+  assert.equal(diagnostics.animationScheduled, false);
+  assert.equal(diagnostics.expiryScheduled, true);
+  assert.ok(canvasMockStats.strokeCalls > 0);
+  advanceMockTime(1002);
+  assert.ok(flushNextRaf());
+  diagnostics = renderer.getTransientHighlightDiagnostics();
+  assert.equal(diagnostics.count, 0);
+  assert.equal(diagnostics.animationScheduled, false);
+  assert.equal(diagnostics.expiryScheduled, false);
+  assertInputUnchanged(graph, before);
+  renderer.destroy();
+  globalThis.window.matchMedia = previousMatchMedia;
 }
 
 console.log("graph-renderer guardrail tests passed");
