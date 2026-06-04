@@ -6561,6 +6561,15 @@ function _showNodeDetail(node) {
     document.getElementById("bme-mobile-node-detail-scrim")?.setAttribute("hidden", "");
   }
 
+  if (!node) {
+    detailEl.classList.remove("open");
+    detailEl.dataset.editNodeId = "";
+    titleEl.textContent = "";
+    bodyEl.replaceChildren();
+    scrimEl?.setAttribute("hidden", "");
+    return;
+  }
+
   const raw = node.raw || node;
   titleEl.textContent = getNodeDisplayName(raw);
   detailEl.dataset.editNodeId = raw.id || "";
