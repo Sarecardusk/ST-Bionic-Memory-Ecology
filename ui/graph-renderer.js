@@ -216,6 +216,41 @@ function partitionNodesByScope(nodes, userPovAliasSet = null) {
     return { objective, userPov, charMap };
 }
 
+function countRawNodesByScope(nodes, userPovAliasSet = null) {
+    const aliasSet = userPovAliasSet instanceof Set ? userPovAliasSet : new Set();
+    let objectiveNodeCount = 0;
+    let userPovNodeCount = 0;
+    let characterPovNodeCount = 0;
+    const charKeys = new Set();
+
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+        const scope = normalizeMemoryScope(node?.scope);
+        if (scope.layer !== 'pov') {
+            objectiveNodeCount += 1;
+            continue;
+        }
+        if (scopeMatchesHostUserAliases(scope, aliasSet) || scope.ownerType === 'user') {
+            userPovNodeCount += 1;
+            continue;
+        }
+        if (scope.ownerType === 'character') {
+            characterPovNodeCount += 1;
+            const nameKey = normalizeKeyForPartition(scope.ownerName);
+            const idKey = normalizeKeyForPartition(scope.ownerId);
+            charKeys.add(nameKey || idKey || '·');
+            continue;
+        }
+        objectiveNodeCount += 1;
+    }
+
+    return {
+        objectiveNodeCount,
+        userPovNodeCount,
+        characterPovNodeCount,
+        characterPovPanelCount: charKeys.size,
+    };
+}
+
 export class GraphRenderer {
     /**
      * @param {HTMLCanvasElement} canvas
@@ -305,13 +340,60 @@ export class GraphRenderer {
         this._lastLayoutHints = layoutHints && typeof layoutHints === 'object'
             ? { ...layoutHints }
             : {};
+        const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+        const rawEdges = Array.isArray(graph?.edges) ? graph.edges : [];
+        const rawNodeCount = rawNodes.length;
+        const rawEdgeCount = rawEdges.length;
+        const diagnosticCanvasBase = {
+            canvasCssWidth: Number(this._lastCanvasCssWidth || 0),
+            canvasCssHeight: Number(this._lastCanvasCssHeight || 0),
+            devicePixelRatio: Number(window.devicePixelRatio || 1),
+            enabled: this.enabled !== false,
+        };
         if (layoutHints && Object.prototype.hasOwnProperty.call(layoutHints, 'userPovAliases')) {
             this._userPovAliasSet = buildUserPovAliasNormalizedSet(
                 layoutHints.userPovAliases,
             );
         }
+        const activeRawNodes = rawNodes.filter(n => !n.archived);
+        const activeRawNodeIds = new Set(activeRawNodes.map((node) => node?.id).filter(Boolean));
+        const activeRawEdges = rawEdges.filter(e => (
+            !e?.invalidAt
+            && !e?.expiredAt
+            && activeRawNodeIds.has(e?.fromId)
+            && activeRawNodeIds.has(e?.toId)
+        ));
+        const rawPartitionCounts = countRawNodesByScope(activeRawNodes, this._userPovAliasSet);
 
         if (!this.enabled) {
+            this._setLastLayoutDiagnostics({
+                mode: 'skipped',
+                nodeCount: 0,
+                edgeCount: 0,
+                rawNodeCount,
+                rawEdgeCount,
+                activeNodeCount: activeRawNodes.length,
+                activeEdgeCount: activeRawEdges.length,
+                visibleNodeCount: 0,
+                visibleEdgeCount: 0,
+                archivedNodeCount: Math.max(0, rawNodeCount - activeRawNodes.length),
+                skippedEdgeCount: Math.max(0, rawEdgeCount - activeRawEdges.length),
+                ...rawPartitionCounts,
+                prepareMs: 0,
+                layoutSeedMs: 0,
+                solveMs: 0,
+                totalMs: Math.max(0, performance.now() - loadStartedAt),
+                layoutReuseCount: 0,
+                layoutReuseTotal: 0,
+                layoutReuseRatio: 0,
+                sampled: false,
+                capped: false,
+                renderOnly: true,
+                at: Date.now(),
+                ...diagnosticCanvasBase,
+                enabled: false,
+                reason: 'disabled',
+            });
             return;
         }
 
@@ -321,8 +403,7 @@ export class GraphRenderer {
         const W = this.canvas.width / dpr;
         const H = this.canvas.height / dpr;
 
-        const activeNodes = graph.nodes.filter(n => !n.archived);
-        this.nodes = activeNodes.map((n) => {
+        this.nodes = activeRawNodes.map((n) => {
             const node = {
                 id: n.id,
                 type: n.type || 'event',
@@ -342,7 +423,7 @@ export class GraphRenderer {
             return node;
         });
 
-        this.edges = graph.edges
+        this.edges = rawEdges
             .filter(e => !e.invalidAt && !e.expiredAt && this.nodeMap.has(e.fromId) && this.nodeMap.has(e.toId))
             .map(e => ({
                 from: this.nodeMap.get(e.fromId),
@@ -353,10 +434,32 @@ export class GraphRenderer {
         const prepareFinishedAt = performance.now();
 
         const parts = partitionNodesByScope(this.nodes, this._userPovAliasSet);
+        const characterPovNodeCount = [...parts.charMap.values()]
+            .reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
         this._regionPanels = this._computeRegionPanels(W, H, parts);
         const layoutReuse = this._applyPreviousLayoutSeed(previousLayoutSeedByNodeId);
         this._layoutAllPartitions(parts);
         const layoutFinishedAt = performance.now();
+        const baseLayoutDiagnostics = {
+            nodeCount: this.nodes.length,
+            edgeCount: this.edges.length,
+            rawNodeCount,
+            rawEdgeCount,
+            activeNodeCount: this.nodes.length,
+            activeEdgeCount: this.edges.length,
+            visibleNodeCount: this.nodes.length,
+            visibleEdgeCount: this.edges.length,
+            archivedNodeCount: Math.max(0, rawNodeCount - this.nodes.length),
+            skippedEdgeCount: Math.max(0, rawEdgeCount - this.edges.length),
+            objectiveNodeCount: parts.objective.length,
+            userPovNodeCount: parts.userPov.length,
+            characterPovNodeCount,
+            characterPovPanelCount: parts.charMap.size,
+            sampled: false,
+            capped: false,
+            renderOnly: true,
+            ...diagnosticCanvasBase,
+        };
         const neuralPlan = this._resolveNeuralSimulationPlan();
         const shouldTryNativeLayout = this._shouldTryNativeLayout(
             this.nodes.length,
@@ -378,6 +481,7 @@ export class GraphRenderer {
                         prepareFinishedAt,
                         layoutFinishedAt,
                         layoutReuse,
+                        baseLayoutDiagnostics,
                     },
                 );
             } else {
@@ -397,8 +501,7 @@ export class GraphRenderer {
         if (!nativeSolvePromise) {
             this._setLastLayoutDiagnostics({
                 mode: solvePath,
-                nodeCount: this.nodes.length,
-                edgeCount: this.edges.length,
+                ...baseLayoutDiagnostics,
                 prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                 layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                 solveMs,
@@ -945,6 +1048,9 @@ export class GraphRenderer {
         const layoutReuse = timings.layoutReuse && typeof timings.layoutReuse === 'object'
             ? timings.layoutReuse
             : this._lastLayoutReuseStats;
+        const baseLayoutDiagnostics = timings.baseLayoutDiagnostics && typeof timings.baseLayoutDiagnostics === 'object'
+            ? timings.baseLayoutDiagnostics
+            : {};
 
         const bridge = this._ensureNativeLayoutBridge();
         const solveStartedAt = performance.now();
@@ -968,8 +1074,7 @@ export class GraphRenderer {
                 applied: false,
                 diagnostics: {
                     mode: 'native-stale',
-                    nodeCount: this.nodes.length,
-                    edgeCount: this.edges.length,
+                    ...baseLayoutDiagnostics,
                     prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                     layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                     solveMs: Math.max(0, performance.now() - solveStartedAt),
@@ -988,8 +1093,7 @@ export class GraphRenderer {
                 applied: true,
                 diagnostics: {
                     mode: nativeResult.usedNative ? 'rust-wasm-worker' : 'js-worker',
-                    nodeCount: this.nodes.length,
-                    edgeCount: this.edges.length,
+                    ...baseLayoutDiagnostics,
                     prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                     layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                     solveMs: Math.max(0, performance.now() - solveStartedAt),
@@ -1010,8 +1114,7 @@ export class GraphRenderer {
                 applied: false,
                 diagnostics: {
                     mode: 'native-failed-hard',
-                    nodeCount: this.nodes.length,
-                    edgeCount: this.edges.length,
+                    ...baseLayoutDiagnostics,
                     prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                     layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                     solveMs: Math.max(0, performance.now() - solveStartedAt),
@@ -1031,8 +1134,7 @@ export class GraphRenderer {
             applied: true,
             diagnostics: {
                 mode: 'js-fallback',
-                nodeCount: this.nodes.length,
-                edgeCount: this.edges.length,
+                ...baseLayoutDiagnostics,
                 prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                 layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                 solveMs: Math.max(0, performance.now() - solveStartedAt) + fallbackSolveMs,

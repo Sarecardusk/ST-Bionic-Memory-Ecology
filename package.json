@@ -10,6 +10,7 @@
     "test:generation-context": "node tests/generation-context.mjs",
     "test:generation-recall-transactions": "node tests/generation-recall-transaction-isolation.mjs",
     "test:graph-persistence": "node tests/graph-persistence.mjs",
+    "test:graph-renderer-guardrails": "node tests/graph-renderer-guardrails.mjs",
     "test:index-slicing-ratchet": "node tests/index-slicing-ratchet.mjs",
     "test:runtime-deps": "node tests/runtime-deps-completeness.mjs",
     "test:identity-resolver": "node tests/identity-resolver.mjs",
