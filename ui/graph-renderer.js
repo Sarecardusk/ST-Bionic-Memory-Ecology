@@ -1569,25 +1569,25 @@ export class GraphRenderer {
         const cy = my + ny * bend;
 
         const relationColor = edgeColorForRelation(edge.relation);
-        const baseAlpha = sameZone ? 0.035 + strength * 0.09 : 0.026 + strength * 0.07;
-        const alpha = isDimmed ? 0.018 : (isConnectedToSelection ? 0.38 + strength * 0.28 : baseAlpha);
+        const baseAlpha = sameZone ? 0.026 + strength * 0.052 : 0.02 + strength * 0.045;
+        const alpha = isDimmed ? 0.012 : (isConnectedToSelection ? 0.28 + strength * 0.14 : baseAlpha);
 
         if (isConnectedToSelection) {
             ctx.beginPath();
             ctx.moveTo(from.x, from.y);
             ctx.quadraticCurveTo(cx, cy, to.x, to.y);
-            ctx.strokeStyle = colorWithAlpha(relationColor, 0.12 + strength * 0.12);
-            ctx.lineWidth = 2.8 + strength * 2.2;
+            ctx.strokeStyle = colorWithAlpha(relationColor, 0.055 + strength * 0.055);
+            ctx.lineWidth = 1.35 + strength * 0.95;
             ctx.stroke();
         }
 
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
         ctx.quadraticCurveTo(cx, cy, to.x, to.y);
-        ctx.strokeStyle = colorWithAlpha(isConnectedToSelection ? relationColor : '#c9dcff', alpha);
+        ctx.strokeStyle = colorWithAlpha(isConnectedToSelection ? relationColor : '#9eb2cf', alpha);
         ctx.lineWidth = isConnectedToSelection
-            ? 1.35 + strength * 2.15
-            : 0.35 + strength * 0.82;
+            ? 0.7 + strength * 0.72
+            : 0.28 + strength * 0.44;
         ctx.stroke();
     }
 
@@ -1628,7 +1628,10 @@ export class GraphRenderer {
             const isSelected = node === this.selectedNode;
             const isHovered = node === this.hoveredNode;
             const isDimmed = focus.selectedNode && !focus.connectedNodes.has(node);
-            const r = (isSelected ? baseRadius * 1.12 : baseRadius) * (isDimmed ? 0.6 : 1);
+            const activeRadius = isSelected
+                ? Math.min(10, baseRadius * 1.22, baseRadius + 1.8)
+                : (isHovered ? Math.min(9, baseRadius * 1.12, baseRadius + 1.1) : baseRadius);
+            const r = activeRadius * (isDimmed ? 0.62 : 1);
             const transientHighlight = this._transientHighlights.get(node.id) || null;
             const scope = normalizeMemoryScope(node.raw?.scope);
             const outlineColor = scope.layer === 'pov'
@@ -1645,62 +1648,31 @@ export class GraphRenderer {
             }
 
             if (isSelected || isHovered) {
-                const glowRadius = r + (isSelected ? 20 : 13);
                 ctx.beginPath();
-                ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
-                ctx.fillStyle = createCanvasGradient(
-                    ctx,
-                    'createRadialGradient',
-                    [node.x, node.y, Math.max(1, r * 0.45), node.x, node.y, glowRadius],
-                    [
-                        [0, colorWithAlpha(color, isSelected ? 0.52 : 0.34)],
-                        [0.55, colorWithAlpha(color, isSelected ? 0.22 : 0.14)],
-                        [1, colorWithAlpha(color, 0)],
-                    ],
-                    colorWithAlpha(color, isSelected ? 0.24 : 0.14),
-                );
-                ctx.fill();
-
-                ctx.beginPath();
-                ctx.arc(node.x, node.y, r + (isSelected ? 6 : 4), 0, Math.PI * 2);
-                ctx.strokeStyle = colorWithAlpha(isSelected ? '#ffffff' : color, isSelected ? 0.72 : 0.5);
-                ctx.lineWidth = isSelected ? 2.4 : 1.6;
+                ctx.arc(node.x, node.y, r + (isSelected ? 5.2 : 3.8), 0, Math.PI * 2);
+                ctx.strokeStyle = colorWithAlpha(color, isSelected ? 0.54 : 0.36);
+                ctx.lineWidth = isSelected ? 1.05 : 0.85;
                 ctx.stroke();
+
+                if (isSelected) {
+                    ctx.beginPath();
+                    ctx.arc(node.x, node.y, r + 8.2, 0, Math.PI * 2);
+                    ctx.strokeStyle = colorWithAlpha('#dbeafe', 0.22);
+                    ctx.lineWidth = 0.75;
+                    ctx.stroke();
+                }
             }
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-            ctx.fillStyle = createCanvasGradient(
-                ctx,
-                'createRadialGradient',
-                [
-                    node.x - r * 0.32,
-                    node.y - r * 0.34,
-                    Math.max(1, r * 0.16),
-                    node.x,
-                    node.y,
-                    r,
-                ],
-                [
-                    [0, colorWithAlpha('#ffffff', isSelected ? 0.86 : 0.68)],
-                    [0.18, colorWithAlpha(color, isSelected ? 1 : 0.94)],
-                    [1, colorWithAlpha(color, isSelected ? 0.68 : 0.52)],
-                ],
-                colorWithAlpha(color, isSelected ? 1 : 0.86),
-            );
+            ctx.fillStyle = colorWithAlpha(color, isSelected ? 0.96 : (isHovered ? 0.9 : 0.82));
             ctx.fill();
 
-            ctx.strokeStyle = isSelected ? '#fff' : colorWithAlpha(outlineColor, isHovered ? 0.9 : 0.64);
-            ctx.lineWidth = isSelected ? 2.8 : (isHovered ? 1.8 : 1.1);
+            ctx.strokeStyle = isSelected
+                ? colorWithAlpha('#eef6ff', 0.72)
+                : colorWithAlpha(outlineColor, isHovered ? 0.58 : 0.38);
+            ctx.lineWidth = isSelected ? 1.15 : (isHovered ? 0.95 : 0.65);
             ctx.stroke();
-
-            ctx.shadowColor = colorWithAlpha(color, isSelected ? 0.5 : 0.2);
-            ctx.shadowBlur = isSelected ? 16 : 7;
-            ctx.beginPath();
-            ctx.arc(node.x - r * 0.28, node.y - r * 0.34, Math.max(1.4, r * 0.16), 0, Math.PI * 2);
-            ctx.fillStyle = colorWithAlpha('#ffffff', isSelected ? 0.7 : 0.5);
-            ctx.fill();
-            ctx.shadowBlur = 0;
 
             ctx.font = `${this.config.labelFontSize}px Inter, sans-serif`;
             ctx.textAlign = 'center';
@@ -1720,21 +1692,21 @@ export class GraphRenderer {
             );
             if (isHovered || isSelected) {
                 const metrics = ctx.measureText(labelDraw);
-                const pillW = Math.min(maxLabelW + 12, metrics.width + 14);
-                const pillH = 17;
+                const pillW = Math.min(maxLabelW + 10, metrics.width + 12);
+                const pillH = 16;
                 const pillX = node.x - pillW / 2;
-                const pillY = node.y + r + 6;
+                const pillY = node.y + r + 6.5;
                 ctx.beginPath();
-                roundRectPath(ctx, pillX, pillY, pillW, pillH, 8);
+                roundRectPath(ctx, pillX, pillY, pillW, pillH, 5);
                 ctx.fillStyle = isSelected
-                    ? 'rgba(7, 14, 32, 0.88)'
-                    : 'rgba(7, 14, 32, 0.72)';
+                    ? 'rgba(8, 10, 16, 0.64)'
+                    : 'rgba(8, 10, 16, 0.52)';
                 ctx.fill();
-                ctx.strokeStyle = colorWithAlpha(color, isSelected ? 0.48 : 0.32);
+                ctx.strokeStyle = 'rgba(238, 246, 255, 0.09)';
                 ctx.lineWidth = 1;
                 ctx.stroke();
             }
-            ctx.fillStyle = `rgba(238,247,255,${isHovered || isSelected ? 0.96 : 0.62})`;
+            ctx.fillStyle = `rgba(218,229,242,${isHovered || isSelected ? 0.88 : 0.52})`;
             ctx.fillText(labelDraw, node.x, node.y + r + 14);
             ctx.restore();
         }
@@ -1754,38 +1726,23 @@ export class GraphRenderer {
         const kind = highlight.kind || 'recall';
         const drawPulse = (color, offset, alphaScale = 1) => {
             const pulse = reducedMotion ? 0.35 : phase;
-            const ringRadius = radius + offset + pulse * 11;
-            const glowRadius = ringRadius + 11;
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
-            ctx.fillStyle = createCanvasGradient(
-                ctx,
-                'createRadialGradient',
-                [node.x, node.y, Math.max(1, radius * 0.8), node.x, node.y, glowRadius],
-                [
-                    [0, colorWithAlpha(color, 0.10 * fade * alphaScale)],
-                    [0.58, colorWithAlpha(color, 0.16 * fade * alphaScale)],
-                    [1, colorWithAlpha(color, 0)],
-                ],
-                colorWithAlpha(color, 0.08 * fade * alphaScale),
-            );
-            ctx.fill();
+            const ringRadius = radius + offset + pulse * 5.5;
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
-            ctx.strokeStyle = colorWithAlpha(color, (0.28 + phase * 0.34) * fade * alphaScale);
-            ctx.lineWidth = 1.2 + phase * 1.4;
+            ctx.strokeStyle = colorWithAlpha(color, (0.18 + phase * 0.18) * fade * alphaScale);
+            ctx.lineWidth = 0.65 + phase * 0.45;
             ctx.stroke();
         };
 
         if (kind === 'mixed') {
-            drawPulse('#7cf8ff', 7, 1);
-            drawPulse('#b79cff', 14, 0.88);
+            drawPulse('#7cf8ff', 4.2, 0.92);
+            drawPulse('#b79cff', 7.5, 0.72);
         } else if (kind === 'extracted') {
-            drawPulse('#b79cff', 9, 0.9);
-            drawPulse('#75ffb1', 15, 0.5);
+            drawPulse('#b79cff', 4.8, 0.82);
+            drawPulse('#75ffb1', 7.8, 0.42);
         } else {
-            drawPulse('#7cf8ff', 8, 1);
+            drawPulse('#7cf8ff', 4.5, 0.9);
         }
     }
 
@@ -1866,9 +1823,9 @@ export class GraphRenderer {
                 Math.max(width, height) * 0.82,
             ],
             [
-                [0, colorWithAlpha(theme.primary || '#224b84', 0.2)],
-                [0.34, colorWithAlpha(theme.secondary || '#141c48', 0.12)],
-                [0.72, colorWithAlpha(theme.surfaceLow || '#070b1a', 0.5)],
+                [0, colorWithAlpha(theme.primary || '#224b84', 0.12)],
+                [0.34, colorWithAlpha(theme.secondary || '#141c48', 0.075)],
+                [0.72, colorWithAlpha(theme.surfaceLow || '#070b1a', 0.58)],
                 [1, theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)'],
             ],
             theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)',
@@ -1887,8 +1844,8 @@ export class GraphRenderer {
                 Math.max(width, height) * 0.46,
             ],
             [
-                [0, colorWithAlpha(theme.accent3 || '#b073ff', 0.12)],
-                [0.5, colorWithAlpha(theme.accent2 || '#57c7ff', 0.055)],
+                [0, colorWithAlpha(theme.accent3 || '#b073ff', 0.055)],
+                [0.5, colorWithAlpha(theme.accent2 || '#57c7ff', 0.032)],
                 [1, 'rgba(0, 0, 0, 0)'],
             ],
             'rgba(0, 0, 0, 0)',
@@ -2053,12 +2010,12 @@ export class GraphRenderer {
         const importance = Number(node?.importance || 5);
         const type = String(node?.type || '').toLowerCase();
         if (type === 'character' || importance >= 9) {
-            return Math.min(base * 1.18, base + 4);
+            return Math.min(8, Math.max(4.8, base * 0.58));
         }
         if (type === 'event' || importance >= 6) {
-            return Math.min(base * 1.08, base + 2);
+            return Math.min(7, Math.max(4.2, base * 0.52));
         }
-        return base;
+        return Math.min(6.2, Math.max(3.4, base * 0.46));
     }
 
     _ellipsisLabel(ctx, text, maxW) {
