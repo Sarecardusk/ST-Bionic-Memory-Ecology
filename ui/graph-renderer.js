@@ -71,6 +71,11 @@ const DEFAULT_LAYOUT_CONFIG = {
     layoutAnimationRestartWindowMs: 5000,
     layoutAnimationRestartMax: 2,
     layoutAnimationCooldownMs: 9000,
+    galaxyLayout: true,
+    cameraFocusAnimation: true,
+    cameraFocusDurationMs: 360,
+    cameraFocusScale: 1.35,
+    hideEdgesOnMove: true,
 };
 
 const ADAPTIVE_NEURAL_LAYOUT_POLICY = Object.freeze({
@@ -367,6 +372,10 @@ export class GraphRenderer {
             reason: 'not-started',
             frameCount: 0,
         };
+        this._cameraAnimId = null;
+        this._cameraAnimationState = null;
+        this._edgeInteractionDimUntil = 0;
+        this._edgeInteractionRestoreTimer = null;
         this._lastLayoutDiagnostics = null;
         this._lastLayoutReuseStats = { reused: 0, total: 0, ratio: 0 };
         this._lastLayoutSeedModeCounts = {
@@ -662,9 +671,22 @@ export class GraphRenderer {
      * 切换主题
      */
     setTheme(themeName) {
+        const wasGalaxyMode = this._isDarkGalaxyMode();
         this.themeName = themeName;
         this.colors = getNodeColors(themeName);
-        if (this.enabled) this._render();
+        const nextGalaxyMode = this._isDarkGalaxyMode();
+        if (!this.enabled) return;
+        if (wasGalaxyMode !== nextGalaxyMode && this.nodes.length > 0) {
+            this._nextLayoutSolveRevision();
+            this._cancelLayoutAnimation('theme-layout-mode-changed');
+            this._cancelCameraAnimation('theme-layout-mode-changed');
+            this._nativeLayoutBridge?.cancelPending?.('theme-layout-mode-changed');
+            const dpr = window.devicePixelRatio || 1;
+            const W = Math.max(1, this.canvas.width / dpr);
+            const H = Math.max(1, this.canvas.height / dpr);
+            this._rebuildLayoutForCurrentViewport(W, H);
+        }
+        this._render();
     }
 
     setTransientHighlights(payload = {}) {
@@ -762,7 +784,89 @@ export class GraphRenderer {
      */
     highlightNode(nodeId) {
         this.selectedNode = this.nodeMap.get(nodeId) || null;
-        if (this.enabled) this._render();
+        if (this.selectedNode) this._focusCameraOnNode(this.selectedNode);
+        else if (this.enabled) this._render();
+    }
+
+    _focusCameraOnNode(node) {
+        if (!this.enabled || !node) return;
+        const rect = this.canvas.getBoundingClientRect?.() || {};
+        const width = Math.max(1, Number(rect.width) || Number(this.canvas.width) || 1);
+        const height = Math.max(1, Number(rect.height) || Number(this.canvas.height) || 1);
+        const targetScale = Math.max(
+            0.2,
+            Math.min(5, Math.max(this.scale, Number(this.config.cameraFocusScale) || 1.35)),
+        );
+        const targetOffsetX = width * 0.5 - node.x * targetScale;
+        const targetOffsetY = height * 0.46 - node.y * targetScale;
+        if (
+            this.config.cameraFocusAnimation === false
+            || this._isReducedMotion()
+        ) {
+            this.scale = targetScale;
+            this.offsetX = targetOffsetX;
+            this.offsetY = targetOffsetY;
+            this._render();
+            return;
+        }
+        this._startCameraAnimation({
+            targetScale,
+            targetOffsetX,
+            targetOffsetY,
+            durationMs: Math.max(120, Math.min(900, Number(this.config.cameraFocusDurationMs) || 360)),
+            reason: 'node-focus',
+        });
+    }
+
+    _startCameraAnimation({ targetScale, targetOffsetX, targetOffsetY, durationMs = 360, reason = 'camera' } = {}) {
+        this._cancelCameraAnimation('replaced');
+        const startedAt = this._nowMs();
+        this._cameraAnimationState = {
+            startedAt,
+            durationMs,
+            startScale: this.scale,
+            startOffsetX: this.offsetX,
+            startOffsetY: this.offsetY,
+            targetScale,
+            targetOffsetX,
+            targetOffsetY,
+            reason,
+        };
+        this._scheduleCameraAnimationFrame();
+    }
+
+    _scheduleCameraAnimationFrame() {
+        if (!this.enabled || this._cameraAnimId || !this._cameraAnimationState) return;
+        this._cameraAnimId = requestAnimationFrame((timestamp) => {
+            this._cameraAnimId = null;
+            this._tickCameraAnimation(timestamp);
+        });
+    }
+
+    _tickCameraAnimation(timestamp = this._nowMs()) {
+        const state = this._cameraAnimationState;
+        if (!state || !this.enabled) return;
+        const elapsed = Math.max(0, Number(timestamp || this._nowMs()) - state.startedAt);
+        const t = Math.min(1, elapsed / Math.max(1, state.durationMs));
+        const eased = 1 - Math.pow(1 - t, 3);
+        const lerp = (a, b) => a + (b - a) * eased;
+        this.scale = lerp(state.startScale, state.targetScale);
+        this.offsetX = lerp(state.startOffsetX, state.targetOffsetX);
+        this.offsetY = lerp(state.startOffsetY, state.targetOffsetY);
+        this._render();
+        if (t >= 1) {
+            this._cameraAnimationState = null;
+            return;
+        }
+        this._scheduleCameraAnimationFrame();
+    }
+
+    _cancelCameraAnimation(_reason = 'cancelled') {
+        if (this._cameraAnimId) {
+            cancelAnimationFrame(this._cameraAnimId);
+            this._cameraAnimId = null;
+        }
+        this._cameraAnimationState = null;
     }
 
     _clearCanvas() {
@@ -778,6 +882,8 @@ export class GraphRenderer {
         if (this.enabled === nextEnabled) {
             if (!nextEnabled) {
                 this._clearTransientHighlights({ cancelAnimation: true });
+                this._cancelCameraAnimation('renderer-disabled');
+                this._cancelEdgeInteractionRestoreTimer();
                 this._clearCanvas();
             }
             return;
@@ -790,6 +896,8 @@ export class GraphRenderer {
         }
         this._cancelAnim();
         this._cancelLayoutAnimation('renderer-disabled');
+        this._cancelCameraAnimation('renderer-disabled');
+        this._cancelEdgeInteractionRestoreTimer();
         this.dragNode = null;
         this.isDragging = false;
         this.isPanning = false;
@@ -815,7 +923,14 @@ export class GraphRenderer {
 
     // ==================== 分区布局 ====================
 
+    _isDarkGalaxyMode() {
+        return !LIGHT_PANEL_THEMES.has(this.themeName) && this.config?.galaxyLayout !== false;
+    }
+
     _computeRegionPanels(W, H, { objective, userPov, charMap }) {
+        if (this._isDarkGalaxyMode()) {
+            return this._computeGalaxyRegionPanels(W, H, { objective, userPov, charMap });
+        }
         const pad = 14;
         const gutter = 10;
         const topPad = 20;
@@ -933,6 +1048,45 @@ export class GraphRenderer {
             };
             for (const n of userPov) n.regionRect = innerU;
         }
+
+        return panels;
+    }
+
+    _computeGalaxyRegionPanels(W, H, { objective, userPov, charMap }) {
+        const width = Math.max(1, Number(W) || 1);
+        const height = Math.max(1, Number(H) || 1);
+        const safe = Math.max(18, Math.min(width, height) * 0.05);
+        const makeRect = (cx, cy, rw, rh) => ({
+            x: Math.max(safe, Math.min(width - safe - rw, cx - rw / 2)),
+            y: Math.max(safe, Math.min(height - safe - rh, cy - rh / 2)),
+            w: Math.max(80, Math.min(width - safe * 2, rw)),
+            h: Math.max(80, Math.min(height - safe * 2, rh)),
+        });
+        const panels = [];
+        const objectiveRect = makeRect(width * 0.5, height * 0.5, width * 0.82, height * 0.78);
+        panels.push({ ...objectiveRect, label: '客观层', tint: 'rgba(87, 199, 255, 0.02)', key: 'objective' });
+        for (const n of objective) n.regionRect = objectiveRect;
+
+        if (userPov.length) {
+            const userRect = makeRect(width * 0.68, height * 0.68, width * 0.44, height * 0.42);
+            panels.push({ ...userRect, label: '用户 POV', tint: 'rgba(125, 255, 155, 0.02)', key: 'user' });
+            for (const n of userPov) n.regionRect = userRect;
+        }
+
+        const charEntries = [...charMap.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), 'zh'));
+        const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+        const orbit = Math.min(width, height) * 0.26;
+        charEntries.forEach(([owner, nodes], index) => {
+            const t = index + 1;
+            const angle = t * goldenAngle;
+            const radius = orbit * Math.sqrt(t / Math.max(1, charEntries.length));
+            const cx = width * 0.5 + Math.cos(angle) * radius;
+            const cy = height * 0.5 + Math.sin(angle) * radius * 0.78;
+            const rect = makeRect(cx, cy, width * 0.34, height * 0.36);
+            const key = `char:${owner || 'unknown'}`;
+            panels.push({ ...rect, label: `角色 POV · ${owner || '未知角色'}`, tint: 'rgba(255, 179, 71, 0.02)', key });
+            for (const n of nodes) n.regionRect = rect;
+        });
 
         return panels;
     }
@@ -1417,6 +1571,9 @@ export class GraphRenderer {
     }
 
     _shouldTryNativeLayout(nodeCount = 0, edgeCount = 0) {
+        // Dark galaxy mode currently uses weak cross-region springs in the JS solver.
+        // Keep native/worker disabled until payload parity supports that spring model.
+        if (this._isDarkGalaxyMode()) return false;
         if (this.runtimeConfig.graphNativeForceDisable) return false;
         if (!this.runtimeConfig.graphUseNativeLayout) return false;
         const bridge = this._ensureNativeLayoutBridge();
@@ -1794,14 +1951,16 @@ export class GraphRenderer {
 
         for (const edge of this.edges) {
             const { from, to, strength } = edge;
-            if (from.regionKey !== to.regionKey) continue;
+            const sameRegion = from.regionKey === to.regionKey;
+            if (!sameRegion && !this._isDarkGalaxyMode()) continue;
             const ideal =
-                springIdeal.get(from.regionKey) ?? 68;
+                springIdeal.get(sameRegion ? from.regionKey : 'objective') ?? 68;
             let dx = to.x - from.x;
             let dy = to.y - from.y;
             const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
             const displacement = dist - ideal * (0.82 + 0.18 * strength);
-            const f = springK * displacement * (0.45 + 0.55 * strength);
+            const crossScale = sameRegion ? 1 : 0.34;
+            const f = springK * crossScale * displacement * (0.45 + 0.55 * strength);
             const fx = (dx / dist) * f;
             const fy = (dy / dist) * f;
             from._fx += fx;
@@ -1883,6 +2042,7 @@ export class GraphRenderer {
         const selectedNode = focus?.selectedNode || null;
         const isConnectedToSelection = !!selectedNode && (from === selectedNode || to === selectedNode);
         const isDimmed = !!selectedNode && !isConnectedToSelection;
+        const isMoving = focus?.edgesDimmedOnMove === true;
         const mx = (from.x + to.x) / 2;
         const my = (from.y + to.y) / 2;
         const dx = to.x - from.x;
@@ -1902,7 +2062,8 @@ export class GraphRenderer {
         const unselectedColor = isLightTheme ? '#9eb2cf' : edgeColor;
 
         const baseAlpha = sameZone ? 0.04 + strength * 0.06 : 0.03 + strength * 0.05;
-        const alpha = isDimmed ? (isLightTheme ? 0.012 : 0.01) : (isConnectedToSelection ? 0.35 + strength * 0.25 : baseAlpha);
+        let alpha = isDimmed ? (isLightTheme ? 0.012 : 0.01) : (isConnectedToSelection ? 0.35 + strength * 0.25 : baseAlpha);
+        if (isMoving && !isConnectedToSelection) alpha *= 0.22;
 
         if (isConnectedToSelection) {
             ctx.beginPath();
@@ -1951,6 +2112,8 @@ export class GraphRenderer {
         this._drawGrid(W, H);
 
         const focus = this._buildFocusState();
+        focus.edgesDimmedOnMove = this.config?.hideEdgesOnMove !== false
+            && this._nowMs() < Number(this._edgeInteractionDimUntil || 0);
 
         this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i, focus));
 
@@ -2423,6 +2586,14 @@ export class GraphRenderer {
         this._cancelAnim();
         this._cancelLayoutAnimation('stop-animation');
         this._cancelHighlightAnimationFrame();
+        this._cancelCameraAnimation('stop-animation');
+    }
+
+    _cancelEdgeInteractionRestoreTimer() {
+        if (this._edgeInteractionRestoreTimer) {
+            clearTimeout(this._edgeInteractionRestoreTimer);
+            this._edgeInteractionRestoreTimer = null;
+        }
     }
 
     _bindEvents() {
@@ -2486,6 +2657,7 @@ export class GraphRenderer {
             this._dragStartMouse = null;
             if (!sess.moved && sess.nodeCandidate) {
                 this.selectedNode = sess.nodeCandidate;
+                this._focusCameraOnNode(sess.nodeCandidate);
                 if (this.onNodeSelect) this.onNodeSelect(sess.nodeCandidate);
                 if (this.onNodeClick) this.onNodeClick(sess.nodeCandidate);
                 this._render();
@@ -2504,6 +2676,19 @@ export class GraphRenderer {
 
     _markTouchInteraction() {
         this._suppressMouseUntil = Date.now() + 650;
+        this._markGraphMoveInteraction();
+    }
+
+    _markGraphMoveInteraction() {
+        if (this.config?.hideEdgesOnMove !== false) {
+            this._edgeInteractionDimUntil = this._nowMs() + 140;
+            if (this._edgeInteractionRestoreTimer) clearTimeout(this._edgeInteractionRestoreTimer);
+            this._edgeInteractionRestoreTimer = setTimeout(() => {
+                this._edgeInteractionRestoreTimer = null;
+                if (this.enabled) this._scheduleRender();
+            }, 150);
+        }
+        this._cancelCameraAnimation('user-interaction');
     }
 
     _shouldIgnoreMouseEvent() {
@@ -2536,10 +2721,12 @@ export class GraphRenderer {
         this._dragStartMouse = { x: e.clientX, y: e.clientY };
 
         if (node) {
+            this._markGraphMoveInteraction();
             this.dragNode = node;
             node.pinned = true;
             this.isDragging = true;
         } else {
+            this._markGraphMoveInteraction();
             this.isPanning = true;
         }
     }
@@ -2549,11 +2736,13 @@ export class GraphRenderer {
         const { x, y } = this._canvasToWorld(e.clientX, e.clientY);
 
         if (this.isDragging && this.dragNode) {
+            this._markGraphMoveInteraction();
             this.dragNode.x = x;
             this.dragNode.y = y;
             this._clampNodeToRegion(this.dragNode);
             this._scheduleRender();
         } else if (this.isPanning) {
+            this._markGraphMoveInteraction();
             this.offsetX += e.clientX - this.lastMouse.x;
             this.offsetY += e.clientY - this.lastMouse.y;
             this._scheduleRender();
@@ -2580,6 +2769,7 @@ export class GraphRenderer {
                 const movedDistance = Math.sqrt(dx * dx + dy * dy);
                 if (movedDistance < 6) {
                     this.selectedNode = this.dragNode;
+                    this._focusCameraOnNode(this.dragNode);
                     if (this.onNodeSelect) this.onNodeSelect(this.dragNode);
                     if (this.onNodeClick) this.onNodeClick(this.dragNode);
                 }
@@ -2595,6 +2785,7 @@ export class GraphRenderer {
     _onWheel(e) {
         if (!this.enabled) return;
         e.preventDefault();
+        this._markGraphMoveInteraction();
         const factor = e.deltaY > 0 ? 0.9 : 1.1;
         const newScale = Math.max(0.2, Math.min(5, this.scale * factor));
 
@@ -2614,6 +2805,7 @@ export class GraphRenderer {
         const node = this._findNodeAt(x, y);
         if (node) {
             this.selectedNode = node;
+            this._focusCameraOnNode(node);
             if (this.onNodeSelect) this.onNodeSelect(node);
             if (this.onNodeDoubleClick) this.onNodeDoubleClick(node);
             this._render();
@@ -2624,18 +2816,21 @@ export class GraphRenderer {
 
     zoomIn() {
         if (!this.enabled) return;
+        this._markGraphMoveInteraction();
         this.scale = Math.min(5, this.scale * 1.2);
         this._render();
     }
 
     zoomOut() {
         if (!this.enabled) return;
+        this._markGraphMoveInteraction();
         this.scale = Math.max(0.2, this.scale * 0.8);
         this._render();
     }
 
     resetView() {
         if (!this.enabled) return;
+        this._cancelCameraAnimation('reset-view');
         this.scale = 1;
         this.offsetX = 0;
         this.offsetY = 0;
@@ -2690,6 +2885,8 @@ export class GraphRenderer {
         this._nextLayoutSolveRevision();
         this._cancelAnim();
         this._cancelLayoutAnimation('destroy');
+        this._cancelCameraAnimation('destroy');
+        this._cancelEdgeInteractionRestoreTimer();
         this._clearTransientHighlights({ cancelAnimation: true });
         this._nativeLayoutBridge?.dispose?.();
         this._nativeLayoutBridge = null;

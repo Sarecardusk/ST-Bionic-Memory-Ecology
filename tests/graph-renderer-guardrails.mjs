@@ -569,6 +569,94 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
 }
 
 {
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: {
+      neuralIterations: 8,
+      cameraFocusDurationMs: 120,
+    },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.highlightNode("star-core");
+  renderer.destroy();
+  assertNoPendingRafOrTimers("destroy cancels unsettled camera focus animation");
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: {
+      neuralIterations: 8,
+      cameraFocusDurationMs: 32,
+    },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.highlightNode("star-core");
+  const frames = flushRafsUntilIdle({ maxFrames: 10, ms: 16 });
+  assert.ok(frames > 0, "camera focus uses bounded RAF animation");
+  assert.ok(renderer.scale >= 1, "camera focus does not zoom out selected node");
+  assertNoPendingRafOrTimers("camera focus animation settles");
+  renderer.destroy();
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  renderer.zoomIn();
+  assert.ok(timerCallbacks.size > 0, "edge dim restore timer is scheduled while moving/zooming");
+  renderer.setEnabled(false);
+  assertNoPendingRafOrTimers("disable clears edge dim restore timer");
+  renderer.destroy();
+}
+
+{
+  const graph = createStarSeedGraph({ includeFragment: true });
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  const darkObjectivePanel = renderer._regionPanels.find((panel) => panel.key === "objective");
+  renderer.setTheme("paperDawn");
+  const lightObjectivePanel = renderer._regionPanels.find((panel) => panel.key === "objective");
+  assert.ok(darkObjectivePanel && lightObjectivePanel, "theme switch keeps objective panel metadata");
+  assert.notEqual(
+    Math.round(darkObjectivePanel.w),
+    Math.round(lightObjectivePanel.w),
+    "dark/light theme switch recomputes galaxy versus legacy layout regions",
+  );
+  renderer.destroy();
+}
+
+{
+  const graph = createLabelBudgetGraph(18);
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: {
+      graphUseNativeLayout: true,
+      graphNativeForceDisable: false,
+      graphNativeLayoutThresholdNodes: 1,
+      graphNativeLayoutThresholdEdges: 1,
+    },
+    layoutConfig: { neuralIterations: 8 },
+  });
+
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  const diagnostics = renderer.getLastLayoutDiagnostics();
+  assert.notEqual(diagnostics.mode, "native-worker", "dark galaxy mode disables native layout until cross-region spring parity exists");
+  renderer.destroy();
+}
+
+{
   const { renderer, restoreMatchMedia } = createAnimatedLayoutRenderer({ reducedMotion: true });
   try {
     renderer.loadGraph(createStarSeedGraph({ includeFragment: true }), { userPovAliases: ["Host"] });
