@@ -361,6 +361,8 @@ let pendingVisibleGraphRefreshToken = "";
 let pendingVisibleGraphRefreshForce = false;
 let lastVisibleGraphRefreshToken = "";
 let lastVisibleGraphRefreshAt = 0;
+let lastGraphTransientHighlightSignature = "";
+let lastGraphTransientHighlightRenderer = null;
 let graphRenderingEnabled = true;
 
 function _isPluginEnabled(settings = _getSettings?.() || {}) {
@@ -859,6 +861,7 @@ function _refreshVisibleGraphWorkspace({ force = false } = {}) {
   if (visibleMode === "desktop:graph") {
     if (graph && graphRenderer) {
       graphRenderer.loadGraph(graph, hints);
+      _syncGraphTransientHighlights({ renderer: graphRenderer, visibleMode });
     }
   } else if (visibleMode === "desktop:cognition") {
     _refreshCognitionWorkspace();
@@ -867,6 +870,7 @@ function _refreshVisibleGraphWorkspace({ force = false } = {}) {
   } else if (visibleMode === "mobile:graph") {
     if (graph && mobileGraphRenderer) {
       mobileGraphRenderer.loadGraph(graph, hints);
+      _syncGraphTransientHighlights({ renderer: mobileGraphRenderer, visibleMode });
     }
     _buildMobileLegend();
   } else if (visibleMode === "mobile:cognition") {
@@ -885,6 +889,26 @@ function _refreshVisibleGraphWorkspace({ force = false } = {}) {
     token: nextToken,
     visibleMode,
   };
+}
+
+function _syncGraphTransientHighlights({ renderer = null, visibleMode = null, force = false } = {}) {
+  const mode = visibleMode || _getVisibleGraphWorkspaceMode();
+  if (mode !== "desktop:graph" && mode !== "mobile:graph") return;
+  const targetRenderer = renderer || (mode === "mobile:graph" ? mobileGraphRenderer : graphRenderer);
+  if (!targetRenderer?.setTransientHighlights) return;
+  const recallNodeIds = _getLastRecall?.() || [];
+  const extractedNodeIds = _getLastExtract?.() || [];
+  const signature = JSON.stringify({ mode, recallNodeIds, extractedNodeIds });
+  const rendererChanged = targetRenderer !== lastGraphTransientHighlightRenderer;
+  if (!force && !rendererChanged && signature === lastGraphTransientHighlightSignature) return;
+  lastGraphTransientHighlightSignature = signature;
+  lastGraphTransientHighlightRenderer = targetRenderer;
+  targetRenderer.setTransientHighlights({
+    recallNodeIds,
+    extractedNodeIds,
+    ttlMs: 1800,
+    reason: "panel-live-state",
+  });
 }
 
 function _flushScheduledVisibleGraphRefresh() {
@@ -1334,6 +1358,7 @@ function _doRefreshLiveState() {
   }
 
   _scheduleVisibleGraphWorkspaceRefresh();
+  _syncGraphTransientHighlights();
 }
 
 function _refreshHideOldMessagesStatus(settings = _getSettings?.() || {}) {
@@ -5621,23 +5646,79 @@ function _formatGraphLayoutDiagnosticsText(diagnostics = null) {
   const totalMs = Number(
     diagnostics.totalMs ?? diagnostics.solveMs ?? diagnostics.workerSolveMs,
   );
-  const nodeCount = Number(diagnostics.nodeCount);
-  const edgeCount = Number(diagnostics.edgeCount);
+  const visibleNodeCount = Number(
+    diagnostics.visibleNodeCount ?? diagnostics.nodeCount,
+  );
+  const visibleEdgeCount = Number(
+    diagnostics.visibleEdgeCount ?? diagnostics.edgeCount,
+  );
+  const rawNodeCount = Number(diagnostics.rawNodeCount);
+  const rawEdgeCount = Number(diagnostics.rawEdgeCount);
 
   const parts = [`LAYOUT: ${modeLabel}`];
   if (Number.isFinite(totalMs)) {
     parts.push(`${Math.max(0, Math.round(totalMs))}ms`);
   }
-  if (Number.isFinite(nodeCount) && Number.isFinite(edgeCount)) {
+  if (Number.isFinite(visibleNodeCount) && Number.isFinite(visibleEdgeCount)) {
     parts.push(
-      `${Math.max(0, Math.floor(nodeCount))}/${Math.max(
+      `v${Math.max(0, Math.floor(visibleNodeCount))}/${Math.max(
         0,
-        Math.floor(edgeCount),
+        Math.floor(visibleEdgeCount),
+      )}`,
+    );
+  }
+  if (Number.isFinite(rawNodeCount) && Number.isFinite(rawEdgeCount)) {
+    parts.push(
+      `raw${Math.max(0, Math.floor(rawNodeCount))}/${Math.max(
+        0,
+        Math.floor(rawEdgeCount),
       )}`,
     );
   }
 
   return parts.join(" · ");
+}
+
+function _formatGraphLayoutDiagnosticsTitle(diagnostics = null) {
+  if (!diagnostics || typeof diagnostics !== "object") return "";
+  const formatCountPair = (left, right) => {
+    const a = Number(left);
+    const b = Number(right);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return "--";
+    return `${Math.max(0, Math.floor(a))}/${Math.max(0, Math.floor(b))}`;
+  };
+  const formatBool = (value) => (value === true ? "true" : value === false ? "false" : "--");
+  const reuseCount = Number(diagnostics.layoutReuseCount);
+  const reuseTotal = Number(diagnostics.layoutReuseTotal);
+  const reuseRatio = Number(diagnostics.layoutReuseRatio);
+  const reuseParts = [];
+  if (Number.isFinite(reuseCount) && Number.isFinite(reuseTotal)) {
+    reuseParts.push(`${Math.max(0, Math.floor(reuseCount))}/${Math.max(0, Math.floor(reuseTotal))}`);
+  }
+  if (Number.isFinite(reuseRatio)) {
+    reuseParts.push(`${Math.round(Math.max(0, reuseRatio) * 100)}%`);
+  }
+
+  const lines = [
+    `visible nodes/edges: ${formatCountPair(diagnostics.visibleNodeCount ?? diagnostics.nodeCount, diagnostics.visibleEdgeCount ?? diagnostics.edgeCount)}`,
+    `raw nodes/edges: ${formatCountPair(diagnostics.rawNodeCount, diagnostics.rawEdgeCount)}`,
+    `active nodes/edges: ${formatCountPair(diagnostics.activeNodeCount, diagnostics.activeEdgeCount)}`,
+    `archived/skipped: ${formatCountPair(diagnostics.archivedNodeCount, diagnostics.skippedEdgeCount)}`,
+    `partitions objective/userPOV/characterPOV/panels: ${[
+      diagnostics.objectiveNodeCount,
+      diagnostics.userPovNodeCount,
+      diagnostics.characterPovNodeCount,
+      diagnostics.characterPovPanelCount,
+    ].map((value) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? String(Math.max(0, Math.floor(n))) : "--";
+    }).join("/")}`,
+    `reuse count/ratio: ${reuseParts.join(" · ") || "--"}`,
+    `sampled/capped/renderOnly: ${formatBool(diagnostics.sampled)}/${formatBool(diagnostics.capped)}/${formatBool(diagnostics.renderOnly)}`,
+  ];
+  const reason = String(diagnostics.reason || "").trim();
+  if (reason) lines.push(`reason: ${reason}`);
+  return lines.join("\n");
 }
 
 function _refreshGraphLayoutDiagnosticsUi() {
@@ -5648,9 +5729,7 @@ function _refreshGraphLayoutDiagnosticsUi() {
   const renderer = _resolveVisibleGraphRenderer();
   const diagnostics = renderer?.getLastLayoutDiagnostics?.() || null;
   const text = _formatGraphLayoutDiagnosticsText(diagnostics);
-  const title = diagnostics?.reason
-    ? `layout reason: ${String(diagnostics.reason).trim()}`
-    : "";
+  const title = _formatGraphLayoutDiagnosticsTitle(diagnostics);
 
   if (desktopMeta) {
     desktopMeta.textContent = text;

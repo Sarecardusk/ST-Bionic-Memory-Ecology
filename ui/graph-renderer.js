@@ -1,7 +1,7 @@
 // ST-BME: Canvas 图谱渲染器 — 分区「神经视图」布局
 // 零依赖：客观层 / 角色 POV / 用户 POV 分区内 Vogel 初值 + 一次性力导向稳定，无帧循环抖动
 
-import { getNodeColors } from './themes.js';
+import { getNodeColors, LIGHT_PANEL_THEMES, THEMES } from './themes.js';
 import {
     isUsableGraphCanvasSize,
     remapPositionBetweenRects,
@@ -139,6 +139,56 @@ const SCOPE_OUTLINE_COLORS = {
     user: '#7dff9b',
 };
 
+const EDGE_RELATION_COLORS = {
+    updates: '#7cf8ff',
+    temporal_update: '#7cf8ff',
+    evolves: '#b79cff',
+    same: '#8fffd2',
+    related: '#7aa7ff',
+};
+
+function colorWithAlpha(color, alpha = 1) {
+    const a = Math.max(0, Math.min(1, Number(alpha) || 0));
+    const hex = String(color || '').trim();
+    const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
+    if (match) {
+        let body = match[1];
+        if (body.length === 3) {
+            body = body.split('').map((c) => c + c).join('');
+        }
+        const value = Number.parseInt(body, 16);
+        const r = (value >> 16) & 255;
+        const g = (value >> 8) & 255;
+        const b = value & 255;
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+    if (hex.startsWith('rgb(')) {
+        return hex.replace(/^rgb\((.*)\)$/i, `rgba($1, ${a})`);
+    }
+    if (hex.startsWith('rgba(')) return hex;
+    return `rgba(255, 255, 255, ${a})`;
+}
+
+function edgeColorForRelation(relation) {
+    const key = String(relation || 'related').trim().toLowerCase();
+    return EDGE_RELATION_COLORS[key] || EDGE_RELATION_COLORS.related;
+}
+
+function createCanvasGradient(ctx, methodName, args = [], stops = [], fallback = 'rgba(0, 0, 0, 0)') {
+    if (ctx && typeof ctx[methodName] === 'function') {
+        try {
+            const gradient = ctx[methodName](...args);
+            if (gradient && typeof gradient.addColorStop === 'function') {
+                for (const [offset, color] of stops) {
+                    gradient.addColorStop(offset, color);
+                }
+                return gradient;
+            }
+        } catch {}
+    }
+    return fallback;
+}
+
 function hashId(id) {
     let h = 0;
     const s = String(id || '');
@@ -216,6 +266,41 @@ function partitionNodesByScope(nodes, userPovAliasSet = null) {
     return { objective, userPov, charMap };
 }
 
+function countRawNodesByScope(nodes, userPovAliasSet = null) {
+    const aliasSet = userPovAliasSet instanceof Set ? userPovAliasSet : new Set();
+    let objectiveNodeCount = 0;
+    let userPovNodeCount = 0;
+    let characterPovNodeCount = 0;
+    const charKeys = new Set();
+
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+        const scope = normalizeMemoryScope(node?.scope);
+        if (scope.layer !== 'pov') {
+            objectiveNodeCount += 1;
+            continue;
+        }
+        if (scopeMatchesHostUserAliases(scope, aliasSet) || scope.ownerType === 'user') {
+            userPovNodeCount += 1;
+            continue;
+        }
+        if (scope.ownerType === 'character') {
+            characterPovNodeCount += 1;
+            const nameKey = normalizeKeyForPartition(scope.ownerName);
+            const idKey = normalizeKeyForPartition(scope.ownerId);
+            charKeys.add(nameKey || idKey || '·');
+            continue;
+        }
+        objectiveNodeCount += 1;
+    }
+
+    return {
+        objectiveNodeCount,
+        userPovNodeCount,
+        characterPovNodeCount,
+        characterPovPanelCount: charKeys.size,
+    };
+}
+
 export class GraphRenderer {
     /**
      * @param {HTMLCanvasElement} canvas
@@ -249,6 +334,13 @@ export class GraphRenderer {
         this._layoutSolveRevision = 0;
         this._lastLayoutDiagnostics = null;
         this._lastLayoutReuseStats = { reused: 0, total: 0, ratio: 0 };
+        this._lastLayoutSeedModeCounts = {
+            core: 0,
+            topic: 0,
+            anchoredFragment: 0,
+            fallbackFragment: 0,
+            reused: 0,
+        };
 
         this._regionPanels = [];
         this._lastGraph = null;
@@ -274,6 +366,9 @@ export class GraphRenderer {
         this._suppressMouseUntil = 0;
 
         this.animId = null;
+        this._highlightAnimId = null;
+        this._highlightExpiryTimer = null;
+        this._transientHighlights = new Map();
         this.enabled = true;
 
         // Callbacks
@@ -305,13 +400,61 @@ export class GraphRenderer {
         this._lastLayoutHints = layoutHints && typeof layoutHints === 'object'
             ? { ...layoutHints }
             : {};
+        const rawNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+        const rawEdges = Array.isArray(graph?.edges) ? graph.edges : [];
+        const rawNodeCount = rawNodes.length;
+        const rawEdgeCount = rawEdges.length;
+        const diagnosticCanvasBase = {
+            canvasCssWidth: Number(this._lastCanvasCssWidth || 0),
+            canvasCssHeight: Number(this._lastCanvasCssHeight || 0),
+            devicePixelRatio: Number(window.devicePixelRatio || 1),
+            enabled: this.enabled !== false,
+        };
         if (layoutHints && Object.prototype.hasOwnProperty.call(layoutHints, 'userPovAliases')) {
             this._userPovAliasSet = buildUserPovAliasNormalizedSet(
                 layoutHints.userPovAliases,
             );
         }
+        const activeRawNodes = rawNodes.filter(n => !n.archived);
+        const activeRawNodeIds = new Set(activeRawNodes.map((node) => node?.id).filter(Boolean));
+        const activeRawEdges = rawEdges.filter(e => (
+            !e?.invalidAt
+            && !e?.expiredAt
+            && activeRawNodeIds.has(e?.fromId)
+            && activeRawNodeIds.has(e?.toId)
+        ));
+        const rawPartitionCounts = countRawNodesByScope(activeRawNodes, this._userPovAliasSet);
 
         if (!this.enabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
+            this._setLastLayoutDiagnostics({
+                mode: 'skipped',
+                nodeCount: 0,
+                edgeCount: 0,
+                rawNodeCount,
+                rawEdgeCount,
+                activeNodeCount: activeRawNodes.length,
+                activeEdgeCount: activeRawEdges.length,
+                visibleNodeCount: 0,
+                visibleEdgeCount: 0,
+                archivedNodeCount: Math.max(0, rawNodeCount - activeRawNodes.length),
+                skippedEdgeCount: Math.max(0, rawEdgeCount - activeRawEdges.length),
+                ...rawPartitionCounts,
+                prepareMs: 0,
+                layoutSeedMs: 0,
+                solveMs: 0,
+                totalMs: Math.max(0, performance.now() - loadStartedAt),
+                layoutReuseCount: 0,
+                layoutReuseTotal: 0,
+                layoutReuseRatio: 0,
+                sampled: false,
+                capped: false,
+                renderOnly: true,
+                at: Date.now(),
+                ...diagnosticCanvasBase,
+                enabled: false,
+                reason: 'disabled',
+            });
             return;
         }
 
@@ -321,8 +464,7 @@ export class GraphRenderer {
         const W = this.canvas.width / dpr;
         const H = this.canvas.height / dpr;
 
-        const activeNodes = graph.nodes.filter(n => !n.archived);
-        this.nodes = activeNodes.map((n) => {
+        this.nodes = activeRawNodes.map((n) => {
             const node = {
                 id: n.id,
                 type: n.type || 'event',
@@ -342,7 +484,7 @@ export class GraphRenderer {
             return node;
         });
 
-        this.edges = graph.edges
+        this.edges = rawEdges
             .filter(e => !e.invalidAt && !e.expiredAt && this.nodeMap.has(e.fromId) && this.nodeMap.has(e.toId))
             .map(e => ({
                 from: this.nodeMap.get(e.fromId),
@@ -353,10 +495,40 @@ export class GraphRenderer {
         const prepareFinishedAt = performance.now();
 
         const parts = partitionNodesByScope(this.nodes, this._userPovAliasSet);
+        const characterPovNodeCount = [...parts.charMap.values()]
+            .reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
         this._regionPanels = this._computeRegionPanels(W, H, parts);
         const layoutReuse = this._applyPreviousLayoutSeed(previousLayoutSeedByNodeId);
+        this._lastLayoutSeedModeCounts = {
+            core: 0,
+            topic: 0,
+            anchoredFragment: 0,
+            fallbackFragment: 0,
+            reused: Number(layoutReuse?.reused || 0),
+        };
         this._layoutAllPartitions(parts);
         const layoutFinishedAt = performance.now();
+        const baseLayoutDiagnostics = {
+            nodeCount: this.nodes.length,
+            edgeCount: this.edges.length,
+            rawNodeCount,
+            rawEdgeCount,
+            activeNodeCount: this.nodes.length,
+            activeEdgeCount: this.edges.length,
+            visibleNodeCount: this.nodes.length,
+            visibleEdgeCount: this.edges.length,
+            archivedNodeCount: Math.max(0, rawNodeCount - this.nodes.length),
+            skippedEdgeCount: Math.max(0, rawEdgeCount - this.edges.length),
+            objectiveNodeCount: parts.objective.length,
+            userPovNodeCount: parts.userPov.length,
+            characterPovNodeCount,
+            characterPovPanelCount: parts.charMap.size,
+            layoutSeedModeCounts: { ...this._lastLayoutSeedModeCounts },
+            sampled: false,
+            capped: false,
+            renderOnly: true,
+            ...diagnosticCanvasBase,
+        };
         const neuralPlan = this._resolveNeuralSimulationPlan();
         const shouldTryNativeLayout = this._shouldTryNativeLayout(
             this.nodes.length,
@@ -378,6 +550,7 @@ export class GraphRenderer {
                         prepareFinishedAt,
                         layoutFinishedAt,
                         layoutReuse,
+                        baseLayoutDiagnostics,
                     },
                 );
             } else {
@@ -391,14 +564,15 @@ export class GraphRenderer {
             this.selectedNode = this.nodeMap.get(prevSelectedId) || null;
         }
 
+        this._pruneTransientHighlights(this._nowMs());
+
         this._cancelAnim();
         this._render();
 
         if (!nativeSolvePromise) {
             this._setLastLayoutDiagnostics({
                 mode: solvePath,
-                nodeCount: this.nodes.length,
-                edgeCount: this.edges.length,
+                ...baseLayoutDiagnostics,
                 prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                 layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                 solveMs,
@@ -434,6 +608,69 @@ export class GraphRenderer {
         this.themeName = themeName;
         this.colors = getNodeColors(themeName);
         if (this.enabled) this._render();
+    }
+
+    setTransientHighlights(payload = {}) {
+        const wasActive = this._transientHighlights?.size > 0;
+        const ttlMs = Math.max(1, Math.min(60000, Number(payload?.ttlMs) || 1800));
+        const reason = String(payload?.reason || '').trim();
+        const now = this._nowMs();
+        const next = new Map();
+        const recallIds = this._normalizeTransientHighlightIds(payload?.recallNodeIds);
+        const extractedIds = this._normalizeTransientHighlightIds(payload?.extractedNodeIds);
+
+        for (const id of extractedIds) {
+            next.set(id, {
+                kind: 'extracted',
+                startedAt: now,
+                expiresAt: now + ttlMs,
+                ttlMs,
+                reason,
+            });
+        }
+        for (const id of recallIds) {
+            const existing = next.get(id);
+            next.set(id, {
+                kind: existing ? 'mixed' : 'recall',
+                startedAt: now,
+                expiresAt: now + ttlMs,
+                ttlMs,
+                reason,
+            });
+        }
+
+        this._transientHighlights = next;
+        this._cancelHighlightAnimationFrame();
+        this._cancelHighlightExpiryTimer();
+
+        if (!this.enabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
+            return;
+        }
+        if (next.size > 0) {
+            this._scheduleRender();
+            if (this._isReducedMotion()) {
+                this._scheduleReducedMotionHighlightExpiry();
+            }
+        } else if (wasActive) {
+            this._scheduleRender();
+        }
+    }
+
+    getTransientHighlightDiagnostics() {
+        const now = this._nowMs();
+        this._pruneTransientHighlights(now);
+        if (this._transientHighlights.size <= 0) {
+            this._cancelHighlightAnimationFrame();
+            this._cancelHighlightExpiryTimer();
+        }
+        return {
+            count: this._transientHighlights.size,
+            activeCount: this._transientHighlights.size,
+            reducedMotion: this._isReducedMotion(),
+            animationScheduled: !!this._highlightAnimId,
+            expiryScheduled: !!this._highlightExpiryTimer,
+        };
     }
 
     setRuntimeConfig(runtimeConfig = {}) {
@@ -482,7 +719,10 @@ export class GraphRenderer {
     setEnabled(enabled = true) {
         const nextEnabled = enabled !== false;
         if (this.enabled === nextEnabled) {
-            if (!nextEnabled) this._clearCanvas();
+            if (!nextEnabled) {
+                this._clearTransientHighlights({ cancelAnimation: true });
+                this._clearCanvas();
+            }
             return;
         }
         this._nextLayoutSolveRevision();
@@ -499,6 +739,7 @@ export class GraphRenderer {
         this._dragStartMouse = null;
         this.hoveredNode = null;
         if (!nextEnabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
             this.nodeMap.clear();
             this.nodes = [];
             this.edges = [];
@@ -639,20 +880,24 @@ export class GraphRenderer {
     }
 
     _layoutAllPartitions({ objective, userPov, charMap }) {
+        const layoutAdjacencyIndex = this._buildLayoutAdjacencyIndex();
         this._seedNeuralCloudInRect(
             objective.filter((node) => node._layoutSeedReused !== true),
             objective[0]?.regionRect,
+            layoutAdjacencyIndex,
         );
         if (userPov.length) {
             this._seedNeuralCloudInRect(
                 userPov.filter((node) => node._layoutSeedReused !== true),
                 userPov[0]?.regionRect,
+                layoutAdjacencyIndex,
             );
         }
         for (const [, arr] of charMap) {
             this._seedNeuralCloudInRect(
                 arr.filter((node) => node._layoutSeedReused !== true),
                 arr[0]?.regionRect,
+                layoutAdjacencyIndex,
             );
         }
     }
@@ -745,28 +990,158 @@ export class GraphRenderer {
         }
     }
 
+    _getMemoryLayoutRole(node) {
+        const importance = Number(node?.importance || 0);
+        const type = String(node?.type || '').trim().toLowerCase();
+        const raw = node?.raw || {};
+        const accessCount = Number(raw.accessCount ?? raw.recallCount ?? raw.fields?.accessCount ?? raw.fields?.recallCount);
+        const kind = String(raw.fields?.kind ?? raw.kind ?? '').trim().toLowerCase();
+
+        if (
+            importance >= 9
+            || ['character', 'rule', 'synopsis'].includes(type)
+            || (Number.isFinite(accessCount) && accessCount >= 5)
+            || /\b(core|anchor|central|main|primary)\b/.test(kind)
+        ) {
+            return 'core';
+        }
+        if (
+            importance >= 6
+            || ['event', 'thread', 'location', 'reflection'].includes(type)
+        ) {
+            return 'topic';
+        }
+        return 'fragment';
+    }
+
+    _buildLayoutAdjacencyIndex() {
+        const adjacency = new Map();
+        const add = (node, neighbor, strength) => {
+            if (!node?.id || !neighbor) return;
+            const key = String(node.id);
+            if (!adjacency.has(key)) adjacency.set(key, []);
+            adjacency.get(key).push({ neighbor, strength });
+        };
+
+        for (const edge of Array.isArray(this.edges) ? this.edges : []) {
+            if (!edge?.from?.id || !edge?.to?.id) continue;
+            const strength = Math.max(0, Number(edge.strength) || 0);
+            add(edge.from, edge.to, strength);
+            add(edge.to, edge.from, strength);
+        }
+
+        return adjacency;
+    }
+
+    _findLayoutAnchorForNode(node, adjacencyIndex = null, roleCache = null) {
+        if (!node?.regionKey) return null;
+        const adjacent = adjacencyIndex instanceof Map
+            ? adjacencyIndex.get(String(node.id)) || []
+            : [];
+        let best = null;
+        const resolveRole = (neighbor) => {
+            const key = String(neighbor?.id || '');
+            if (roleCache instanceof Map && roleCache.has(key)) return roleCache.get(key);
+            const role = this._getMemoryLayoutRole(neighbor);
+            if (roleCache instanceof Map && key) roleCache.set(key, role);
+            return role;
+        };
+
+        for (const entry of adjacent) {
+            const neighbor = entry?.neighbor || null;
+            if (!neighbor || neighbor.regionKey !== node.regionKey) continue;
+            if (!Number.isFinite(neighbor.x) || !Number.isFinite(neighbor.y)) continue;
+            const role = resolveRole(neighbor);
+            const strength = Math.max(0, Number(entry.strength) || 0);
+            const roleScore = role === 'core' ? 2 : (role === 'topic' ? 1 : 0);
+            const score = roleScore * 1000 + strength;
+            if (!best || score > best.score) {
+                best = { node: neighbor, strength, score };
+            }
+        }
+        return best;
+    }
+
+    _markLayoutSeedMode(mode) {
+        if (!this._lastLayoutSeedModeCounts || typeof this._lastLayoutSeedModeCounts !== 'object') return;
+        this._lastLayoutSeedModeCounts[mode] = Number(this._lastLayoutSeedModeCounts[mode] || 0) + 1;
+    }
+
     /**
-     * 椭圆 Vogel 螺旋初值：有机疏密，Deterministic，无网格感
+     * 记忆星系初值：core 居中，topic 环绕，fragment 靠近已定位锚点；Deterministic，无持久写入
      */
-    _seedNeuralCloudInRect(nodes, rect) {
-        if (!rect || !nodes.length) return;
+    _seedNeuralCloudInRect(nodes, rect, adjacencyIndex = null) {
+        const candidates = Array.isArray(nodes)
+            ? nodes.filter((node) => node && node._layoutSeedReused !== true)
+            : [];
+        if (!rect || !candidates.length) return;
         const pad = Math.max(10, this.config.neuralMinGap);
         const cx = rect.x + rect.w / 2;
         const cy = rect.y + rect.h / 2;
         const rx = Math.max(14, rect.w / 2 - pad);
         const ry = Math.max(14, rect.h / 2 - pad);
-        const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-        const n = sorted.length;
         const golden = Math.PI * (3 - Math.sqrt(5));
-        sorted.forEach((node, i) => {
-            const t = (i + 0.5) / Math.max(n, 1);
-            const radScale = Math.sqrt(t) * 0.9;
-            const phase = ((hashId(node.id) & 0x3ff) / 1024) * 0.62;
-            const theta = i * golden + phase;
-            node.x = cx + Math.cos(theta) * radScale * rx;
-            node.y = cy + Math.sin(theta) * radScale * ry;
+        const sorted = [...candidates].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        const byRole = { core: [], topic: [], fragment: [] };
+        const roleCache = new Map();
+        for (const node of sorted) {
+            const role = this._getMemoryLayoutRole(node);
+            roleCache.set(String(node.id), role);
+            byRole[role].push(node);
+        }
+
+        const placeNode = (node, x, y) => {
+            node.x = Number.isFinite(x) ? x : cx;
+            node.y = Number.isFinite(y) ? y : cy;
             node.vx = 0;
             node.vy = 0;
+            this._clampNodeToRegion(node);
+        };
+
+        byRole.core.forEach((node, i) => {
+            const h = hashId(node.id);
+            const theta = i * golden + ((h & 0x3ff) / 1024) * Math.PI * 2;
+            const radial = Math.min(rx, ry) * (0.035 + ((h >>> 10) & 0xff) / 255 * 0.14);
+            placeNode(node, cx + Math.cos(theta) * radial, cy + Math.sin(theta) * radial);
+            this._markLayoutSeedMode('core');
+        });
+
+        const topicCount = Math.max(1, byRole.topic.length);
+        byRole.topic.forEach((node, i) => {
+            const h = hashId(node.id);
+            const theta = i * golden + ((h & 0x3ff) / 1024) * 0.8;
+            const band = topicCount <= 1 ? 0.42 : 0.32 + (i % 5) * 0.08;
+            const jitter = (((h >>> 10) & 0xff) / 255 - 0.5) * 0.08;
+            const scale = Math.max(0.22, Math.min(0.74, band + jitter));
+            placeNode(node, cx + Math.cos(theta) * rx * scale, cy + Math.sin(theta) * ry * scale);
+            this._markLayoutSeedMode('topic');
+        });
+
+        const fragmentCount = Math.max(1, byRole.fragment.length);
+        byRole.fragment.forEach((node, i) => {
+            const anchor = this._findLayoutAnchorForNode(node, adjacencyIndex, roleCache);
+            const h = hashId(node.id);
+            if (anchor?.node) {
+                const theta = ((h >>> 1) / 0x7fffffff) * Math.PI * 2 + golden;
+                const maxLocalRadius = Math.max(14, Math.min(rx, ry) * 0.38);
+                const strength = Math.max(0, Math.min(1, Number(anchor.strength) || 0));
+                const rawRadius = 24 + (Math.abs(h) % 28) * (1.08 - strength * 0.28);
+                const radius = Math.min(maxLocalRadius, rawRadius);
+                placeNode(
+                    node,
+                    anchor.node.x + Math.cos(theta) * radius,
+                    anchor.node.y + Math.sin(theta) * radius,
+                );
+                this._markLayoutSeedMode('anchoredFragment');
+                return;
+            }
+
+            const t = (i + 0.5) / fragmentCount;
+            const radScale = Math.sqrt(t) * 0.9;
+            const phase = ((h & 0x3ff) / 1024) * 0.62;
+            const theta = i * golden + phase;
+            placeNode(node, cx + Math.cos(theta) * radScale * rx, cy + Math.sin(theta) * radScale * ry);
+            this._markLayoutSeedMode('fallbackFragment');
         });
     }
 
@@ -945,6 +1320,9 @@ export class GraphRenderer {
         const layoutReuse = timings.layoutReuse && typeof timings.layoutReuse === 'object'
             ? timings.layoutReuse
             : this._lastLayoutReuseStats;
+        const baseLayoutDiagnostics = timings.baseLayoutDiagnostics && typeof timings.baseLayoutDiagnostics === 'object'
+            ? timings.baseLayoutDiagnostics
+            : {};
 
         const bridge = this._ensureNativeLayoutBridge();
         const solveStartedAt = performance.now();
@@ -968,8 +1346,7 @@ export class GraphRenderer {
                 applied: false,
                 diagnostics: {
                     mode: 'native-stale',
-                    nodeCount: this.nodes.length,
-                    edgeCount: this.edges.length,
+                    ...baseLayoutDiagnostics,
                     prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                     layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                     solveMs: Math.max(0, performance.now() - solveStartedAt),
@@ -988,8 +1365,7 @@ export class GraphRenderer {
                 applied: true,
                 diagnostics: {
                     mode: nativeResult.usedNative ? 'rust-wasm-worker' : 'js-worker',
-                    nodeCount: this.nodes.length,
-                    edgeCount: this.edges.length,
+                    ...baseLayoutDiagnostics,
                     prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                     layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                     solveMs: Math.max(0, performance.now() - solveStartedAt),
@@ -1010,8 +1386,7 @@ export class GraphRenderer {
                 applied: false,
                 diagnostics: {
                     mode: 'native-failed-hard',
-                    nodeCount: this.nodes.length,
-                    edgeCount: this.edges.length,
+                    ...baseLayoutDiagnostics,
                     prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                     layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                     solveMs: Math.max(0, performance.now() - solveStartedAt),
@@ -1031,8 +1406,7 @@ export class GraphRenderer {
             applied: true,
             diagnostics: {
                 mode: 'js-fallback',
-                nodeCount: this.nodes.length,
-                edgeCount: this.edges.length,
+                ...baseLayoutDiagnostics,
                 prepareMs: Math.max(0, prepareFinishedAt - loadStartedAt),
                 layoutSeedMs: Math.max(0, layoutFinishedAt - prepareFinishedAt),
                 solveMs: Math.max(0, performance.now() - solveStartedAt) + fallbackSolveMs,
@@ -1151,23 +1525,36 @@ export class GraphRenderer {
             const ph = Number(p.h) || 0;
             if (pw < 2 || ph < 2) continue;
             ctx.beginPath();
-            roundRectPath(ctx, p.x, p.y, pw, ph, 12);
-            ctx.fillStyle = p.tint;
+            roundRectPath(ctx, p.x, p.y, pw, ph, 16);
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createLinearGradient',
+                [p.x, p.y, p.x + pw, p.y + ph],
+                [
+                    [0, p.tint],
+                    [0.62, 'rgba(6, 10, 22, 0.22)'],
+                    [1, 'rgba(87, 199, 255, 0.035)'],
+                ],
+                p.tint,
+            );
             ctx.fill();
-            ctx.strokeStyle = 'rgba(87, 199, 255, 0.12)';
+            ctx.strokeStyle = 'rgba(141, 213, 255, 0.14)';
             ctx.lineWidth = 1;
             ctx.stroke();
 
-            ctx.fillStyle = 'rgba(228, 225, 230, 0.55)';
-            ctx.font = '600 10px Inter, sans-serif';
+            ctx.fillStyle = 'rgba(222, 239, 255, 0.64)';
+            ctx.font = '700 10px Inter, sans-serif';
             ctx.textAlign = 'left';
             ctx.fillText(p.label, p.x + 12, p.y + 16);
         }
     }
 
-    _drawSynapseEdge(ctx, edge, idx) {
+    _drawSynapseEdge(ctx, edge, idx, focus = null) {
         const { from, to, strength } = edge;
         const sameZone = from.regionKey === to.regionKey;
+        const selectedNode = focus?.selectedNode || null;
+        const isConnectedToSelection = !!selectedNode && (from === selectedNode || to === selectedNode);
+        const isDimmed = !!selectedNode && !isConnectedToSelection;
         const mx = (from.x + to.x) / 2;
         const my = (from.y + to.y) / 2;
         const dx = to.x - from.x;
@@ -1181,12 +1568,26 @@ export class GraphRenderer {
         const cx = mx + nx * bend;
         const cy = my + ny * bend;
 
-        const alpha = sameZone ? 0.06 + strength * 0.14 : 0.05 + strength * 0.1;
+        const relationColor = edgeColorForRelation(edge.relation);
+        const baseAlpha = sameZone ? 0.035 + strength * 0.09 : 0.026 + strength * 0.07;
+        const alpha = isDimmed ? 0.018 : (isConnectedToSelection ? 0.38 + strength * 0.28 : baseAlpha);
+
+        if (isConnectedToSelection) {
+            ctx.beginPath();
+            ctx.moveTo(from.x, from.y);
+            ctx.quadraticCurveTo(cx, cy, to.x, to.y);
+            ctx.strokeStyle = colorWithAlpha(relationColor, 0.12 + strength * 0.12);
+            ctx.lineWidth = 2.8 + strength * 2.2;
+            ctx.stroke();
+        }
+
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
         ctx.quadraticCurveTo(cx, cy, to.x, to.y);
-        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
-        ctx.lineWidth = 0.45 + strength * 1.35;
+        ctx.strokeStyle = colorWithAlpha(isConnectedToSelection ? relationColor : '#c9dcff', alpha);
+        ctx.lineWidth = isConnectedToSelection
+            ? 1.35 + strength * 2.15
+            : 0.35 + strength * 0.82;
         ctx.stroke();
     }
 
@@ -1199,11 +1600,14 @@ export class GraphRenderer {
         const dpr = window.devicePixelRatio || 1;
         const W = this.canvas.width / dpr;
         const H = this.canvas.height / dpr;
+        this._pruneTransientHighlights(this._nowMs());
 
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         ctx.save();
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        this._drawDeepSpaceBackground(ctx, W, H);
 
         ctx.translate(this.offsetX, this.offsetY);
         ctx.scale(this.scale, this.scale);
@@ -1214,13 +1618,18 @@ export class GraphRenderer {
 
         this._drawGrid(W, H);
 
-        this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i));
+        const focus = this._buildFocusState();
+
+        this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i, focus));
 
         for (const node of this.nodes) {
-            const r = this._nodeRadius(node);
+            const baseRadius = this._nodeVisualRadius(node);
             const color = this.colors[node.type] || this.colors.event;
             const isSelected = node === this.selectedNode;
             const isHovered = node === this.hoveredNode;
+            const isDimmed = focus.selectedNode && !focus.connectedNodes.has(node);
+            const r = (isSelected ? baseRadius * 1.12 : baseRadius) * (isDimmed ? 0.6 : 1);
+            const transientHighlight = this._transientHighlights.get(node.id) || null;
             const scope = normalizeMemoryScope(node.raw?.scope);
             const outlineColor = scope.layer === 'pov'
                 ? (scope.ownerType === 'user'
@@ -1228,26 +1637,71 @@ export class GraphRenderer {
                     : SCOPE_OUTLINE_COLORS.character)
                 : SCOPE_OUTLINE_COLORS.objective;
 
+            ctx.save();
+            if (isDimmed) ctx.globalAlpha = 0.2;
+
+            if (transientHighlight) {
+                this._drawTransientHighlight(ctx, node, r, transientHighlight);
+            }
+
             if (isSelected || isHovered) {
+                const glowRadius = r + (isSelected ? 20 : 13);
                 ctx.beginPath();
-                ctx.arc(node.x, node.y, r + 9, 0, Math.PI * 2);
-                const glow = ctx.createRadialGradient(node.x, node.y, r, node.x, node.y, r + 9);
-                glow.addColorStop(0, color + '55');
-                glow.addColorStop(1, color + '00');
-                ctx.fillStyle = glow;
+                ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+                ctx.fillStyle = createCanvasGradient(
+                    ctx,
+                    'createRadialGradient',
+                    [node.x, node.y, Math.max(1, r * 0.45), node.x, node.y, glowRadius],
+                    [
+                        [0, colorWithAlpha(color, isSelected ? 0.52 : 0.34)],
+                        [0.55, colorWithAlpha(color, isSelected ? 0.22 : 0.14)],
+                        [1, colorWithAlpha(color, 0)],
+                    ],
+                    colorWithAlpha(color, isSelected ? 0.24 : 0.14),
+                );
                 ctx.fill();
+
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, r + (isSelected ? 6 : 4), 0, Math.PI * 2);
+                ctx.strokeStyle = colorWithAlpha(isSelected ? '#ffffff' : color, isSelected ? 0.72 : 0.5);
+                ctx.lineWidth = isSelected ? 2.4 : 1.6;
+                ctx.stroke();
             }
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-            ctx.fillStyle = isSelected ? color : color + 'dd';
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [
+                    node.x - r * 0.32,
+                    node.y - r * 0.34,
+                    Math.max(1, r * 0.16),
+                    node.x,
+                    node.y,
+                    r,
+                ],
+                [
+                    [0, colorWithAlpha('#ffffff', isSelected ? 0.86 : 0.68)],
+                    [0.18, colorWithAlpha(color, isSelected ? 1 : 0.94)],
+                    [1, colorWithAlpha(color, isSelected ? 0.68 : 0.52)],
+                ],
+                colorWithAlpha(color, isSelected ? 1 : 0.86),
+            );
             ctx.fill();
 
-            ctx.strokeStyle = isSelected ? '#fff' : outlineColor;
-            ctx.lineWidth = isSelected ? 2.25 : 1.35;
+            ctx.strokeStyle = isSelected ? '#fff' : colorWithAlpha(outlineColor, isHovered ? 0.9 : 0.64);
+            ctx.lineWidth = isSelected ? 2.8 : (isHovered ? 1.8 : 1.1);
             ctx.stroke();
 
-            ctx.fillStyle = `rgba(255,255,255,${isHovered || isSelected ? 0.94 : 0.66})`;
+            ctx.shadowColor = colorWithAlpha(color, isSelected ? 0.5 : 0.2);
+            ctx.shadowBlur = isSelected ? 16 : 7;
+            ctx.beginPath();
+            ctx.arc(node.x - r * 0.28, node.y - r * 0.34, Math.max(1.4, r * 0.16), 0, Math.PI * 2);
+            ctx.fillStyle = colorWithAlpha('#ffffff', isSelected ? 0.7 : 0.5);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
             ctx.font = `${this.config.labelFontSize}px Inter, sans-serif`;
             ctx.textAlign = 'center';
             const rect = node.regionRect;
@@ -1264,10 +1718,294 @@ export class GraphRenderer {
                 node.label || node.name,
                 maxLabelW,
             );
+            if (isHovered || isSelected) {
+                const metrics = ctx.measureText(labelDraw);
+                const pillW = Math.min(maxLabelW + 12, metrics.width + 14);
+                const pillH = 17;
+                const pillX = node.x - pillW / 2;
+                const pillY = node.y + r + 6;
+                ctx.beginPath();
+                roundRectPath(ctx, pillX, pillY, pillW, pillH, 8);
+                ctx.fillStyle = isSelected
+                    ? 'rgba(7, 14, 32, 0.88)'
+                    : 'rgba(7, 14, 32, 0.72)';
+                ctx.fill();
+                ctx.strokeStyle = colorWithAlpha(color, isSelected ? 0.48 : 0.32);
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            ctx.fillStyle = `rgba(238,247,255,${isHovered || isSelected ? 0.96 : 0.62})`;
             ctx.fillText(labelDraw, node.x, node.y + r + 14);
+            ctx.restore();
         }
 
         ctx.restore();
+        this._afterRenderTransientHighlights();
+    }
+
+    _drawTransientHighlight(ctx, node, radius, highlight) {
+        if (!highlight || !node) return;
+        const now = this._nowMs();
+        const ttl = Math.max(1, Number(highlight.ttlMs) || 1);
+        const progress = Math.max(0, Math.min(1, (now - Number(highlight.startedAt || now)) / ttl));
+        const reducedMotion = this._isReducedMotion();
+        const phase = reducedMotion ? 0.55 : (Math.sin(progress * Math.PI * 4) + 1) / 2;
+        const fade = Math.max(0, 1 - progress);
+        const kind = highlight.kind || 'recall';
+        const drawPulse = (color, offset, alphaScale = 1) => {
+            const pulse = reducedMotion ? 0.35 : phase;
+            const ringRadius = radius + offset + pulse * 11;
+            const glowRadius = ringRadius + 11;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [node.x, node.y, Math.max(1, radius * 0.8), node.x, node.y, glowRadius],
+                [
+                    [0, colorWithAlpha(color, 0.10 * fade * alphaScale)],
+                    [0.58, colorWithAlpha(color, 0.16 * fade * alphaScale)],
+                    [1, colorWithAlpha(color, 0)],
+                ],
+                colorWithAlpha(color, 0.08 * fade * alphaScale),
+            );
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, ringRadius, 0, Math.PI * 2);
+            ctx.strokeStyle = colorWithAlpha(color, (0.28 + phase * 0.34) * fade * alphaScale);
+            ctx.lineWidth = 1.2 + phase * 1.4;
+            ctx.stroke();
+        };
+
+        if (kind === 'mixed') {
+            drawPulse('#7cf8ff', 7, 1);
+            drawPulse('#b79cff', 14, 0.88);
+        } else if (kind === 'extracted') {
+            drawPulse('#b79cff', 9, 0.9);
+            drawPulse('#75ffb1', 15, 0.5);
+        } else {
+            drawPulse('#7cf8ff', 8, 1);
+        }
+    }
+
+    _afterRenderTransientHighlights() {
+        if (!this.enabled) {
+            this._clearTransientHighlights({ cancelAnimation: true });
+            return;
+        }
+        const hasActive = this._pruneTransientHighlights(this._nowMs()) > 0;
+        if (!hasActive) {
+            this._cancelHighlightAnimationFrame();
+            this._cancelHighlightExpiryTimer();
+            return;
+        }
+        if (!this._isReducedMotion()) {
+            this._scheduleHighlightAnimationFrame();
+        } else {
+            this._scheduleReducedMotionHighlightExpiry();
+        }
+    }
+
+    _drawDeepSpaceBackground(ctx, W, H) {
+        const width = Math.max(1, Number(W) || 1);
+        const height = Math.max(1, Number(H) || 1);
+        const theme = THEMES[this.themeName] || THEMES.crimson;
+        const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
+        if (isLightTheme) {
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [
+                    width * 0.52,
+                    height * 0.36,
+                    0,
+                    width * 0.52,
+                    height * 0.36,
+                    Math.max(width, height) * 0.82,
+                ],
+                [
+                    [0, colorWithAlpha(theme.primary, 0.08)],
+                    [0.42, colorWithAlpha(theme.secondary, 0.045)],
+                    [1, theme.surfaceLowest || theme.surfaceLow || '#f8fafc'],
+                ],
+                theme.surfaceLowest || theme.surfaceLow || '#f8fafc',
+            );
+            ctx.fillRect(0, 0, width, height);
+
+            ctx.fillStyle = createCanvasGradient(
+                ctx,
+                'createRadialGradient',
+                [
+                    width * 0.82,
+                    height * 0.18,
+                    0,
+                    width * 0.82,
+                    height * 0.18,
+                    Math.max(width, height) * 0.46,
+                ],
+                [
+                    [0, colorWithAlpha(theme.accent2 || theme.primary, 0.055)],
+                    [1, 'rgba(255, 255, 255, 0)'],
+                ],
+                'rgba(255, 255, 255, 0)',
+            );
+            ctx.fillRect(0, 0, width, height);
+            return;
+        }
+
+        ctx.fillStyle = createCanvasGradient(
+            ctx,
+            'createRadialGradient',
+            [
+                width * 0.52,
+                height * 0.36,
+                0,
+                width * 0.52,
+                height * 0.36,
+                Math.max(width, height) * 0.82,
+            ],
+            [
+                [0, colorWithAlpha(theme.primary || '#224b84', 0.2)],
+                [0.34, colorWithAlpha(theme.secondary || '#141c48', 0.12)],
+                [0.72, colorWithAlpha(theme.surfaceLow || '#070b1a', 0.5)],
+                [1, theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)'],
+            ],
+            theme.surfaceLowest || 'rgba(2, 4, 12, 0.96)',
+        );
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.fillStyle = createCanvasGradient(
+            ctx,
+            'createRadialGradient',
+            [
+                width * 0.82,
+                height * 0.18,
+                0,
+                width * 0.82,
+                height * 0.18,
+                Math.max(width, height) * 0.46,
+            ],
+            [
+                [0, colorWithAlpha(theme.accent3 || '#b073ff', 0.12)],
+                [0.5, colorWithAlpha(theme.accent2 || '#57c7ff', 0.055)],
+                [1, 'rgba(0, 0, 0, 0)'],
+            ],
+            'rgba(0, 0, 0, 0)',
+        );
+        ctx.fillRect(0, 0, width, height);
+    }
+
+    _buildFocusState() {
+        const selectedNode = this.selectedNode || null;
+        const connectedNodes = new Set();
+        if (selectedNode) {
+            connectedNodes.add(selectedNode);
+            for (const edge of this.edges) {
+                if (edge.from === selectedNode && edge.to) connectedNodes.add(edge.to);
+                if (edge.to === selectedNode && edge.from) connectedNodes.add(edge.from);
+            }
+        }
+        return { selectedNode, connectedNodes };
+    }
+
+    _nowMs() {
+        if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+            return performance.now();
+        }
+        return Date.now();
+    }
+
+    _isReducedMotion() {
+        try {
+            return window?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+        } catch {
+            return false;
+        }
+    }
+
+    _normalizeTransientHighlightIds(input) {
+        const source = Array.isArray(input) ? input : (input == null ? [] : [input]);
+        const ids = new Set();
+        for (const item of source) {
+            let raw = item;
+            if (item && typeof item === 'object') {
+                raw = item.id ?? item.nodeId;
+            }
+            if (raw == null) continue;
+            const id = String(raw).trim();
+            if (id) ids.add(id);
+        }
+        return ids;
+    }
+
+    _pruneTransientHighlights(now = this._nowMs()) {
+        for (const [nodeId, highlight] of this._transientHighlights) {
+            if (!this.nodeMap.has(nodeId) || Number(highlight?.expiresAt || 0) <= now) {
+                this._transientHighlights.delete(nodeId);
+            }
+        }
+        return this._transientHighlights.size;
+    }
+
+    _clearTransientHighlights({ cancelAnimation = false } = {}) {
+        this._transientHighlights.clear();
+        if (cancelAnimation) {
+            this._cancelHighlightAnimationFrame();
+            this._cancelHighlightExpiryTimer();
+        }
+    }
+
+    _cancelHighlightAnimationFrame() {
+        if (this._highlightAnimId) {
+            cancelAnimationFrame(this._highlightAnimId);
+            this._highlightAnimId = null;
+        }
+    }
+
+    _cancelHighlightExpiryTimer() {
+        if (this._highlightExpiryTimer) {
+            clearTimeout(this._highlightExpiryTimer);
+            this._highlightExpiryTimer = null;
+        }
+    }
+
+    _scheduleReducedMotionHighlightExpiry() {
+        if (!this.enabled || this._highlightExpiryTimer || !this._isReducedMotion()) return;
+        if (this._transientHighlights.size <= 0) return;
+        const now = this._nowMs();
+        let nextExpiresAt = Infinity;
+        for (const highlight of this._transientHighlights.values()) {
+            const expiresAt = Number(highlight?.expiresAt || 0);
+            if (expiresAt > now) nextExpiresAt = Math.min(nextExpiresAt, expiresAt);
+        }
+        if (!Number.isFinite(nextExpiresAt)) return;
+        const delay = Math.max(1, Math.ceil(nextExpiresAt - now) + 1);
+        this._highlightExpiryTimer = setTimeout(() => {
+            this._highlightExpiryTimer = null;
+            if (!this.enabled) {
+                this._clearTransientHighlights({ cancelAnimation: true });
+                return;
+            }
+            const hadHighlights = this._transientHighlights.size > 0;
+            const active = this._pruneTransientHighlights(this._nowMs());
+            if (hadHighlights) this._scheduleRender();
+            if (active > 0) this._scheduleReducedMotionHighlightExpiry();
+        }, delay);
+    }
+
+    _scheduleHighlightAnimationFrame() {
+        if (!this.enabled || this._highlightAnimId || this._isReducedMotion()) return;
+        if (this._transientHighlights.size <= 0) return;
+        this._highlightAnimId = requestAnimationFrame(() => {
+            this._highlightAnimId = null;
+            if (!this.enabled) {
+                this._clearTransientHighlights({ cancelAnimation: true });
+                return;
+            }
+            if (this._pruneTransientHighlights(this._nowMs()) <= 0) return;
+            this._render();
+        });
     }
 
     _scheduleRender() {
@@ -1308,6 +2046,19 @@ export class GraphRenderer {
         const min = this.config.minNodeRadius;
         const max = this.config.maxNodeRadius;
         return min + ((node.importance || 5) / 10) * (max - min);
+    }
+
+    _nodeVisualRadius(node) {
+        const base = this._nodeRadius(node);
+        const importance = Number(node?.importance || 5);
+        const type = String(node?.type || '').toLowerCase();
+        if (type === 'character' || importance >= 9) {
+            return Math.min(base * 1.18, base + 4);
+        }
+        if (type === 'event' || importance >= 6) {
+            return Math.min(base * 1.08, base + 2);
+        }
+        return base;
     }
 
     _ellipsisLabel(ctx, text, maxW) {
@@ -1601,6 +2352,7 @@ export class GraphRenderer {
     destroy() {
         this._nextLayoutSolveRevision();
         this._cancelAnim();
+        this._clearTransientHighlights({ cancelAnimation: true });
         this._nativeLayoutBridge?.dispose?.();
         this._nativeLayoutBridge = null;
         recordGraphLayoutDebugSnapshot(

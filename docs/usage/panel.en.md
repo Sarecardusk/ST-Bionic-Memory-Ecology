@@ -106,7 +106,13 @@ The config page contains these workspaces:
 
 ### Graph area
 
-Desktop shows a realtime graph area. Mobile provides subview switching:
+Desktop shows a realtime graph area with a deep-space visual style for the current memory graph. Nodes and edges use semantic styling; hovering or selecting an item keeps related structure highlighted while unrelated content is gently dimmed.
+
+When recall or extraction runs while the graph is visible, the relevant nodes may show brief highlights for memories used or newly produced in that turn. These highlights are render-only and do not change the memory graph; reduced-motion preferences are respected.
+
+New graphs start with a “memory star system” layout: core memories near the center, topic memories around them, and fragment memories near related anchors. Existing layouts are reused first.
+
+Mobile provides subview switching:
 
 - **Realtime graph**
 - **Cognitive view**
