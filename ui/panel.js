@@ -13,8 +13,6 @@ import {
 } from "./panel-ena-sections.js";
 import { getNodeDisplayName } from "../graph/node-labels.js";
 import {
-  buildRegionLine,
-  buildScopeBadgeText,
   normalizeMemoryScope,
 } from "../graph/memory-scope.js";
 import { listKnowledgeOwners } from "../graph/knowledge-state.js";
@@ -72,6 +70,15 @@ import {
   setLocale,
   t,
 } from "../i18n/index.js";
+import {
+  normalizeOwnerUiType,
+  uiBuildScopeMetaText,
+  uiBuildRegionLine,
+  uiMemoryNodeTypeClass,
+  uiOwnerTypeLabel,
+  uiScopeBadgeText,
+  uiTypeLabel,
+} from "./ui-label-formatter.js";
 
 let defaultPromptCache = null;
 
@@ -2726,24 +2733,6 @@ function _refreshTaskTimeline() {
 
 // ---------- Memory Browser (Master-Detail) ----------
 
-function _getMemoryNodeTypeClass(type) {
-  switch (type) {
-    case "pov_memory":
-    case "character":
-      return "type-character";
-    case "event":
-      return "type-event";
-    case "location":
-      return "type-location";
-    case "rule":
-      return "type-rule";
-    case "thread":
-      return "type-thread";
-    default:
-      return "type-default";
-  }
-}
-
 function _parseFloorFilter(raw) {
   const text = String(raw || "").trim();
   if (!text) return null;
@@ -2917,13 +2906,13 @@ function _refreshTaskMemoryBrowser() {
   const listItems = sorted.map((node) => {
     const sel = node.id === currentSelectedMemoryNodeId ? "selected" : "";
     const preview = _getNodeSnippet(node);
-    const scopeBadge = buildScopeBadgeText(node.scope);
+    const scopeBadge = uiScopeBadgeText(node.scope);
     const metaText = _buildScopeMetaText(node);
     const displayName = getNodeDisplayName(node);
     return `
       <div class="bme-memory-node-item ${sel}" data-node-id="${_escHtml(node.id)}">
         <div class="bme-memory-node-item__header">
-          <span class="bme-memory-node-item__type ${_getMemoryNodeTypeClass(node.type)}">${_escHtml(_typeLabel(node.type))}</span>
+          <span class="bme-memory-node-item__type ${uiMemoryNodeTypeClass(node.type)}">${_escHtml(uiTypeLabel(node.type))}</span>
           <span class="bme-memory-node-item__imp">IMP: ${typeof node.importance === "number" ? node.importance.toFixed(1) : "—"}</span>
         </div>
         <div class="bme-memory-node-item__title">${_escHtml(displayName)}</div>
@@ -3016,12 +3005,12 @@ function _renderTaskMemoryDetailPanel(detailEl, node, graph) {
       (e?.fromId === node.id || e?.toId === node.id),
   );
   const detailSummary = _getNodeSnippet(node);
-  const scopeBadge = buildScopeBadgeText(node.scope);
+  const scopeBadge = uiScopeBadgeText(node.scope);
   const displayName = getNodeDisplayName(node);
   const writeBlocked = _isGraphWriteBlocked();
   const disabledAttr = writeBlocked ? " disabled" : "";
   const badges = [
-    node.type ? `<span class="bme-memory-node-item__type ${_getMemoryNodeTypeClass(node.type)}">${_escHtml(_typeLabel(node.type))}</span>` : "",
+    node.type ? `<span class="bme-memory-node-item__type ${uiMemoryNodeTypeClass(node.type)}">${_escHtml(uiTypeLabel(node.type))}</span>` : "",
     scopeBadge ? `<span class="bme-memory-node-item__type type-default">${_escHtml(scopeBadge)}</span>` : "",
     node.archived ? '<span class="bme-memory-node-item__type type-default">ARCHIVED</span>' : "",
   ].filter(Boolean).join("");
@@ -3111,9 +3100,9 @@ function _openMemoryPopup(node, graph) {
   if (!popup || !bodyEl) return;
 
   const displayName = getNodeDisplayName(node);
-  const scopeBadge = buildScopeBadgeText(node.scope);
+  const scopeBadge = uiScopeBadgeText(node.scope);
   const badges = [
-    node.type ? `<span class="bme-memory-node-item__type ${_getMemoryNodeTypeClass(node.type)}">${_escHtml(_typeLabel(node.type))}</span>` : "",
+    node.type ? `<span class="bme-memory-node-item__type ${uiMemoryNodeTypeClass(node.type)}">${_escHtml(uiTypeLabel(node.type))}</span>` : "",
     scopeBadge ? `<span class="bme-memory-node-item__type type-default">${_escHtml(scopeBadge)}</span>` : "",
     node.archived ? '<span class="bme-memory-node-item__type type-default">ARCHIVED</span>' : "",
   ].filter(Boolean).join("");
@@ -4006,25 +3995,11 @@ function _ownerAvatarHsl(name) {
   return `hsl(${hue}, 55%, 42%)`;
 }
 
-function _normalizeOwnerUiType(ownerType = "") {
-  const normalized = String(ownerType || "").trim();
-  if (normalized === "user") return "user";
-  if (normalized === "character") return "character";
-  return "";
-}
-
 function _inferOwnerTypeFromKey(ownerKey = "") {
   const normalizedOwnerKey = String(ownerKey || "").trim().toLowerCase();
   if (normalizedOwnerKey.startsWith("user:")) return "user";
   if (normalizedOwnerKey.startsWith("character:")) return "character";
   return "";
-}
-
-function _getOwnerTypeDisplayLabel(ownerType = "") {
-  const normalizedType = _normalizeOwnerUiType(ownerType);
-  if (normalizedType === "user") return "用户";
-  if (normalizedType === "character") return "角色";
-  return "Owner";
 }
 
 function _buildOwnerCollisionIndex(owners = []) {
@@ -4034,7 +4009,7 @@ function _buildOwnerCollisionIndex(owners = []) {
       String(owner?.ownerName || owner?.ownerKey || "未命名角色").trim() ||
       "未命名角色";
     const nameKey = baseName.toLocaleLowerCase("zh-Hans-CN");
-    const ownerType = _normalizeOwnerUiType(owner?.ownerType) || "unknown";
+    const ownerType = normalizeOwnerUiType(owner?.ownerType) || "unknown";
     const entry = collisionIndex.get(nameKey) || {
       count: 0,
       typeCounts: new Map(),
@@ -4058,8 +4033,8 @@ function _getOwnerDisplayInfo(owner = {}, collisionIndex = null) {
     "未命名角色";
   const ownerKey = String(owner?.ownerKey || "").trim();
   const ownerType =
-    _normalizeOwnerUiType(owner?.ownerType) || _inferOwnerTypeFromKey(ownerKey);
-  const typeLabel = _getOwnerTypeDisplayLabel(ownerType);
+    normalizeOwnerUiType(owner?.ownerType) || _inferOwnerTypeFromKey(ownerKey);
+  const typeLabel = uiOwnerTypeLabel(ownerType);
   const collisionInfo =
     collisionIndex instanceof Map
       ? collisionIndex.get(baseName.toLocaleLowerCase("zh-Hans-CN")) || null
@@ -5282,7 +5257,7 @@ function _renderRecentList(elementId, items) {
 
     const badge = document.createElement("span");
     badge.className = `bme-type-badge ${_safeCssToken(item.type)}`;
-    badge.textContent = _typeLabel(item.type);
+    badge.textContent = uiTypeLabel(item.type);
     li.appendChild(badge);
 
     const content = document.createElement("div");
@@ -5393,11 +5368,11 @@ function _refreshMemoryBrowser() {
 
     const badge = document.createElement("span");
     badge.className = `bme-type-badge ${_safeCssToken(node.type)}`;
-    badge.textContent = _typeLabel(node.type);
+    badge.textContent = uiTypeLabel(node.type);
 
     const scopeChip = document.createElement("span");
     scopeChip.className = "bme-memory-scope-chip";
-    scopeChip.textContent = buildScopeBadgeText(node.scope);
+    scopeChip.textContent = uiScopeBadgeText(node.scope);
 
     head.append(badge, scopeChip);
 
@@ -6076,9 +6051,9 @@ function _describeStoryTimeSpanDisplay(storyTimeSpan = {}) {
       : normalized.startLabel || normalized.endLabel || "";
 
   if (!label) {
-    return normalized.mixed ? "混合时间" : "";
+    return normalized.mixed ? t("storyTime.mixedTime") : "";
   }
-  return normalized.mixed ? `${label} · 混合` : label;
+  return normalized.mixed ? `${label} · ${t("storyTime.mixed")}` : label;
 }
 
 function _describeNodeStoryTimeDisplay(node = {}) {
@@ -6208,11 +6183,11 @@ function _buildNodeDetailEditorFragment(raw, { idPrefix = "bme-detail" } = {}) {
   const fragment = document.createDocumentFragment();
   const inputId = (suffix) => `${idPrefix}-${suffix}`;
 
-  _appendNodeDetailReadOnly(fragment, "类型", _typeLabel(raw.type));
+  _appendNodeDetailReadOnly(fragment, "类型", uiTypeLabel(raw.type));
   _appendNodeDetailReadOnly(
     fragment,
     "作用域",
-    buildScopeBadgeText(raw.scope),
+    uiScopeBadgeText(raw.scope),
   );
   _appendNodeDetailReadOnly(fragment, "ID", raw.id || "—");
   _appendNodeDetailReadOnly(
@@ -6228,7 +6203,7 @@ function _buildNodeDetailEditorFragment(raw, { idPrefix = "bme-detail" } = {}) {
       `${scope.ownerType || "unknown"} / ${scope.ownerName || scope.ownerId || "—"}`,
     );
   }
-  const regionLine = buildRegionLine(scope);
+  const regionLine = uiBuildRegionLine(scope);
   if (regionLine) {
     _appendNodeDetailReadOnly(fragment, "地区", regionLine);
   }
@@ -14843,18 +14818,7 @@ function _matchesMemoryFilter(node, filter = "all") {
 }
 
 function _buildScopeMetaText(node) {
-  const scope = normalizeMemoryScope(node?.scope);
-  const parts = [];
-  if (scope.layer === "pov") {
-    parts.push(
-      `${scope.ownerType === "user" ? "用户 POV" : "角色 POV"}: ${scope.ownerName || scope.ownerId || "未命名"}`,
-    );
-  }
-  const regionLine = buildRegionLine(scope);
-  if (regionLine) parts.push(regionLine);
-  const storyTime = _describeNodeStoryTimeDisplay(node);
-  if (storyTime) parts.push(`剧情时间: ${storyTime}`);
-  return parts.join(" · ");
+  return uiBuildScopeMetaText(node);
 }
 
 /** 记忆列表等指标：避免浮点误差打出 9.499999999999998 */
@@ -14876,20 +14840,6 @@ function _formatMemoryInt(value, fallback = 0) {
       : Number(value);
   if (!Number.isFinite(x)) return "—";
   return String(Math.trunc(x));
-}
-
-function _typeLabel(type) {
-  const map = {
-    character: "角色",
-    event: "事件",
-    location: "地点",
-    thread: "主线",
-    rule: "规则",
-    synopsis: "全局概要（旧）",
-    reflection: "反思",
-    pov_memory: "主观记忆",
-  };
-  return map[type] || type || "—";
 }
 
 function _getNodeSnippet(node) {
