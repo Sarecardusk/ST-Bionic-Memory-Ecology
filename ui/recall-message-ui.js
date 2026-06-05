@@ -3,6 +3,7 @@
 
 import { getContext } from "../../../../extensions.js";
 import { GraphRenderer } from "./graph-renderer.js";
+import { t } from "../i18n/index.js";
 
 function _hostUserPovAliasHintsForRecallCanvas() {
   try {
@@ -82,12 +83,12 @@ function formatTokenHint(tokenEstimate) {
 function formatMetaLine(record) {
   const parts = [];
   if (record.recallSource && !buildRecallSourceLabel(record)) {
-    parts.push(`来源: ${record.recallSource}`);
+    parts.push(t("recall.card.meta.source", { source: record.recallSource }));
   }
-  if (record.authoritativeInputUsed) parts.push("权威输入");
+  if (record.authoritativeInputUsed) parts.push(t("recall.card.meta.authoritativeInput"));
   if (record.tokenEstimate > 0) parts.push(`~${record.tokenEstimate} tokens`);
   if (Number.isFinite(record.generationCount) && record.generationCount > 0) {
-    parts.push(`回退 ${record.generationCount} 次`);
+    parts.push(t("recall.card.meta.fallbackCount", { count: record.generationCount }));
   }
   if (record.updatedAt) {
     const dateStr = String(record.updatedAt).replace(/T/, " ").replace(/\.\d+Z$/, "");
@@ -253,7 +254,7 @@ function buildInjectionPreviewBlock(record = {}) {
   const defaultExpanded = isEna;
   header.setAttribute("aria-expanded", defaultExpanded ? "true" : "false");
   header.innerHTML = `
-    <span class="bme-recall-injection-toggle-label">${isEna ? "ENA 注入预览" : "注入预览"}</span>
+    <span class="bme-recall-injection-toggle-label">${isEna ? t("recall.card.injectionPreview.ena") : t("recall.card.injectionPreview")}</span>
     <span class="bme-recall-injection-toggle-arrow">▶</span>
   `;
   wrap.appendChild(header);
@@ -261,7 +262,7 @@ function buildInjectionPreviewBlock(record = {}) {
   const content = el("div", "bme-recall-injection-content");
   if (isEna) {
     content.appendChild(
-      el("div", "bme-recall-injection-note", "由 Ena Planner 触发的本轮记忆块"),
+      el("div", "bme-recall-injection-note", t("recall.card.enaNote")),
     );
   }
   appendInjectionPreviewContent(content, injectionText);
@@ -341,18 +342,18 @@ export function createRecallCardElement({
   // -- 用户消息区 --
   const userLabel = el("div", "bme-recall-user-label");
   const userLabelText = el("div", "bme-recall-user-label-text");
-  userLabelText.innerHTML = "💬 <span>本轮用户输入</span>";
+  userLabelText.innerHTML = `💬 <span>${t("recall.card.userInput")}</span>`;
   userLabel.appendChild(userLabelText);
 
   const userLabelActions = el("div", "bme-recall-user-label-actions");
   const editUserInputBtn = el("button", "bme-recall-user-edit-btn");
   editUserInputBtn.type = "button";
-  editUserInputBtn.innerHTML = '<span class="bme-recall-btn-icon">✏️</span><span>编辑</span>';
+  editUserInputBtn.innerHTML = `<span class="bme-recall-btn-icon">✏️</span><span>${t("common.edit")}</span>`;
   userLabelActions.appendChild(editUserInputBtn);
   userLabel.appendChild(userLabelActions);
   card.appendChild(userLabel);
 
-  const userText = el("div", "bme-recall-user-text", activeUserMessageText || "(empty)");
+  const userText = el("div", "bme-recall-user-text", activeUserMessageText || t("common.emptyParenthetical"));
   card.appendChild(userText);
 
   const userEditWrap = el("div", "bme-recall-user-edit-wrap");
@@ -360,9 +361,9 @@ export function createRecallCardElement({
   userEditTextarea.className = "bme-recall-user-edit-textarea";
   userEditWrap.appendChild(userEditTextarea);
   const userEditActions = el("div", "bme-recall-user-edit-actions");
-  const userEditSaveBtn = el("button", "bme-recall-user-edit-action primary", "保存");
+  const userEditSaveBtn = el("button", "bme-recall-user-edit-action primary", t("common.save"));
   userEditSaveBtn.type = "button";
-  const userEditCancelBtn = el("button", "bme-recall-user-edit-action secondary", "取消");
+  const userEditCancelBtn = el("button", "bme-recall-user-edit-action secondary", t("common.cancel"));
   userEditCancelBtn.type = "button";
   userEditActions.appendChild(userEditSaveBtn);
   userEditActions.appendChild(userEditCancelBtn);
@@ -378,13 +379,13 @@ export function createRecallCardElement({
   const barIcon = el("span", "bme-recall-bar-icon", "🧠");
   bar.appendChild(barIcon);
 
-  const barTitle = el("span", "bme-recall-bar-title", "相关记忆召回");
+  const barTitle = el("span", "bme-recall-bar-title", t("recall.card.title"));
   bar.appendChild(barTitle);
 
   const badge = el(
     "span",
     "bme-recall-count-badge",
-    initialNodeCount > 0 ? `记忆 ${initialNodeCount}` : "记忆 ✓",
+    initialNodeCount > 0 ? t("recall.card.memoryCount", { count: initialNodeCount }) : t("recall.card.memoryReady"),
   );
   bar.appendChild(badge);
 
@@ -445,7 +446,7 @@ export function createRecallCardElement({
       const emptyMsg = el(
         "div",
         "bme-recall-empty",
-        activeGraph ? "召回节点已不存在或图谱已重建" : "图谱未就绪",
+        activeGraph ? t("recall.card.empty.nodesMissing") : t("recall.card.empty.graphNotReady"),
       );
       body.appendChild(emptyMsg);
     } else {
@@ -495,7 +496,7 @@ export function createRecallCardElement({
       meta.appendChild(el("span", "bme-recall-meta-text", metaText));
     }
     if (activeRecord?.manuallyEdited) {
-      const tag = el("span", "bme-recall-meta-tag", "✍ 手动编辑");
+      const tag = el("span", "bme-recall-meta-tag", `✍ ${t("recall.card.meta.manualEdit")}`);
       meta.appendChild(tag);
     }
     body.appendChild(meta);
@@ -509,7 +510,7 @@ export function createRecallCardElement({
     const actions = el("div", "bme-recall-actions");
 
     const editBtn = el("button", "bme-recall-action-btn");
-    editBtn.innerHTML = '<span class="bme-recall-btn-icon">✏️</span> 编辑';
+    editBtn.innerHTML = `<span class="bme-recall-btn-icon">✏️</span> ${t("common.edit")}`;
     editBtn.type = "button";
     editBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -518,7 +519,7 @@ export function createRecallCardElement({
     actions.appendChild(editBtn);
 
     const deleteBtn = el("button", "bme-recall-action-btn");
-    deleteBtn.innerHTML = '<span class="bme-recall-btn-icon">🗑</span> 删除';
+    deleteBtn.innerHTML = `<span class="bme-recall-btn-icon">🗑</span> ${t("common.delete")}`;
     deleteBtn.type = "button";
     setupDeleteConfirmation(deleteBtn, () => {
       activeCallbacks.onDelete?.(messageIndex);
@@ -526,7 +527,7 @@ export function createRecallCardElement({
     actions.appendChild(deleteBtn);
 
     const recallBtn = el("button", "bme-recall-action-btn");
-    recallBtn.innerHTML = '<span class="bme-recall-btn-icon">🔄</span> 重新召回';
+    recallBtn.innerHTML = `<span class="bme-recall-btn-icon">🔄</span> ${t("recall.card.rerun")}`;
     recallBtn.type = "button";
     recallBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -578,7 +579,7 @@ export function createRecallCardElement({
       "bme-recall-hide-user-input",
       activeUserInputDisplayMode === "off",
     );
-    userText.textContent = activeUserMessageText || "(empty)";
+    userText.textContent = activeUserMessageText || t("common.emptyParenthetical");
     if (isEditingUserInput) {
       userEditTextarea.value = activeUserMessageText || "";
     }
@@ -586,7 +587,7 @@ export function createRecallCardElement({
     const nodeCount = Array.isArray(activeRecord?.selectedNodeIds)
       ? activeRecord.selectedNodeIds.length
       : 0;
-    badge.textContent = nodeCount > 0 ? `记忆 ${nodeCount}` : "记忆 ✓";
+    badge.textContent = nodeCount > 0 ? t("recall.card.memoryCount", { count: nodeCount }) : t("recall.card.memoryReady");
     tokenHint.textContent = formatTokenHint(activeRecord?.tokenEstimate);
 
     if (skipExpandedRerender || !card.classList.contains("expanded")) return;
@@ -627,7 +628,7 @@ export function createRecallCardElement({
     if (result?.ok) {
       if (Object.prototype.hasOwnProperty.call(result, "nextText")) {
         activeUserMessageText = String(result.nextText || "");
-        userText.textContent = activeUserMessageText || "(empty)";
+        userText.textContent = activeUserMessageText || t("common.emptyParenthetical");
       }
       setUserInputEditMode(false);
     }
@@ -705,7 +706,7 @@ export function setupDeleteConfirmation(button, onConfirm) {
       return;
     }
     pendingConfirm = true;
-    button.textContent = "确认删除？";
+    button.textContent = t("recall.card.confirmDeleteShort");
     button.classList.add("danger");
     confirmTimer = setTimeout(reset, DELETE_CONFIRM_TIMEOUT_MS);
   });
@@ -717,7 +718,7 @@ export function setRecallButtonLoading(button, loading) {
   if (loading) {
     button._bmeOriginalHTML = button.innerHTML;
     button.innerHTML =
-      '<span class="bme-recall-btn-icon" style="display:inline-block">⟳</span> 召回中...';
+      `<span class="bme-recall-btn-icon" style="display:inline-block">⟳</span> ${t("recall.card.rerunning")}`;
     button.classList.add("loading");
     button.disabled = true;
   } else {
@@ -769,7 +770,7 @@ export function openRecallSidebar({
   const header = el("div", "bme-recall-sidebar-header");
   const headerTitle = el("div", "bme-recall-sidebar-header-title");
   headerTitle.textContent =
-    mode === "edit" ? "📝 编辑召回注入" : "🔍 节点详情";
+    mode === "edit" ? `📝 ${t("recall.sidebar.editTitle")}` : `🔍 ${t("recall.sidebar.nodeTitle")}`;
   header.appendChild(headerTitle);
 
   const closeBtn = el("button", "bme-recall-sidebar-close");
@@ -784,9 +785,9 @@ export function openRecallSidebar({
   if (node && mode === "view") {
     const nodeInfo = el("div", "bme-recall-sidebar-node-info");
     const rows = [
-      ["类型", node.type || node.raw?.type || "-"],
-      ["名称", node.name || node.raw?.name || "-"],
-      ["重要度", String(node.importance ?? node.raw?.importance ?? "-")],
+      [t("recall.sidebar.nodeType"), node.type || node.raw?.type || "-"],
+      [t("recall.sidebar.nodeName"), node.name || node.raw?.name || "-"],
+      [t("recall.sidebar.nodeImportance"), String(node.importance ?? node.raw?.importance ?? "-")],
     ];
     for (const [label, value] of rows) {
       const row = el("div", "bme-recall-sidebar-node-info-row");
@@ -809,8 +810,8 @@ export function openRecallSidebar({
       );
       if (relatedEdges.length > 0) {
         const edgeRow = el("div", "bme-recall-sidebar-node-info-row");
-        const edgeLabel = el("span", "bme-recall-sidebar-node-info-label", "关联");
-        const edgeValue = el("span", "", `${relatedEdges.length} 条边`);
+        const edgeLabel = el("span", "bme-recall-sidebar-node-info-label", t("recall.sidebar.related"));
+        const edgeValue = el("span", "", t("recall.sidebar.edgeCount", { count: relatedEdges.length }));
         edgeRow.appendChild(edgeLabel);
         edgeRow.appendChild(edgeValue);
         nodeInfo.appendChild(edgeRow);
@@ -825,7 +826,7 @@ export function openRecallSidebar({
   const sectionLabel = el(
     "div",
     "bme-recall-sidebar-section-label",
-    mode === "edit" ? "注入文本（可编辑）" : "注入文本",
+    mode === "edit" ? t("recall.sidebar.injectionEditable") : t("recall.sidebar.injectionText"),
   );
   body.appendChild(sectionLabel);
 
@@ -836,7 +837,7 @@ export function openRecallSidebar({
     textarea = document.createElement("textarea");
     textarea.className = "bme-recall-sidebar-textarea";
     textarea.value = injectionText;
-    textarea.placeholder = "输入注入文本...";
+    textarea.placeholder = t("recall.sidebar.inputPlaceholder");
     body.appendChild(textarea);
 
     const tokenHint = el("div", "bme-recall-sidebar-token-hint");
@@ -856,7 +857,7 @@ export function openRecallSidebar({
     });
     body.appendChild(tokenHint);
   } else {
-    const readonlyEl = el("div", "bme-recall-sidebar-readonly", injectionText || "(empty)");
+    const readonlyEl = el("div", "bme-recall-sidebar-readonly", injectionText || t("common.emptyParenthetical"));
     body.appendChild(readonlyEl);
   }
 
@@ -866,7 +867,7 @@ export function openRecallSidebar({
   const footer = el("div", "bme-recall-sidebar-footer");
 
   if (mode === "edit") {
-    const saveBtn = el("button", "bme-recall-sidebar-btn primary", "保存");
+    const saveBtn = el("button", "bme-recall-sidebar-btn primary", t("common.save"));
     saveBtn.type = "button";
     saveBtn.addEventListener("click", () => {
       const newText = textarea?.value || "";
@@ -875,13 +876,13 @@ export function openRecallSidebar({
     });
     footer.appendChild(saveBtn);
 
-    const cancelBtn = el("button", "bme-recall-sidebar-btn secondary", "取消");
+    const cancelBtn = el("button", "bme-recall-sidebar-btn secondary", t("common.cancel"));
     cancelBtn.type = "button";
     cancelBtn.addEventListener("click", () => closeRecallSidebar());
     footer.appendChild(cancelBtn);
   } else {
     // View mode: offer edit button
-    const editBtn = el("button", "bme-recall-sidebar-btn primary", "✏️ 编辑");
+    const editBtn = el("button", "bme-recall-sidebar-btn primary", `✏️ ${t("common.edit")}`);
     editBtn.type = "button";
     editBtn.addEventListener("click", () => {
       openRecallSidebar({
@@ -895,7 +896,7 @@ export function openRecallSidebar({
     });
     footer.appendChild(editBtn);
 
-    const closeFooterBtn = el("button", "bme-recall-sidebar-btn secondary", "关闭");
+    const closeFooterBtn = el("button", "bme-recall-sidebar-btn secondary", t("common.close"));
     closeFooterBtn.type = "button";
     closeFooterBtn.addEventListener("click", () => closeRecallSidebar());
     footer.appendChild(closeFooterBtn);
