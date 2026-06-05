@@ -1,4 +1,5 @@
 import { debugLog } from "../runtime/debug-logging.js";
+import { setLocale, t } from "../i18n/index.js";
 
 const MENU_ENTRY_RETRY_MS = 400;
 const MENU_ENTRY_MAX_ATTEMPTS = 30;
@@ -9,10 +10,15 @@ function resolvePanelTheme(settings) {
   return settings?.panelTheme || "crimson";
 }
 
+function syncBridgeLocale(runtime) {
+  setLocale(runtime.getSettings?.()?.uiLocale || "auto");
+}
+
 export function createNoticePanelActionController(runtime) {
+  syncBridgeLocale(runtime);
   if (!runtime.getPanelModule()?.openPanel) return undefined;
   return {
-    label: "打开面板",
+    label: t("panel.entry.openPanelAction"),
     kind: "neutral",
     onClick: () => {
       runtime.getPanelModule()?.openPanel?.();
@@ -37,20 +43,39 @@ function bindOpenPanelClick(runtime, element) {
       runtime.$?.("#extensionsMenu")?.hide?.();
     } catch (error) {
       runtime.console.error("[ST-BME] 点击菜单打开面板失败:", error);
-      globalThis.toastr?.error?.("记忆图谱面板加载失败，请查看控制台报错", "ST-BME");
+      globalThis.toastr?.error?.(t("panel.entry.openFailed"), "ST-BME");
     }
   });
 }
 
+function renderOptionsMenuEntry(menuItem) {
+  menuItem.innerHTML =
+    `<i class="fa-lg fa-solid fa-brain"></i><span>${t("panel.entry.menuLabel")}</span>`;
+}
+
+function renderExtensionsMenuEntry(menuItem) {
+  menuItem.innerHTML =
+    `<div class="fa-solid fa-brain extensionsMenuExtensionButton"></div><span>${t("panel.entry.menuLabel")}</span>`;
+}
+
+function renderFloatingBootstrap(fab) {
+  fab.innerHTML = `
+    <i class="fa-solid fa-brain bme-fab-icon"></i>
+    <span class="bme-fab-tooltip">${t("panel.entry.floatingTooltip")}</span>
+  `;
+}
+
 function injectOptionsMenuEntry(runtime) {
+  syncBridgeLocale(runtime);
   const doc = runtime.document;
   if (!doc || doc.getElementById(OPTIONS_MENU_ENTRY_ID)) {
+    const existing = doc?.getElementById(OPTIONS_MENU_ENTRY_ID);
+    if (existing) renderOptionsMenuEntry(existing);
     return true;
   }
   const menuItem = doc.createElement("a");
   menuItem.id = OPTIONS_MENU_ENTRY_ID;
-  menuItem.innerHTML =
-    '<i class="fa-lg fa-solid fa-brain"></i><span>记忆图谱</span>';
+  renderOptionsMenuEntry(menuItem);
   bindOpenPanelClick(runtime, menuItem);
 
   const anchor = doc.getElementById("option_toggle_logprobs");
@@ -68,6 +93,7 @@ function injectOptionsMenuEntry(runtime) {
 }
 
 function injectExtensionsMenuEntry(runtime) {
+  syncBridgeLocale(runtime);
   const doc = runtime.document;
   if (!doc) return false;
 
@@ -75,6 +101,7 @@ function injectExtensionsMenuEntry(runtime) {
   const menu = doc.getElementById("extensionsMenu");
   const button = doc.getElementById("extensionsMenuButton");
   if (existing) {
+    renderExtensionsMenuEntry(existing);
     if (button?.style) button.style.display = "flex";
     runtime.$?.("#extensionsMenuButton")?.css?.("display", "flex");
     return true;
@@ -84,8 +111,7 @@ function injectExtensionsMenuEntry(runtime) {
   const menuItem = doc.createElement("div");
   menuItem.id = EXTENSIONS_MENU_ENTRY_ID;
   menuItem.className = "list-group-item flex-container flexGap5";
-  menuItem.innerHTML =
-    '<div class="fa-solid fa-brain extensionsMenuExtensionButton"></div><span>记忆图谱</span>';
+  renderExtensionsMenuEntry(menuItem);
   bindOpenPanelClick(runtime, menuItem);
   menu.appendChild(menuItem);
 
@@ -98,6 +124,7 @@ function injectExtensionsMenuEntry(runtime) {
 }
 
 function injectFloatingBootstrap(runtime) {
+  syncBridgeLocale(runtime);
   const doc = runtime.document;
   if (!doc) return false;
   let fab = doc.getElementById("bme-floating-ball");
@@ -106,13 +133,15 @@ function injectFloatingBootstrap(runtime) {
     fab.id = "bme-floating-ball";
     fab.setAttribute("data-status", "idle");
     fab.setAttribute("data-bme-bootstrap", "true");
-    fab.innerHTML = `
-      <i class="fa-solid fa-brain bme-fab-icon"></i>
-      <span class="bme-fab-tooltip">BME 记忆图谱</span>
-    `;
+    renderFloatingBootstrap(fab);
     const mountTarget = doc.body || doc.documentElement;
     if (!mountTarget) return false;
     mountTarget.appendChild(fab);
+  } else if (!fab.querySelector?.(".bme-fab-icon")) {
+    renderFloatingBootstrap(fab);
+  } else {
+    const tip = fab.querySelector?.(".bme-fab-tooltip");
+    if (tip) tip.textContent = t("panel.entry.floatingTooltip");
   }
   if (fab.dataset.bmeBridgeBound === "true") {
     return true;
@@ -124,7 +153,7 @@ function injectFloatingBootstrap(runtime) {
       openPanelController(runtime);
     } catch (error) {
       runtime.console.error("[ST-BME] 点击悬浮球打开面板失败:", error);
-      globalThis.toastr?.error?.("记忆图谱面板加载失败，请查看控制台报错", "ST-BME");
+      globalThis.toastr?.error?.(t("panel.entry.openFailed"), "ST-BME");
     }
   });
   return true;
@@ -197,6 +226,13 @@ async function ensurePanelBridgeReady(runtime) {
         const nextTheme = resolvePanelTheme(nextSettings);
         runtime.getThemesModule()?.applyTheme?.(nextTheme);
         runtime.getPanelModule()?.updatePanelTheme?.(nextTheme);
+      }
+      if (Object.prototype.hasOwnProperty.call(patch || {}, "uiLocale")) {
+        syncBridgeLocale(runtime);
+        injectOptionsMenuEntry(runtime);
+        injectExtensionsMenuEntry(runtime);
+        injectFloatingBootstrap(runtime);
+        runtime.getPanelModule()?.updatePanelLocale?.(nextSettings.uiLocale || "auto");
       }
       return nextSettings;
     },

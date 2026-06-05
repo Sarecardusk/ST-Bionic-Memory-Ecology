@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import zhCN from "../i18n/zh-CN.js";
 import enUS from "../i18n/en-US.js";
@@ -42,6 +43,21 @@ assert.ok(zhKeys.length >= 60, "Phase 0 catalog should include a meaningful seed
 assert.ok(
   zhKeys.some((key) => extractInterpolationParams(zhCN[key]).length > 0),
   "catalog should include at least one interpolated string",
+);
+
+const panelHtml = readFileSync(new URL("../ui/panel.html", import.meta.url), "utf8");
+const htmlKeys = new Set();
+const attrRe = /data-i18n(?:-[a-z-]+)?="([^"]+)"/g;
+let match;
+while ((match = attrRe.exec(panelHtml))) {
+  htmlKeys.add(match[1]);
+}
+assert.ok(htmlKeys.size > 0, "panel.html should contain data-i18n references after Phase 1");
+const missingHtmlKeys = [...htmlKeys].filter((key) => !Object.prototype.hasOwnProperty.call(zhCN, key));
+assert.deepEqual(
+  missingHtmlKeys,
+  [],
+  `panel.html references missing i18n keys: ${missingHtmlKeys.join(", ")}`,
 );
 
 console.log("i18n catalog tests passed");

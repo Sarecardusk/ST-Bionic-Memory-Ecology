@@ -65,8 +65,20 @@ import {
   getMaintenanceExecutionModeLevel,
   normalizeMaintenanceExecutionMode,
 } from "../runtime/concurrency.js";
+import {
+  hydrateI18n,
+  setLocale,
+  t,
+} from "../i18n/index.js";
 
 let defaultPromptCache = null;
+
+function _applyPanelLocale(settings = _getSettings?.() || {}) {
+  setLocale(settings?.uiLocale || "auto");
+  if (overlayEl) hydrateI18n(overlayEl);
+  else hydrateI18n(document);
+  _refreshFloatingBallTooltip();
+}
 
 function _refreshMemoryLlmProviderHelp(urlValue = null) {
   const helpEl = document.getElementById("bme-memory-llm-provider-help");
@@ -1210,6 +1222,8 @@ export async function initPanel({
     }
   }
 
+  _applyPanelLocale(_getSettings?.() || {});
+
   ensureOverlayMountedAtRoot();
   bindViewportSync();
   syncViewportCssVars();
@@ -1236,11 +1250,22 @@ export async function initPanel({
   _bindFabToggle();
 }
 
+export function updatePanelLocale(localeMode = "auto") {
+  _applyPanelLocale({ ...(_getSettings?.() || {}), uiLocale: localeMode });
+  _refreshRuntimeStatus();
+  _syncFloatingBallWithRuntimeStatus();
+}
+
 // ==================== 悬浮球 ====================
 
 const FAB_STORAGE_KEY = "bme-fab-position";
 const FAB_VISIBLE_KEY = "bme-fab-visible";
 let _fabEl = null;
+
+function _refreshFloatingBallTooltip() {
+  const tip = _fabEl?.querySelector?.(".bme-fab-tooltip");
+  if (tip) tip.textContent = t("panel.entry.floatingTooltip");
+}
 
 function _getFabVisible() {
   try {
@@ -1280,15 +1305,16 @@ function _initFloatingBall() {
     fab.setAttribute("data-status", "idle");
     fab.innerHTML = `
       <i class="fa-solid fa-brain bme-fab-icon"></i>
-      <span class="bme-fab-tooltip">BME 记忆图谱</span>
+      <span class="bme-fab-tooltip">${t("panel.entry.floatingTooltip")}</span>
     `;
   } else if (!fab.querySelector(".bme-fab-icon")) {
     fab.innerHTML = `
       <i class="fa-solid fa-brain bme-fab-icon"></i>
-      <span class="bme-fab-tooltip">BME 记忆图谱</span>
+      <span class="bme-fab-tooltip">${t("panel.entry.floatingTooltip")}</span>
     `;
   }
   _fabEl = fab;
+  _refreshFloatingBallTooltip();
   ensureFabMountedAtRoot();
 
   // 应用可见性
@@ -14293,7 +14319,7 @@ function _syncFloatingBallWithRuntimeStatus() {
   const status = _getRuntimeStatus?.() || {};
   const level = String(status.level || "idle");
   const fabStatus = level === "info" ? "idle" : level;
-  updateFloatingBallStatus(fabStatus, status.text || "BME 记忆图谱");
+  updateFloatingBallStatus(fabStatus, status.text || t("panel.entry.floatingTooltip"));
 }
 
 function _patchSettings(patch = {}, options = {}) {
@@ -14303,6 +14329,10 @@ function _patchSettings(patch = {}, options = {}) {
   if (options.refreshTaskWorkspace) _refreshTaskProfileWorkspace(settings);
   if (options.refreshTheme)
     _highlightThemeChoice(settings.panelTheme || "crimson");
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "uiLocale")) {
+    _applyPanelLocale(settings);
+    _refreshRuntimeStatus();
+  }
   _refreshCloudStorageModeUi(settings);
   _refreshNativeRolloutStatusUi(settings);
   return settings;
