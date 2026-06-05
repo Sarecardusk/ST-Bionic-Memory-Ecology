@@ -12,7 +12,7 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 | 检索/召回 | `p0-regressions` 内相关、`trivial-user-input` | 召回、reroll 复用、注入 |
 | 向量 | `vector-gate` / `vector-connection-probe` / `vector-sync-coalescer` | 向量门禁、连接探测、后台同步合并 |
 | Native | `native-layout-parity` / `native-rollout-matrix` | native/JS 一致性、灰度门控 |
-| 防线 | `index-slicing-ratchet` / `runtime-deps-completeness` | 见下 |
+| 防线 | `index-slicing-ratchet` / `runtime-deps-completeness` / `i18n-user-visible-ratchet` | 见下 |
 
 ## 防线一：禁止切片 index.js（ratchet）
 
@@ -42,6 +42,14 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 
 详见 [`conventions.md`](conventions.md)。
 
+## 防线三：前端 i18n 用户可见文案 ratchet
+
+前端中英 i18n 只翻译 UI，不翻译 prompt、记忆节点、聊天内容或持久化数据。为了避免已迁移 UI 文件重新出现硬编码中文按钮/Toast/confirm，新增：
+
+> `tests/i18n-user-visible-ratchet.mjs` 只扫描已迁移的 UI 文件，拦截明显用户可见模式：`toastr.*("中文")`、`confirm("中文")`、`textContent = "中文"`、`innerHTML` 中的中文按钮、`title/placeholder/aria-label` 中文等。
+
+这不是全仓库中文禁令：中文文档、注释、测试 fixture、prompt/model/data 模块和 `i18n/zh-CN.js` 都不在这条规则里。新增用户可见文案时，应新增 catalog key，并通过 `t("...")` / `data-i18n` / keyed status 渲染。
+
 ## 重要测试文件
 
 - **`tests/p0-regressions.mjs`** — 主回归集合，覆盖提取、召回、恢复、UI 关键路径。
@@ -50,6 +58,7 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 - **`tests/graph-persistence.mjs`** — 图谱持久化基础行为。
 - **`tests/identity-resolver.mjs` / `tests/persistence-reducer.mjs`** — 身份解析核心、持久化 accepted/queued/pending 状态机。
 - **`tests/runtime-deps-completeness.mjs`** — 检查注入式控制器模块的 `runtime.X` 依赖均由对应 builder 提供。
+- **`tests/i18n-user-visible-ratchet.mjs`** — 检查已迁移 UI 文件不新增硬编码中文用户可见文案。
 - **`tests/graph-snapshot-schema.mjs` / `tests/snapshot-forward-compat.mjs`** — 耐久快照契约、宽容解析和真实存储向前兼容往返。
 - **`tests/indexeddb-persistence.mjs`** — IndexedDB 快照、增量提交、hydrate。
 - **`tests/indexeddb-sync.mjs`** — 云端同步与冲突合并。

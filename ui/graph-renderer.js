@@ -978,7 +978,7 @@ export class GraphRenderer {
                 (hasRight ? splitX : W) - pad * 2 - (hasRight ? gutter / 2 : 0),
             ),
             h: Math.max(0, H - pad * 2 - 6),
-            label: '客观层',
+            label: 'Objective Layer',
             labelKey: 'graph.scope.objective',
             tint: 'rgba(26, 35, 50, 0.42)',
             key: 'objective',
@@ -1013,7 +1013,7 @@ export class GraphRenderer {
                 y: yTop,
                 w: rightW,
                 h: fullH,
-                label: '用户 POV',
+                label: 'User POV',
                 labelKey: 'graph.scope.userPov',
                 tint: 'rgba(32, 48, 40, 0.42)',
                 key: 'user',
@@ -1048,7 +1048,7 @@ export class GraphRenderer {
                 y: yc,
                 w: rightW,
                 h: ph,
-                label: `角色 POV · ${displayName}`,
+                label: `Character POV · ${displayName}`,
                 labelKey: 'graph.scope.characterPov',
                 labelParams: { name: displayName },
                 tint: 'rgba(55, 42, 28, 0.38)',
@@ -1071,7 +1071,7 @@ export class GraphRenderer {
                 y: uy,
                 w: rightW,
                 h: userStripH,
-                label: '用户 POV',
+                label: 'User POV',
                 labelKey: 'graph.scope.userPov',
                 tint: 'rgba(32, 48, 40, 0.42)',
                 key: 'user',
@@ -1100,12 +1100,12 @@ export class GraphRenderer {
         });
         const panels = [];
         const objectiveRect = makeRect(width * 0.5, height * 0.5, width * 0.82, height * 0.78);
-        panels.push({ ...objectiveRect, label: '客观层', labelKey: 'graph.scope.objective', tint: 'rgba(87, 199, 255, 0.02)', key: 'objective' });
+        panels.push({ ...objectiveRect, label: 'Objective Layer', labelKey: 'graph.scope.objective', tint: 'rgba(87, 199, 255, 0.02)', key: 'objective' });
         for (const n of objective) n.regionRect = objectiveRect;
 
         if (userPov.length) {
             const userRect = makeRect(width * 0.68, height * 0.68, width * 0.44, height * 0.42);
-            panels.push({ ...userRect, label: '用户 POV', labelKey: 'graph.scope.userPov', tint: 'rgba(125, 255, 155, 0.02)', key: 'user' });
+            panels.push({ ...userRect, label: 'User POV', labelKey: 'graph.scope.userPov', tint: 'rgba(125, 255, 155, 0.02)', key: 'user' });
             for (const n of userPov) n.regionRect = userRect;
         }
 
@@ -1121,7 +1121,7 @@ export class GraphRenderer {
             const rect = makeRect(cx, cy, width * 0.34, height * 0.36);
             const key = `char:${owner || 'unknown'}`;
             const displayName = owner || translateUi('graph.scope.unknownCharacter');
-            panels.push({ ...rect, label: `角色 POV · ${displayName}`, labelKey: 'graph.scope.characterPov', labelParams: { name: displayName }, tint: 'rgba(255, 179, 71, 0.02)', key });
+            panels.push({ ...rect, label: `Character POV · ${displayName}`, labelKey: 'graph.scope.characterPov', labelParams: { name: displayName }, tint: 'rgba(255, 179, 71, 0.02)', key });
             for (const n of nodes) n.regionRect = rect;
         });
 

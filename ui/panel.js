@@ -14342,7 +14342,7 @@ function _refreshRuntimeStatus() {
   const upgradeState = graphPersistence.authorityUpgradeState || {};
   const text = formatUiStatusText(runtimeStatus) || t("status.idle");
   const meta = formatUiStatusMeta(runtimeStatus) || t("status.initial.runtime.detail");
-  const upgradeText = upgradeState.text || graphPersistence.authorityUpgradeText || "";
+  const upgradeText = formatUiStatusText(upgradeState) || graphPersistence.authorityUpgradeText || "";
   const displayMeta = upgradeText ? `${meta} · ${upgradeText}` : meta;
   _setText("bme-status-text", text);
   _setText("bme-status-meta", displayMeta);
