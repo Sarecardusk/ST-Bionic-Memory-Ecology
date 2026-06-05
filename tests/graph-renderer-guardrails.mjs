@@ -304,6 +304,7 @@ function assertLayoutAnimationDiagnosticsShape(renderer) {
 }
 
 const { GraphRenderer } = await import("../ui/graph-renderer.js");
+const { setLocale } = await import("../i18n/index.js");
 
 {
   const graph = createGraphFixture();
@@ -347,6 +348,27 @@ const { GraphRenderer } = await import("../ui/graph-renderer.js");
   assert.equal(diagnostics.renderOnly, true);
   assert.equal(Number.isFinite(diagnostics.totalMs), true);
   assert.ok(["js-main", "skipped"].includes(diagnostics.mode));
+  renderer.destroy();
+}
+
+{
+  const graph = createGraphFixture();
+  const renderer = new GraphRenderer(createCanvas(), {
+    runtimeConfig: { graphUseNativeLayout: false, graphNativeForceDisable: true },
+    layoutConfig: { neuralIterations: 8 },
+  });
+  renderer.setTheme("paperDawn");
+  renderer.loadGraph(graph, { userPovAliases: ["Host"] });
+  const charPanel = renderer._regionPanels.find((panel) => String(panel.key || "").startsWith("char:"));
+  assert.ok(charPanel, "character panel exists for label i18n test");
+
+  setLocale("en-US");
+  assert.equal(renderer._formatRegionPanelLabel(charPanel), "Character POV · Alice");
+  const objectivePanel = renderer._regionPanels.find((panel) => panel.key === "objective");
+  assert.equal(renderer._formatRegionPanelLabel(objectivePanel), "Objective Layer");
+
+  setLocale("zh-CN");
+  assert.equal(renderer._formatRegionPanelLabel(objectivePanel), "客观层");
   renderer.destroy();
 }
 

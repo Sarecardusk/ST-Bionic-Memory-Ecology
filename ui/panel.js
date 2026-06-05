@@ -1257,6 +1257,7 @@ export function updatePanelLocale(localeMode = "auto") {
   _applyPanelLocale({ ...(_getSettings?.() || {}), uiLocale: localeMode });
   _refreshRuntimeStatus();
   _syncFloatingBallWithRuntimeStatus();
+  _getActiveGraphRenderer()?._render?.();
 }
 
 // ==================== 悬浮球 ====================

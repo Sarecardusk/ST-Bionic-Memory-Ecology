@@ -16,6 +16,7 @@ import {
     GraphNativeLayoutBridge,
     normalizeGraphNativeRuntimeOptions,
 } from './graph-native-bridge.js';
+import { t as translateUi } from '../i18n/index.js';
 
 const GALAXY_COLORS = {
     character: '#ff4f8b',
@@ -978,6 +979,7 @@ export class GraphRenderer {
             ),
             h: Math.max(0, H - pad * 2 - 6),
             label: '客观层',
+            labelKey: 'graph.scope.objective',
             tint: 'rgba(26, 35, 50, 0.42)',
             key: 'objective',
         };
@@ -1012,6 +1014,7 @@ export class GraphRenderer {
                 w: rightW,
                 h: fullH,
                 label: '用户 POV',
+                labelKey: 'graph.scope.userPov',
                 tint: 'rgba(32, 48, 40, 0.42)',
                 key: 'user',
             });
@@ -1046,6 +1049,8 @@ export class GraphRenderer {
                 w: rightW,
                 h: ph,
                 label: `角色 POV · ${displayName}`,
+                labelKey: 'graph.scope.characterPov',
+                labelParams: { name: displayName },
                 tint: 'rgba(55, 42, 28, 0.38)',
                 key: `char:${key}`,
             });
@@ -1067,6 +1072,7 @@ export class GraphRenderer {
                 w: rightW,
                 h: userStripH,
                 label: '用户 POV',
+                labelKey: 'graph.scope.userPov',
                 tint: 'rgba(32, 48, 40, 0.42)',
                 key: 'user',
             });
@@ -1094,12 +1100,12 @@ export class GraphRenderer {
         });
         const panels = [];
         const objectiveRect = makeRect(width * 0.5, height * 0.5, width * 0.82, height * 0.78);
-        panels.push({ ...objectiveRect, label: '客观层', tint: 'rgba(87, 199, 255, 0.02)', key: 'objective' });
+        panels.push({ ...objectiveRect, label: '客观层', labelKey: 'graph.scope.objective', tint: 'rgba(87, 199, 255, 0.02)', key: 'objective' });
         for (const n of objective) n.regionRect = objectiveRect;
 
         if (userPov.length) {
             const userRect = makeRect(width * 0.68, height * 0.68, width * 0.44, height * 0.42);
-            panels.push({ ...userRect, label: '用户 POV', tint: 'rgba(125, 255, 155, 0.02)', key: 'user' });
+            panels.push({ ...userRect, label: '用户 POV', labelKey: 'graph.scope.userPov', tint: 'rgba(125, 255, 155, 0.02)', key: 'user' });
             for (const n of userPov) n.regionRect = userRect;
         }
 
@@ -1114,7 +1120,8 @@ export class GraphRenderer {
             const cy = height * 0.5 + Math.sin(angle) * radius * 0.78;
             const rect = makeRect(cx, cy, width * 0.34, height * 0.36);
             const key = `char:${owner || 'unknown'}`;
-            panels.push({ ...rect, label: `角色 POV · ${owner || '未知角色'}`, tint: 'rgba(255, 179, 71, 0.02)', key });
+            const displayName = owner || translateUi('graph.scope.unknownCharacter');
+            panels.push({ ...rect, label: `角色 POV · ${displayName}`, labelKey: 'graph.scope.characterPov', labelParams: { name: displayName }, tint: 'rgba(255, 179, 71, 0.02)', key });
             for (const n of nodes) n.regionRect = rect;
         });
 
@@ -2035,6 +2042,15 @@ export class GraphRenderer {
 
     // ==================== 渲染 ====================
 
+    _formatRegionPanelLabel(panel = {}) {
+        if (panel?.labelKey) {
+            return translateUi(panel.labelKey, panel.labelParams || {}, {
+                fallback: panel.label || panel.labelKey,
+            });
+        }
+        return String(panel?.label || '');
+    }
+
     _drawRegionPanels(ctx) {
         if (!LIGHT_PANEL_THEMES.has(this.themeName)) return;
         for (const p of this._regionPanels) {
@@ -2062,7 +2078,7 @@ export class GraphRenderer {
             ctx.fillStyle = 'rgba(222, 239, 255, 0.64)';
             ctx.font = '700 10px Inter, sans-serif';
             ctx.textAlign = 'left';
-            ctx.fillText(p.label, p.x + 12, p.y + 16);
+            ctx.fillText(this._formatRegionPanelLabel(p), p.x + 12, p.y + 16);
         }
     }
 
