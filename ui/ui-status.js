@@ -4,6 +4,7 @@
 import { sanitizePlannerMessageText } from "../runtime/planner-tag-utils.js";
 import { AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT } from "../maintenance/authority-diagnostics-bundle.js";
 import { createAuthorityUpgradeState } from "../runtime/authority-upgrade-state.js";
+import { createI18nStatus, t } from "../i18n/index.js";
 
 // ═══════════════════════════════════════════════════════════
 // 常量
@@ -21,6 +22,12 @@ export const BATCH_STAGE_SEVERITY = {
 // ═══════════════════════════════════════════════════════════
 
 export function createUiStatus(text = "待命", meta = "", level = "idle") {
+  if (text && typeof text === "object") {
+    return createI18nStatus({
+      ...(text || {}),
+      level: text.level || level || "idle",
+    });
+  }
   return {
     text: String(text || "待命"),
     meta: String(meta || ""),
@@ -439,15 +446,15 @@ export function normalizeStageNoticeLevel(level = "info") {
 export function getStageNoticeTitle(stage) {
   switch (stage) {
     case "extraction":
-      return "ST-BME 提取";
+      return t("stageNotice.title.extraction");
     case "vector":
-      return "ST-BME 向量";
+      return t("stageNotice.title.vector");
     case "recall":
-      return "ST-BME 召回";
+      return t("stageNotice.title.recall");
     case "history":
-      return "ST-BME 历史恢复";
+      return t("stageNotice.title.history");
     default:
-      return "ST-BME";
+      return t("stageNotice.title.generic");
   }
 }
 

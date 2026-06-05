@@ -66,6 +66,8 @@ import {
   normalizeMaintenanceExecutionMode,
 } from "../runtime/concurrency.js";
 import {
+  formatUiStatusMeta,
+  formatUiStatusText,
   hydrateI18n,
   setLocale,
   t,
@@ -4727,7 +4729,7 @@ function _refreshDashboard() {
           .join(" · ")
       : "暂无恢复记录",
   );
-  _setText("bme-status-last-extract", extractionStatus.meta || "尚未执行提取");
+  _setText("bme-status-last-extract", formatUiStatusMeta(extractionStatus) || t("status.initial.extraction.detail"));
   _setText(
     "bme-status-last-persist",
     _formatDashboardPersistMeta(loadInfo, lastBatchStatus),
@@ -4737,9 +4739,9 @@ function _refreshDashboard() {
     _formatBackgroundMaintenanceSummary(loadInfo?.backgroundMaintenance, lastBatchStatus),
   );
   _refreshPersistenceRepairUi(loadInfo, lastBatchStatus);
-  _setText("bme-status-last-vector", vectorStatus.meta || "尚未执行向量任务");
+  _setText("bme-status-last-vector", formatUiStatusMeta(vectorStatus) || t("status.initial.vector.detail"));
   _setText("bme-status-authority-job", authorityJobUi.detail || authorityJobUi.label);
-  _setText("bme-status-last-recall", recallStatus.meta || "尚未执行召回");
+  _setText("bme-status-last-recall", formatUiStatusMeta(recallStatus) || t("status.initial.recall.detail"));
 
   _refreshCognitionDashboard(graph);
   _renderRecentList("bme-recent-extract", _getLastExtract?.() || []);
@@ -14307,8 +14309,8 @@ function _refreshRuntimeStatus() {
   const runtimeStatus = _getRuntimeStatus?.() || {};
   const graphPersistence = _getGraphPersistenceSnapshot?.() || {};
   const upgradeState = graphPersistence.authorityUpgradeState || {};
-  const text = runtimeStatus.text || "待命";
-  const meta = runtimeStatus.meta || "准备就绪";
+  const text = formatUiStatusText(runtimeStatus) || t("status.idle");
+  const meta = formatUiStatusMeta(runtimeStatus) || t("status.initial.runtime.detail");
   const upgradeText = upgradeState.text || graphPersistence.authorityUpgradeText || "";
   const displayMeta = upgradeText ? `${meta} · ${upgradeText}` : meta;
   _setText("bme-status-text", text);
@@ -14331,7 +14333,7 @@ function _syncFloatingBallWithRuntimeStatus() {
   const status = _getRuntimeStatus?.() || {};
   const level = String(status.level || "idle");
   const fabStatus = level === "info" ? "idle" : level;
-  updateFloatingBallStatus(fabStatus, status.text || t("panel.entry.floatingTooltip"));
+  updateFloatingBallStatus(fabStatus, formatUiStatusText(status) || t("panel.entry.floatingTooltip"));
 }
 
 function _patchSettings(patch = {}, options = {}) {

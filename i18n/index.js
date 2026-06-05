@@ -170,4 +170,7 @@ export function formatUiStatusMeta(status) {
   return status?.meta ?? "";
 }
 
-setLocale(DEFAULT_LOCALE_MODE);
+// Keep module import side-effect stable for non-UI tests/modules. Runtime UI
+// entry points explicitly call setLocale(settings.uiLocale), where `auto` may
+// resolve from the host/navigator environment.
+setLocale(DEFAULT_LOCALE_MODE, { navigatorLanguages: [] });
