@@ -9,6 +9,7 @@
  * BME theming automatically.
  */
 
+import { t } from '../i18n/index.js';
 import {
   isSameLlmConfigSnapshot,
   resolveDedicatedLlmProviderConfig,
@@ -248,7 +249,7 @@ function populatePlannerLlmPresetSelect(selectedPreset = resolvePlannerLlmSelect
   if (!select) return;
 
   if (select.options.length > 0) {
-    select.options[0].textContent = '-- 跟随全局（当前 BME API） --';
+    select.options[0].textContent = t('planner.llmPreset.global');
   }
 
   while (select.options.length > 1) {
@@ -268,7 +269,7 @@ function populatePlannerLlmPresetSelect(selectedPreset = resolvePlannerLlmSelect
   if (selectedPreset === LEGACY_PLANNER_LLM_OPTION) {
     const legacyOption = document.createElement('option');
     legacyOption.value = LEGACY_PLANNER_LLM_OPTION;
-    legacyOption.textContent = '旧 ENA 独立连接（兼容）';
+    legacyOption.textContent = t('planner.llmPreset.legacy');
     select.appendChild(legacyOption);
   }
 
@@ -294,7 +295,7 @@ function createPromptBlockElement(block, idx, total) {
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.className = 'bme-config-input';
-  nameInput.placeholder = '块名称';
+  nameInput.placeholder = t('planner.promptBlock.namePlaceholder');
   nameInput.value = block.name || '';
   nameInput.addEventListener('change', () => {
     block.name = nameInput.value;
@@ -324,7 +325,7 @@ function createPromptBlockElement(block, idx, total) {
   upBtn.type = 'button';
   upBtn.className = 'bme-config-secondary-btn bme-planner-icon-btn';
   upBtn.innerHTML = '<i class="fa-solid fa-chevron-up"></i>';
-  upBtn.title = '上移';
+  upBtn.title = t('planner.promptBlock.moveUp');
   upBtn.disabled = idx === 0;
   upBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -340,7 +341,7 @@ function createPromptBlockElement(block, idx, total) {
   downBtn.type = 'button';
   downBtn.className = 'bme-config-secondary-btn bme-planner-icon-btn';
   downBtn.innerHTML = '<i class="fa-solid fa-chevron-down"></i>';
-  downBtn.title = '下移';
+  downBtn.title = t('planner.promptBlock.moveDown');
   downBtn.disabled = idx === total - 1;
   downBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -356,7 +357,7 @@ function createPromptBlockElement(block, idx, total) {
   delBtn.type = 'button';
   delBtn.className = 'bme-config-secondary-btn bme-config-danger-btn bme-planner-icon-btn';
   delBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
-  delBtn.title = '删除块';
+  delBtn.title = t('planner.promptBlock.deleteBlock');
   delBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -370,7 +371,7 @@ function createPromptBlockElement(block, idx, total) {
 
   const content = document.createElement('textarea');
   content.className = 'bme-config-input bme-planner-textarea';
-  content.placeholder = '提示词内容...';
+  content.placeholder = t('planner.promptBlock.contentPlaceholder');
   content.rows = 4;
   content.value = block.content || '';
   content.addEventListener('change', () => {
@@ -402,7 +403,7 @@ function renderPromptList() {
 function renderTemplateSelect(selected = '') {
   const sel = $('bme-planner-tpl-select');
   if (!sel) return;
-  sel.innerHTML = '<option value="">-- 选择模板 --</option>';
+  sel.innerHTML = `<option value="">${t('planner.template.selectPlaceholder')}</option>`;
   const names = Object.keys(cfgCache?.promptTemplates || {});
   const selectedName = names.includes(selected) ? selected : '';
   for (const name of names) {
@@ -445,14 +446,14 @@ function renderLogs() {
   if (!body) return;
   const list = Array.isArray(logsCache) ? logsCache : [];
   if (!list.length) {
-    body.innerHTML = '<div class="bme-planner-log-empty">暂无日志</div>';
+    body.innerHTML = `<div class="bme-planner-log-empty">${t('planner.log.noLogs')}</div>`;
     return;
   }
   body.innerHTML = list
     .map((item) => {
       const time = item.time ? new Date(item.time).toLocaleString() : '-';
       const cls = item.ok ? 'success' : 'error';
-      const label = item.ok ? '成功' : '失败';
+      const label = item.ok ? t('planner.log.success') : t('planner.log.failure');
       let msgHtml = '';
       if (Array.isArray(item.requestMessages) && item.requestMessages.length) {
         msgHtml = item.requestMessages
@@ -472,7 +473,7 @@ function renderLogs() {
           })
           .join('');
       } else {
-        msgHtml = '<div class="bme-planner-log-empty">无消息</div>';
+        msgHtml = `<div class="bme-planner-log-empty">${t('planner.log.noMessages')}</div>`;
       }
       return `
         <div class="bme-planner-log-item">
@@ -481,13 +482,13 @@ function renderLogs() {
             <span>${escapeHtml(item.model || '-')}</span>
           </div>
           ${item.error ? `<div class="bme-planner-log-error">${escapeHtml(item.error)}</div>` : ''}
-          <details><summary>请求消息 (${(item.requestMessages || []).length} 条)</summary>
+          <details><summary>${t('planner.log.requestMessages', { count: (item.requestMessages || []).length })}</summary>
             <div class="bme-planner-msg-list">${msgHtml}</div>
           </details>
-          <details><summary>原始回复</summary>
+          <details><summary>${t('planner.log.rawReply')}</summary>
             <pre class="bme-planner-log-pre">${escapeHtml(item.rawReply || '')}</pre>
           </details>
-          <details open><summary>过滤后回复</summary>
+          <details open><summary>${t('planner.log.filteredReply')}</summary>
             <pre class="bme-planner-log-pre">${escapeHtml(item.filteredReply || '')}</pre>
           </details>
         </div>`;
@@ -540,16 +541,16 @@ function applyConfigToFields(cfg) {
 
   setStatusChip(
     'bme-planner-state-chip',
-    toBool(cfgCache.enabled, false) ? '已启用' : '未启用',
+    toBool(cfgCache.enabled, false) ? t('planner.status.enabled') : t('planner.status.disabled'),
     toBool(cfgCache.enabled, false) ? 'active' : 'idle',
   );
   updatePrefixModeUI();
   syncPlannerLlmPresetSelect();
   const llmSelectState = resolvePlannerLlmSelectState(cfgCache);
   if (llmSelectState.mode === 'legacy') {
-    setLocalStatus('bme-planner-api-status', '当前仍在使用旧版 ENA 独立连接；切换为全局或预设后将不再保留这套隐藏配置。', '');
+    setLocalStatus('bme-planner-api-status', t('planner.llmPreset.legacyWarning'), '');
   } else if (llmSelectState.missingPresetName) {
-    setLocalStatus('bme-planner-api-status', `已回退为跟随全局：缺少预设 ${llmSelectState.missingPresetName}`, 'error');
+    setLocalStatus('bme-planner-api-status', t('planner.llmPreset.missingPresetFallback', { name: llmSelectState.missingPresetName }), 'error');
   } else {
     setLocalStatus('bme-planner-api-status', '', '');
   }
@@ -605,7 +606,7 @@ function updatePrefixModeUI() {
 
 function resetPlannerSaveStatusIfReady() {
   if (autosaveInProgress) return;
-  setStatusChip('bme-planner-save-chip', '就绪', 'idle');
+  setStatusChip('bme-planner-save-chip', t('planner.status.ready'), 'idle');
 }
 
 /* ── Save flow ──────────────────────────────────────────────────────────── */
@@ -629,24 +630,24 @@ async function doSave() {
   if (autosaveInProgress) return;
   const api = getPlannerApi();
   if (!api?.patchConfig) {
-    setStatusChip('bme-planner-save-chip', 'API 未就绪', 'error');
+    setStatusChip('bme-planner-save-chip', t('planner.status.apiNotReady'), 'error');
     return;
   }
   autosaveInProgress = true;
-  setStatusChip('bme-planner-save-chip', '保存中…', 'loading');
+  setStatusChip('bme-planner-save-chip', t('planner.status.saving'), 'loading');
   try {
     const patch = pendingSavePatch || collectPatch();
     const res = await api.patchConfig(patch);
     if (res?.ok) {
       pendingSavePatch = null;
-      setStatusChip('bme-planner-save-chip', '已保存', 'success');
+      setStatusChip('bme-planner-save-chip', t('planner.status.saved'), 'success');
       setTimeout(() => {
         if ($('bme-planner-save-chip')?.dataset?.tone === 'success') {
-          setStatusChip('bme-planner-save-chip', '就绪', 'idle');
+          setStatusChip('bme-planner-save-chip', t('planner.status.ready'), 'idle');
         }
       }, 2000);
     } else {
-      setStatusChip('bme-planner-save-chip', res?.error || '保存失败', 'error');
+      setStatusChip('bme-planner-save-chip', res?.error || t('planner.status.saveFailed'), 'error');
     }
   } catch (err) {
     setStatusChip('bme-planner-save-chip', String(err?.message ?? err), 'error');
@@ -674,7 +675,7 @@ function bindOnce(section) {
   $('bme-planner-enabled')?.addEventListener('change', () => {
     setStatusChip(
       'bme-planner-state-chip',
-      toBool($('bme-planner-enabled').value, false) ? '已启用' : '未启用',
+       toBool($('bme-planner-enabled').value, false) ? t('planner.status.enabled') : t('planner.status.disabled'),
       toBool($('bme-planner-enabled').value, false) ? 'active' : 'idle',
     );
     flushSave();
@@ -687,10 +688,10 @@ function bindOnce(section) {
   $('bme-planner-run-test')?.addEventListener('click', async () => {
     const textEl = $('bme-planner-test-input');
     const text = (textEl?.value || '').trim();
-    setLocalStatus('bme-planner-test-status', '测试中…', 'loading');
+    setLocalStatus('bme-planner-test-status', t('planner.status.testing'), 'loading');
     const res = await api?.runTest?.(text);
-    if (res?.ok) setLocalStatus('bme-planner-test-status', '规划测试完成', 'success');
-    else setLocalStatus('bme-planner-test-status', res?.error || '规划测试失败', 'error');
+    if (res?.ok) setLocalStatus('bme-planner-test-status', t('planner.status.testComplete'), 'success');
+    else setLocalStatus('bme-planner-test-status', res?.error || t('planner.status.testFailed'), 'error');
   });
 
   /* API connection */
@@ -700,10 +701,10 @@ function bindOnce(section) {
     if (!input || !btn) return;
     if (input.type === 'password') {
       input.type = 'text';
-      btn.querySelector('span').textContent = '隐藏';
+      btn.querySelector('span').textContent = t('planner.apiKey.hide');
     } else {
       input.type = 'password';
-      btn.querySelector('span').textContent = '显示';
+      btn.querySelector('span').textContent = t('planner.apiKey.show');
     }
   });
 
@@ -713,16 +714,16 @@ function bindOnce(section) {
     setLocalStatus('bme-planner-api-status', statusText, 'loading');
     const res = await api?.fetchModels?.();
     if (!res) {
-      setLocalStatus('bme-planner-api-status', 'API 未就绪', 'error');
+      setLocalStatus('bme-planner-api-status', t('planner.status.apiNotReady'), 'error');
       return;
     }
     if (!res.ok) {
-      setLocalStatus('bme-planner-api-status', res.error || '拉取失败', 'error');
+      setLocalStatus('bme-planner-api-status', res.error || t('planner.status.fetchModelsFailed'), 'error');
       return;
     }
     const models = Array.isArray(res.models) ? res.models : [];
     if (!models.length) {
-      setLocalStatus('bme-planner-api-status', '未获取到模型', 'error');
+      setLocalStatus('bme-planner-api-status', t('planner.status.noModelsFetched'), 'error');
       const sel = $('bme-planner-model-select');
       if (sel) sel.style.display = 'none';
       return;
@@ -730,7 +731,7 @@ function bindOnce(section) {
     fetchedModels = models;
     const sel = $('bme-planner-model-select');
     if (sel) {
-      sel.innerHTML = '<option value="">-- 从列表选择 --</option>';
+      sel.innerHTML = `<option value="">${t('planner.model.selectFromList')}</option>`;
       const cur = ($('bme-planner-model')?.value || '').trim();
       for (const m of models) {
         const opt = document.createElement('option');
@@ -741,11 +742,11 @@ function bindOnce(section) {
       }
       sel.style.display = '';
     }
-    setLocalStatus('bme-planner-api-status', `获取到 ${models.length} 个模型`, 'success');
+    setLocalStatus('bme-planner-api-status', t('planner.status.modelsFetched', { count: models.length }), 'success');
   };
 
-  $('bme-planner-fetch-models')?.addEventListener('click', () => handleFetchModels('拉取中…'));
-  $('bme-planner-test-conn')?.addEventListener('click', () => handleFetchModels('测试中…'));
+  $('bme-planner-fetch-models')?.addEventListener('click', () => handleFetchModels(t('planner.status.fetchingModels')));
+  $('bme-planner-test-conn')?.addEventListener('click', () => handleFetchModels(t('planner.status.testing')));
 
   $('bme-planner-model-select')?.addEventListener('change', () => {
     const sel = $('bme-planner-model-select');
@@ -771,13 +772,13 @@ function bindOnce(section) {
       cfgCache.api.apiKey = '';
       cfgCache.api.model = '';
       syncPlannerLlmPresetSelect();
-      setLocalStatus('bme-planner-api-status', '已改为跟随全局 BME API', 'success');
+      setLocalStatus('bme-planner-api-status', t('planner.llmPreset.switchedToGlobal'), 'success');
       scheduleSave();
       return;
     }
     if (selectedName === LEGACY_PLANNER_LLM_OPTION) {
       syncPlannerLlmPresetSelect();
-      setLocalStatus('bme-planner-api-status', '继续保留旧版 ENA 独立连接', '');
+      setLocalStatus('bme-planner-api-status', t('planner.llmPreset.keepingLegacy'), '');
       scheduleSave();
       return;
     }
@@ -791,7 +792,7 @@ function bindOnce(section) {
       cfgCache.api.apiKey = '';
       cfgCache.api.model = '';
       syncPlannerLlmPresetSelect();
-      setLocalStatus('bme-planner-api-status', '选中的 API 预设不存在，已回退为跟随全局', 'error');
+      setLocalStatus('bme-planner-api-status', t('planner.llmPreset.presetNotFound'), 'error');
       scheduleSave();
       return;
     }
@@ -803,17 +804,17 @@ function bindOnce(section) {
     cfgCache.api.apiKey = '';
     cfgCache.api.model = '';
     syncPlannerLlmPresetSelect();
-    setLocalStatus('bme-planner-api-status', `已切换为 API 预设：${selectedName}`, 'success');
+    setLocalStatus('bme-planner-api-status', t('planner.llmPreset.switchedToPreset', { name: selectedName }), 'success');
     scheduleSave();
   });
 
   $('bme-planner-open-task-presets')?.addEventListener('click', () => {
     const opened = openPlannerTaskPresetWorkspace();
     if (!opened) {
-      setLocalStatus('bme-planner-api-status', '未找到任务预设工作区，请手动切到“任务 -> 规划”', 'error');
+      setLocalStatus('bme-planner-api-status', t('planner.taskPreset.workspaceNotFound'), 'error');
       return;
     }
-    setLocalStatus('bme-planner-api-status', '已切换到“任务 -> 规划”预设编辑器', 'success');
+    setLocalStatus('bme-planner-api-status', t('planner.taskPreset.workspaceSwitched'), 'success');
   });
 
   /* Prompts + templates */
@@ -822,20 +823,20 @@ function bindOnce(section) {
   $('bme-planner-add-prompt')?.addEventListener('click', () => {
     cfgCache = cfgCache || {};
     cfgCache.promptBlocks = cfgCache.promptBlocks || [];
-    cfgCache.promptBlocks.push({ id: genId(), role: 'system', name: '新块', content: '' });
+    cfgCache.promptBlocks.push({ id: genId(), role: 'system', name: t('planner.promptBlock.newBlock'), content: '' });
     renderPromptList();
     scheduleSave();
   });
 
   $('bme-planner-reset-prompt')?.addEventListener('click', async () => {
-    if (!confirm('确定恢复默认提示词块？当前提示词块将被覆盖。')) return;
-    setStatusChip('bme-planner-save-chip', '重置中…', 'loading');
+    if (!confirm(t('planner.promptBlock.confirmReset'))) return;
+    setStatusChip('bme-planner-save-chip', t('planner.status.resetting'), 'loading');
     const res = await api?.resetPromptToDefault?.();
     if (res?.ok && res.config) {
       applyConfigToFields(res.config);
-      setStatusChip('bme-planner-save-chip', '已恢复默认', 'success');
+      setStatusChip('bme-planner-save-chip', t('planner.status.resetToDefault'), 'success');
     } else {
-      setStatusChip('bme-planner-save-chip', res?.error || '重置失败', 'error');
+      setStatusChip('bme-planner-save-chip', res?.error || t('planner.status.resetFailed'), 'error');
     }
   });
 
@@ -854,7 +855,7 @@ function bindOnce(section) {
   $('bme-planner-tpl-save')?.addEventListener('click', () => {
     const name = $('bme-planner-tpl-select').value;
     if (!name) {
-      setStatusChip('bme-planner-save-chip', '请先选择或新建模板', 'error');
+      setStatusChip('bme-planner-save-chip', t('planner.template.selectOrCreateFirst'), 'error');
       return;
     }
     cfgCache.promptTemplates = cfgCache.promptTemplates || {};
@@ -865,7 +866,7 @@ function bindOnce(section) {
   });
 
   $('bme-planner-tpl-saveas')?.addEventListener('click', () => {
-    const name = prompt('新模板名称');
+    const name = prompt(t('planner.template.newTemplateName'));
     if (!name) return;
     cfgCache.promptTemplates = cfgCache.promptTemplates || {};
     cfgCache.promptTemplates[name] = structuredClone(cfgCache.promptBlocks || []);
@@ -901,20 +902,20 @@ function bindOnce(section) {
     const out = $('bme-planner-debug-output');
     if (out) {
       setHidden(out, false);
-      out.textContent = '诊断中…';
+      out.textContent = t('planner.debug.diagnosing');
     }
     const res = await api?.debugWorldbook?.();
-    if (out) out.textContent = res?.output ?? '诊断失败';
+    if (out) out.textContent = res?.output ?? t('planner.debug.failed');
   });
 
   $('bme-planner-debug-char')?.addEventListener('click', async () => {
     const out = $('bme-planner-debug-output');
     if (out) {
       setHidden(out, false);
-      out.textContent = '诊断中…';
+      out.textContent = t('planner.debug.diagnosing');
     }
     const res = await api?.debugChar?.();
-    if (out) out.textContent = res?.output ?? '诊断失败';
+    if (out) out.textContent = res?.output ?? t('planner.debug.failed');
   });
 
   /* Logs */
@@ -925,7 +926,7 @@ function bindOnce(section) {
   });
 
   $('bme-planner-logs-clear')?.addEventListener('click', async () => {
-    if (!confirm('确定清空所有日志？')) return;
+    if (!confirm(t('planner.log.confirmClear'))) return;
     const res = await api?.clearLogs?.();
     if (res?.ok !== false) {
       logsCache = [];
@@ -975,8 +976,8 @@ export function initPlannerSections(rootEl, options = {}) {
 
   const api = getPlannerApi();
   if (!api) {
-    setStatusChip('bme-planner-state-chip', '模块未加载', 'error');
-    setStatusChip('bme-planner-save-chip', '不可用', 'error');
+    setStatusChip('bme-planner-state-chip', t('planner.status.moduleNotLoaded'), 'error');
+    setStatusChip('bme-planner-save-chip', t('planner.status.unavailable'), 'error');
     return;
   }
 
@@ -1007,7 +1008,7 @@ export function refreshPlannerSections(options = {}) {
   }
   const api = getPlannerApi();
   if (!api) {
-    setStatusChip('bme-planner-state-chip', '模块未加载', 'error');
+    setStatusChip('bme-planner-state-chip', t('planner.status.moduleNotLoaded'), 'error');
     return;
   }
   if (typeof api.getConfig === 'function') applyConfigToFields(api.getConfig());

@@ -170,6 +170,23 @@ export function formatUiStatusMeta(status) {
   return status?.meta ?? "";
 }
 
+export function formatI18nValue(source = null, {
+  keyField = "key",
+  paramsField = "params",
+  fallbackField = "fallback",
+  fallback = "",
+} = {}) {
+  if (typeof source === "string") return source;
+  if (!source || typeof source !== "object") return fallback;
+  const key = String(source?.[keyField] || "").trim();
+  if (!key) {
+    return String(source?.[fallbackField] ?? fallback ?? "");
+  }
+  return t(key, source?.[paramsField] || {}, {
+    fallback: source?.[fallbackField] ?? fallback ?? key,
+  });
+}
+
 // Keep module import side-effect stable for non-UI tests/modules. Runtime UI
 // entry points explicitly call setLocale(settings.uiLocale), where `auto` may
 // resolve from the host/navigator environment.

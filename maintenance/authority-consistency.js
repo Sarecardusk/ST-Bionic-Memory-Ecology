@@ -27,11 +27,16 @@ function normalizeOptionalInteger(value) {
   return Math.max(0, Math.floor(parsed));
 }
 
-function normalizeIssue(severity, code, message) {
+function normalizeIssue(severity, code, message, i18n = {}) {
   return {
     severity,
     code: String(code || "unknown"),
     message: String(message || ""),
+    messageKey: String(i18n.messageKey || ""),
+    messageParams:
+      i18n.messageParams && typeof i18n.messageParams === "object" && !Array.isArray(i18n.messageParams)
+        ? clonePlain(i18n.messageParams, {})
+        : {},
   };
 }
 
@@ -106,7 +111,7 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
   const sqlRevision = normalizeOptionalInteger(source?.sql?.revision);
   const blobRevision = normalizeOptionalInteger(source?.blob?.revision);
   const sqlNewerThanBlob = Number.isFinite(sqlRevision) && Number.isFinite(blobRevision) && sqlRevision > blobRevision;
-  const addStep = (action, label, detail, codes = []) => {
+  const addStep = (action, label, detail, codes = [], i18n = {}) => {
     const normalizedAction = normalizeRepairAction(action);
     if (!normalizedAction || !actions.includes(normalizedAction)) {
       return;
@@ -124,6 +129,16 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
       action: normalizedAction,
       label: String(label || normalizedAction),
       detail: String(detail || ""),
+      labelKey: String(i18n.labelKey || ""),
+      detailKey: String(i18n.detailKey || ""),
+      labelParams:
+        i18n.labelParams && typeof i18n.labelParams === "object" && !Array.isArray(i18n.labelParams)
+          ? clonePlain(i18n.labelParams, {})
+          : {},
+      detailParams:
+        i18n.detailParams && typeof i18n.detailParams === "object" && !Array.isArray(i18n.detailParams)
+          ? clonePlain(i18n.detailParams, {})
+          : {},
       issueCodes: Array.isArray(codes) ? codes.map((code) => String(code || "").trim()).filter(Boolean) : [],
     });
   };
@@ -133,6 +148,10 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
     "同步备份 Checkpoint",
     "Authority Blob checkpoint 落后或缺失，应从当前权威图谱源同步一个新的备份 checkpoint。",
     ["blob-checkpoint-missing", "blob-checkpoint-behind", "blob-runtime-revision-drift"],
+    {
+      labelKey: "authority.repair.syncCheckpoint",
+      detailKey: "authority.repair.syncCheckpoint.detail",
+    },
   );
   if (!sqlNewerThanBlob) {
     addStep(
@@ -140,6 +159,10 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
       "灾难恢复：从 Blob Checkpoint 恢复 SQL",
       "仅在 SQL 缺失、损坏或用户明确需要回滚时，才可用 Blob checkpoint 回灌 Authority SQL。",
       ["sql-runtime-revision-drift", "blob-newer-than-sql", "blob-chat-mismatch"],
+      {
+        labelKey: "authority.repair.disasterRecovery",
+        detailKey: "authority.repair.disasterRecovery.detail",
+      },
     );
   }
   addStep(
@@ -147,6 +170,10 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
     "同步向量/Trivium 副本",
     "Trivium 向量副本落后、collection 不匹配，或当前向量索引为 dirty，需要从权威图谱源重建/同步。",
     ["trivium-sql-revision-drift", "trivium-replica-behind", "trivium-collection-mismatch", "vector-dirty"],
+    {
+      labelKey: "authority.repair.syncTrivium",
+      detailKey: "authority.repair.syncTrivium.detail",
+    },
   );
 
   const blockedIssueCodes = (Array.isArray(source.issues) ? source.issues : [])
@@ -159,6 +186,12 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
   const detail = steps.length
     ? `建议同步：${steps.map((step) => step.label).join(" → ")}`
     : String(source?.summary?.detail || "当前审计未发现需要自动编排的修复步骤");
+  const detailKey = steps.length
+    ? "authority.repair.summary.detail"
+    : String(source?.summary?.detailKey || "authority.repair.noStepsNeeded");
+  const detailParams = steps.length
+    ? { steps: steps.map((step) => step.label).join(" → ") }
+    : clonePlain(source?.summary?.detailParams, {});
 
   return {
     ok: steps.length > 0,
@@ -170,7 +203,11 @@ export function buildAuthorityConsistencyRepairPlan(audit = null) {
     summary: {
       level: steps.length > 0 ? "warning" : String(source?.summary?.level || "idle"),
       label: steps.length > 0 ? `建议同步副本 ${steps.length} 步` : "当前无需编排修复",
+      labelKey: steps.length > 0 ? "authority.repair.summaryLabel" : "authority.repair.none",
+      labelParams: { count: steps.length },
       detail,
+      detailKey,
+      detailParams,
     },
   };
 }
@@ -469,16 +506,28 @@ export function buildAuthorityConsistencyAudit(input = {}) {
 
   const issues = [];
   if (sql.error) {
-    issues.push(normalizeIssue("error", "sql-probe-error", `Authority SQL 探针失败：${sql.error}`));
+    issues.push(normalizeIssue("error", "sql-probe-error", `Authority SQL 探针失败：${sql.error}`, {
+      messageKey: "authority.audit.sqlProbeFailed",
+      messageParams: { error: sql.error },
+    }));
   }
   if (blob.error) {
-    issues.push(normalizeIssue("warning", "blob-probe-error", `Authority Blob 读取失败：${blob.error}`));
+    issues.push(normalizeIssue("warning", "blob-probe-error", `Authority Blob 读取失败：${blob.error}`, {
+      messageKey: "authority.audit.blobReadFailed",
+      messageParams: { error: blob.error },
+    }));
   }
   if (trivium.error) {
-    issues.push(normalizeIssue("warning", "trivium-probe-error", `Authority Trivium 探针失败：${trivium.error}`));
+    issues.push(normalizeIssue("warning", "trivium-probe-error", `Authority Trivium 探针失败：${trivium.error}`, {
+      messageKey: "authority.audit.triviumProbeFailed",
+      messageParams: { error: trivium.error },
+    }));
   }
   if (blob.exists && blob.chatId && chatId && blob.chatId !== chatId) {
-    issues.push(normalizeIssue("error", "blob-chat-mismatch", `Checkpoint chatId 不匹配：${blob.chatId} ≠ ${chatId}`));
+    issues.push(normalizeIssue("error", "blob-chat-mismatch", `Checkpoint chatId 不匹配：${blob.chatId} ≠ ${chatId}`, {
+      messageKey: "authority.audit.chatIdMismatch",
+      messageParams: { blobChatId: blob.chatId, chatId },
+    }));
   }
   if (
     Number.isFinite(sql.revision) &&
@@ -490,6 +539,10 @@ export function buildAuthorityConsistencyAudit(input = {}) {
         "warning",
         "sql-runtime-revision-drift",
         `SQL revision 与 runtime 不一致：${sql.revision} ≠ ${runtime.revision}`,
+        {
+          messageKey: "authority.audit.sqlRuntimeDrift",
+          messageParams: { sqlRevision: sql.revision, runtimeRevision: runtime.revision },
+        },
       ),
     );
   }
@@ -508,6 +561,15 @@ export function buildAuthorityConsistencyAudit(input = {}) {
         code === "blob-checkpoint-behind"
           ? `Blob checkpoint 落后于 Authority SQL：${blob.revision} < ${sql.revision}`
           : `Blob checkpoint revision 与 runtime 不一致：${blob.revision} ≠ ${runtime.revision}`,
+        code === "blob-checkpoint-behind"
+          ? {
+              messageKey: "authority.audit.blobBehindSql",
+              messageParams: { blobRevision: blob.revision, sqlRevision: sql.revision },
+            }
+          : {
+              messageKey: "authority.audit.blobRuntimeDrift",
+              messageParams: { blobRevision: blob.revision, runtimeRevision: runtime.revision },
+            },
       ),
     );
   }
@@ -526,6 +588,15 @@ export function buildAuthorityConsistencyAudit(input = {}) {
         code === "trivium-replica-behind"
           ? `Trivium 向量副本落后于 Authority SQL：${trivium.revision} < ${sql.revision}`
           : `Trivium revision 与 SQL 不一致：${trivium.revision} ≠ ${sql.revision}`,
+        code === "trivium-replica-behind"
+          ? {
+              messageKey: "authority.audit.triviumBehindSql",
+              messageParams: { triviumRevision: trivium.revision, sqlRevision: sql.revision },
+            }
+          : {
+              messageKey: "authority.audit.triviumSqlDrift",
+              messageParams: { triviumRevision: trivium.revision, sqlRevision: sql.revision },
+            },
       ),
     );
   }
@@ -535,14 +606,22 @@ export function buildAuthorityConsistencyAudit(input = {}) {
         "warning",
         "trivium-collection-mismatch",
         `Trivium collection/namespace 与 runtime 不一致：${trivium.namespace} ≠ ${runtime.collectionId}`,
+        {
+          messageKey: "authority.audit.collectionMismatch",
+          messageParams: { triviumNamespace: trivium.namespace, runtimeCollectionId: runtime.collectionId },
+        },
       ),
     );
   }
   if (runtime.vectorDirty) {
-    issues.push(normalizeIssue("warning", "vector-dirty", "当前向量索引仍处于 dirty 状态"));
+    issues.push(normalizeIssue("warning", "vector-dirty", "当前向量索引仍处于 dirty 状态", {
+      messageKey: "authority.audit.vectorDirty",
+    }));
   }
   if (!blob.exists && source.capability?.blobReady) {
-    issues.push(normalizeIssue("warning", "blob-checkpoint-missing", "Authority Blob 尚无可用 checkpoint"));
+    issues.push(normalizeIssue("warning", "blob-checkpoint-missing", "Authority Blob 尚无可用 checkpoint", {
+      messageKey: "authority.audit.blobCheckpointMissing",
+    }));
   }
 
   const actions = [];
@@ -581,9 +660,23 @@ export function buildAuthorityConsistencyAudit(input = {}) {
         : level === "success"
           ? "Authority 工件已对齐"
           : "等待审计";
+  const labelKey =
+    level === "error"
+      ? "authority.summary.blockingInconsistency"
+      : level === "warning"
+        ? sql.ok
+          ? "authority.summary.replicasPendingSync"
+          : "authority.summary.driftPending"
+        : level === "success"
+          ? "authority.summary.aligned"
+          : "authority.summary.waitingForAudit";
   const detail = issues[0]?.message || (level === "success"
     ? "Authority SQL / Trivium / Blob 已达到当前可观测的一致状态"
     : "尚未运行审计");
+  const detailKey = issues[0]?.messageKey || (level === "success"
+    ? "authority.summary.alignedDetail"
+    : "authority.summary.notYetAudited");
+  const detailParams = issues[0]?.messageParams || {};
   const backupLag = issues.some((issue) => [
     "blob-checkpoint-missing",
     "blob-checkpoint-behind",
@@ -618,7 +711,11 @@ export function buildAuthorityConsistencyAudit(input = {}) {
     summary: {
       level,
       label,
+      labelKey,
+      labelParams: {},
       detail,
+      detailKey,
+      detailParams,
       issueCount: issues.length,
       dataSafety,
       backupRedundancy: backupLag ? "degraded" : (blob.exists ? "ok" : "unknown"),

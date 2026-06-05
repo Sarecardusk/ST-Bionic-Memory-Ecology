@@ -64,6 +64,7 @@ import {
   normalizeMaintenanceExecutionMode,
 } from "../runtime/concurrency.js";
 import {
+  formatI18nValue,
   formatUiStatusMeta,
   formatUiStatusText,
   hydrateI18n,
@@ -3329,7 +3330,30 @@ function _refreshTaskPersistence() {
               ? "Authority 审计中"
               : "等待审计",
     detail: String(ps.authorityConsistencyError || "尚未运行一致性审计"),
+    labelKey:
+      ps.authorityConsistencyState === "success"
+        ? "authority.summary.aligned"
+        : ps.authorityConsistencyState === "warning"
+          ? "authority.summary.driftPending"
+          : ps.authorityConsistencyState === "error"
+            ? "error.auditFailed"
+            : ps.authorityConsistencyState === "running"
+              ? "authority.summary.auditRunning"
+              : "authority.summary.waitingForAudit",
+    labelParams: {},
+    detailKey: ps.authorityConsistencyError ? "" : "authority.summary.notYetAudited",
+    detailParams: {},
   };
+  const authorityAuditSummaryLabel = formatI18nValue(authorityAuditSummary, {
+    keyField: "labelKey",
+    paramsField: "labelParams",
+    fallbackField: "label",
+  });
+  const authorityAuditSummaryDetail = formatI18nValue(authorityAuditSummary, {
+    keyField: "detailKey",
+    paramsField: "detailParams",
+    fallbackField: "detail",
+  });
   const authorityAuditSqlRevision = Number.isFinite(Number(authorityAudit?.sql?.revision))
     ? String(Number(authorityAudit.sql.revision))
     : "—";
@@ -3345,14 +3369,21 @@ function _refreshTaskPersistence() {
     authorityAudit?.blob?.path || ps.authorityBlobCheckpointPath || "",
   ).trim() || "—";
   const authorityAuditIssuesLabel = Array.isArray(authorityAudit?.issues) && authorityAudit.issues.length
-    ? authorityAudit.issues.map((issue) => issue.message).filter(Boolean).join(" / ")
-    : authorityAuditSummary.detail || "—";
+    ? authorityAudit.issues
+        .map((issue) => formatI18nValue(issue, {
+          keyField: "messageKey",
+          paramsField: "messageParams",
+          fallbackField: "message",
+        }))
+        .filter(Boolean)
+        .join(" / ")
+    : authorityAuditSummaryDetail || "—";
   const authorityAuditActionsLabel = Array.isArray(authorityAudit?.actions) && authorityAudit.actions.length
     ? authorityAudit.actions.map((action) => ({
-        "write-authority-checkpoint": "同步备份 Checkpoint",
-        "rebuild-authority-trivium": "同步向量/Trivium 副本",
-        "run-authority-consistency-audit": "重新审计",
-        "restore-from-authority-blob-checkpoint": "灾难恢复：从 Checkpoint 覆盖 SQL",
+        "write-authority-checkpoint": t("authority.action.syncCheckpoint"),
+        "rebuild-authority-trivium": t("authority.action.syncTrivium"),
+        "run-authority-consistency-audit": t("authority.action.reaudit"),
+        "restore-from-authority-blob-checkpoint": t("authority.action.disasterRecovery"),
       }[action] || action)).join(" · ")
     : "—";
   const authorityAuditUpdatedLabel = ps.authorityConsistencyUpdatedAt
@@ -3367,12 +3398,12 @@ function _refreshTaskPersistence() {
   const authorityRestoreState = String(ps.authorityCheckpointRestoreState || "idle").trim();
   const authorityRestoreLabel =
     authorityRestoreState === "success"
-      ? "已恢复"
+      ? t("authority.restore.success")
       : authorityRestoreState === "error"
-        ? "恢复失败"
+        ? t("authority.restore.error")
         : authorityRestoreState === "running"
-          ? "恢复中"
-          : "未执行";
+          ? t("authority.restore.running")
+          : t("authority.restore.idle");
   const authorityRestoreUpdatedLabel = ps.authorityCheckpointRestoreUpdatedAt
     ? _formatTaskProfileTime(ps.authorityCheckpointRestoreUpdatedAt)
     : "—";
@@ -3389,28 +3420,37 @@ function _refreshTaskPersistence() {
   ).trim();
   const authorityRepairLabel =
     authorityRepairState === "success"
-      ? "同步完成"
+      ? t("authority.repair.status.success")
       : authorityRepairState === "error"
-        ? "同步失败"
+        ? t("authority.repair.status.error")
         : authorityRepairState === "warning"
-          ? "部分同步失败"
+          ? t("authority.repair.status.warning")
         : authorityRepairState === "running"
           ? authorityRepairResult?.handoffRequired
-            ? "等待 Job 交接"
-            : "同步中"
-          : "未执行";
+            ? t("authority.repair.status.handoff")
+            : t("authority.repair.status.running")
+          : t("authority.repair.status.idle");
   const authorityRepairUpdatedLabel = ps.authorityRepairUpdatedAt
     ? _formatTaskProfileTime(ps.authorityRepairUpdatedAt)
     : "—";
   const authorityRepairPlanLabel = authorityRepairPlan.ok
-    ? authorityRepairPlan.steps.map((step) => step.label).join(" → ")
-    : authorityRepairPlan.summary.label || "当前无需编排同步";
+    ? authorityRepairPlan.steps.map((step) => formatI18nValue(step, {
+        keyField: "labelKey",
+        paramsField: "labelParams",
+        fallbackField: "label",
+      })).join(" → ")
+    : formatI18nValue(authorityRepairPlan.summary, {
+        keyField: "labelKey",
+        paramsField: "labelParams",
+        fallbackField: "label",
+        fallback: t("authority.repair.none"),
+      });
   const authorityRepairResultLabel = authorityRepairResult?.steps?.length
-    ? `${Number(authorityRepairResult.steps.length || 0)} 步${
+    ? `${t("authority.repair.resultSteps", { count: Number(authorityRepairResult.steps.length || 0) })}${
         authorityRepairResult?.handoffRequired
           ? authorityRepairHandoffJobId
             ? ` · job ${authorityRepairHandoffJobId}`
-            : " · 已交接异步 Job"
+            : ` · ${t("authority.repair.resultHandoff")}`
           : ""
       }`
     : "—";
@@ -3479,6 +3519,11 @@ function _refreshTaskPersistence() {
   const authorityArtifactPruneLabel = ps.authorityDiagnosticsLastPrunedAt
     ? `${Number(ps.authorityDiagnosticsLastPrunedCount || 0)} 条 · ${_formatTaskProfileTime(ps.authorityDiagnosticsLastPrunedAt)}`
     : "未触发";
+  const authorityRepairPlanSummaryDetail = formatI18nValue(authorityRepairPlan.summary, {
+    keyField: "detailKey",
+    paramsField: "detailParams",
+    fallbackField: "detail",
+  });
   const activeRegionLabel = String(
     historyState?.activeRegion ||
       historyState?.lastExtractedRegion ||
@@ -3576,7 +3621,7 @@ function _refreshTaskPersistence() {
     ..._buildPersistDeltaDiagnosticRows(persistDeltaDiagnostics),
   );
   const authorityRows = [
-    ["审计状态", authorityAuditSummary.label],
+    ["审计状态", authorityAuditSummaryLabel],
     ["SQL rev", authorityAuditSqlRevision],
     ["Trivium rev", authorityAuditTriviumRevision],
     ["Blob rev", authorityAuditBlobRevision],
@@ -3634,28 +3679,28 @@ function _refreshTaskPersistence() {
   );
   const authorityActionButtons = [
     typeof _actionHandlers.runAuthorityConsistencyAudit === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="audit">执行 Authority 审计</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="audit">${_escHtml(t("authority.button.runAudit"))}</button>`
       : "",
     showAuthorityRepairAction && typeof _actionHandlers.runAuthorityConsistencyRepairPlan === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="repair-plan">执行副本同步</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="repair-plan">${_escHtml(t("authority.button.runRepair"))}</button>`
       : "",
     showAuthorityCheckpointWriteAction && typeof _actionHandlers.writeAuthorityCheckpoint === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="checkpoint">同步 Checkpoint</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="checkpoint">${_escHtml(t("authority.button.syncCheckpoint"))}</button>`
       : "",
     showAuthorityRestoreAction && typeof _actionHandlers.restoreAuthorityCheckpoint === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="restore">灾难恢复：Checkpoint 覆盖 SQL</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="restore">${_escHtml(t("authority.button.disasterRecovery"))}</button>`
       : "",
     showAuthorityTriviumRebuildAction && typeof _actionHandlers.rebuildVectorIndex === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="rebuild-trivium">同步 Authority Trivium</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="rebuild-trivium">${_escHtml(t("authority.button.syncTrivium"))}</button>`
       : "",
     typeof _actionHandlers.captureAuthorityPerformanceBaseline === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="baseline">捕获 Perf Baseline</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="baseline">${_escHtml(t("authority.button.captureBaseline"))}</button>`
       : "",
     typeof _actionHandlers.exportDiagnosticsBundle === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="bundle">导出诊断包</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="bundle">${_escHtml(t("authority.button.exportDiagnostics"))}</button>`
       : "",
     typeof _actionHandlers.refreshAuthorityDiagnosticsArtifacts === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="artifacts-refresh">刷新工件列表</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="artifacts-refresh">${_escHtml(t("authority.button.refreshArtifacts"))}</button>`
       : "",
   ].filter(Boolean).join("");
   const authorityArtifactsHtml = authorityArtifactEntries.length
@@ -3686,10 +3731,10 @@ function _refreshTaskPersistence() {
       </div>`
     : `<div class="bme-config-help" style="margin-top:12px">${_escHtml(
         ps.authorityDiagnosticsArtifactsError
-          ? `工件列表刷新失败：${ps.authorityDiagnosticsArtifactsError}`
+          ? t("authority.diagnostics.artifactsRefreshFailed", { error: ps.authorityDiagnosticsArtifactsError })
           : ps.authorityDiagnosticsArtifactsUpdatedAt
-            ? "最近工件列表已刷新，但暂无可用诊断包记录"
-            : "尚未刷新 diagnostics artifact 列表"
+            ? t("authority.diagnostics.noArtifacts")
+            : t("authority.diagnostics.notYetRefreshed")
       )}</div>`;
 
   el.innerHTML = `
@@ -3727,10 +3772,10 @@ function _refreshTaskPersistence() {
       </div>
       ${authorityActionButtons ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${authorityActionButtons}</div>` : ""}
       ${renderRowsTwoColumn(authorityRows)}
-      <div class="bme-config-help" style="margin-top:10px">${_escHtml(authorityAuditSummary.detail || "—")}</div>
+      <div class="bme-config-help" style="margin-top:10px">${_escHtml(authorityAuditSummaryDetail || "—")}</div>
       <div class="bme-config-help" style="margin-top:6px">${_escHtml(authorityAuditIssuesLabel)}</div>
-      <div class="bme-config-help" style="margin-top:6px">${_escHtml(authorityRepairPlan.summary.detail || "—")}</div>
-      <div class="bme-config-help" style="margin-top:10px">最近 diagnostics artifacts</div>
+      <div class="bme-config-help" style="margin-top:6px">${_escHtml(authorityRepairPlanSummaryDetail || "—")}</div>
+      <div class="bme-config-help" style="margin-top:10px">${_escHtml(t("authority.diagnostics.recentArtifacts"))}</div>
       ${authorityArtifactsHtml}
       ${ps.authorityRepairError ? `<div class="bme-config-help" style="margin-top:6px;color:#e74c3c">${_escHtml(ps.authorityRepairError)}</div>` : ""}
       ${ps.authorityCheckpointRestoreError ? `<div class="bme-config-help" style="margin-top:6px;color:#e74c3c">${_escHtml(ps.authorityCheckpointRestoreError)}</div>` : ""}
@@ -3747,56 +3792,66 @@ function _refreshTaskPersistence() {
       try {
         if (action === "audit") {
           if (typeof _actionHandlers.runAuthorityConsistencyAudit !== "function") return;
-          toastr.info("Authority 一致性审计中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.auditRunning"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.runAuthorityConsistencyAudit();
           if (result?.success) {
-            toastr.success(result?.audit?.summary?.label || "Authority 审计完成", "ST-BME");
+            toastr.success(
+              formatI18nValue(result?.audit?.summary, {
+                keyField: "labelKey",
+                paramsField: "labelParams",
+                fallbackField: "label",
+                fallback: t("authority.toast.auditCompleted"),
+              }) || t("authority.toast.auditCompleted"),
+              "ST-BME",
+            );
           } else {
-            toastr.warning(`Authority 审计失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.auditFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "repair-plan") {
           if (typeof _actionHandlers.runAuthorityConsistencyRepairPlan !== "function") return;
           if (authorityRepairPlan.requiresConfirmation) {
             const confirmed = globalThis.confirm?.(
-              `副本同步计划将按以下顺序执行：\n${authorityRepairPlan.steps.map((step, index) => `${index + 1}. ${step.label}`).join("\n")}\n\n其中包含从 Blob Checkpoint 恢复 SQL。此操作只适合 SQL 缺失、损坏或需要回滚时使用，确定继续？`,
+              t("authority.confirm.repairPlan", {
+                steps: authorityRepairPlan.steps.map((step, index) => `${index + 1}. ${formatI18nValue(step, { keyField: "labelKey", paramsField: "labelParams", fallbackField: "label" })}`).join("\n"),
+              }),
             );
             if (!confirmed) return;
           }
-          toastr.info("Authority 副本同步执行中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.repairRunning"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.runAuthorityConsistencyRepairPlan();
           if (result?.success) {
             const stepCount = Number(result?.repairResult?.steps?.length || result?.results?.length || 0);
             if (result?.partialFailure || result?.repairResult?.partialFailure || result?.outcome === "warning" || result?.repairResult?.outcome === "warning") {
-              toastr.warning(`Authority 副本部分同步失败；记忆图谱不受影响${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.warning(t("authority.toast.repairPartialFailure", { count: stepCount }), "ST-BME");
             } else if (result?.handoffRequired || result?.repairResult?.handoffRequired) {
-              toastr.success(`Authority 副本同步已交接异步 Job${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.success(t("authority.toast.repairHandedOff", { count: stepCount }), "ST-BME");
             } else {
-              toastr.success(`Authority 副本同步已完成${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.success(t("authority.toast.repairCompleted", { count: stepCount }), "ST-BME");
             }
           } else {
-            toastr.warning(`Authority 副本同步失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.repairFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "checkpoint") {
           if (typeof _actionHandlers.writeAuthorityCheckpoint !== "function") return;
-          toastr.info("Authority Checkpoint 写入中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.checkpointWriting"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.writeAuthorityCheckpoint();
           if (result?.success) {
-            toastr.success(`Authority Checkpoint 已写入：rev ${Number(result?.result?.checkpointRevision || result?.result?.revision || 0) || "?"}`, "ST-BME");
+            toastr.success(t("authority.toast.checkpointWritten", { revision: Number(result?.result?.checkpointRevision || result?.result?.revision || 0) || "?" }), "ST-BME");
           } else {
-            toastr.warning(`Authority Checkpoint 写入失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.checkpointWriteFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "restore") {
           if (typeof _actionHandlers.restoreAuthorityCheckpoint !== "function") return;
           const confirmed = globalThis.confirm?.(
-            `灾难恢复会用 Blob Checkpoint 覆盖 Authority SQL。\n\nSQL rev: ${authorityAuditSqlRevision}\nCheckpoint rev: ${authorityAuditBlobRevision}\n\n只有 SQL 缺失、损坏或明确需要回滚时才继续。确定执行？`,
+            t("authority.confirm.checkpointRestore", { sqlRevision: authorityAuditSqlRevision, checkpointRevision: authorityAuditBlobRevision }),
           );
           if (!confirmed) return;
-          toastr.info("Authority Checkpoint 恢复中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.checkpointRestoring"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.restoreAuthorityCheckpoint();
           if (result?.success) {
-            toastr.success(`Authority Checkpoint 已恢复：rev ${Number(result?.result?.revision || 0) || "?"}`, "ST-BME");
+            toastr.success(t("authority.toast.checkpointRestored", { revision: Number(result?.result?.revision || 0) || "?" }), "ST-BME");
           } else {
-            toastr.warning(`Authority Checkpoint 恢复失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.checkpointRestoreFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "rebuild-trivium") {
           if (typeof _actionHandlers.rebuildVectorIndex !== "function") return;
@@ -3806,9 +3861,9 @@ function _refreshTaskPersistence() {
           if (typeof _actionHandlers.captureAuthorityPerformanceBaseline !== "function") return;
           const result = await _actionHandlers.captureAuthorityPerformanceBaseline();
           if (result?.ok) {
-            toastr.success("Authority Perf Baseline 已捕获", "ST-BME");
+            toastr.success(t("authority.toast.baselineCaptured"), "ST-BME");
           } else {
-            toastr.warning(`Authority Perf Baseline 捕获失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.baselineCaptureFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "bundle") {
           if (typeof _actionHandlers.exportDiagnosticsBundle !== "function") return;
@@ -3820,26 +3875,26 @@ function _refreshTaskPersistence() {
           if (typeof _actionHandlers.refreshAuthorityDiagnosticsArtifacts !== "function") return;
           const result = await _actionHandlers.refreshAuthorityDiagnosticsArtifacts();
           if (result?.ok) {
-            toastr.success(`已刷新 diagnostics artifact 列表（${Number(result?.entries?.length || 0)} 条）`, "ST-BME");
+            toastr.success(t("authority.toast.artifactsRefreshed", { count: Number(result?.entries?.length || 0) }), "ST-BME");
           } else {
-            toastr.warning(`diagnostics artifact 列表刷新失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.artifactsRefreshFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         }
       } catch (error) {
         toastr.error(
           action === "restore"
-            ? `Authority Checkpoint 恢复失败: ${error?.message || error}`
+            ? t("authority.toast.checkpointRestoreFailed", { error: error?.message || error })
             : action === "repair-plan"
-              ? `Authority 副本同步失败: ${error?.message || error}`
+              ? t("authority.toast.repairFailed", { error: error?.message || error })
             : action === "checkpoint"
-              ? `Authority Checkpoint 写入失败: ${error?.message || error}`
+              ? t("authority.toast.checkpointWriteFailed", { error: error?.message || error })
             : action === "rebuild-trivium"
-              ? `Authority Trivium 重建失败: ${error?.message || error}`
+              ? t("authority.toast.triviumRebuildFailed", { error: error?.message || error })
             : action === "baseline"
-              ? `Authority Perf Baseline 捕获失败: ${error?.message || error}`
+              ? t("authority.toast.baselineCaptureFailed", { error: error?.message || error })
             : action === "artifacts-refresh"
-              ? `diagnostics artifact 列表刷新失败: ${error?.message || error}`
-            : `Authority 审计失败: ${error?.message || error}`,
+              ? t("authority.toast.artifactsRefreshFailed", { error: error?.message || error })
+            : t("authority.toast.auditFailed", { error: error?.message || error }),
           "ST-BME",
         );
       } finally {
@@ -3859,35 +3914,35 @@ function _refreshTaskPersistence() {
       try {
         if (action === "copy-path") {
           await _copyTextToClipboard(artifactPath);
-          toastr.success("诊断包路径已复制", "ST-BME");
+          toastr.success(t("authority.toast.diagnosticPathCopied"), "ST-BME");
         } else if (action === "download") {
           if (typeof _actionHandlers.readAuthorityDiagnosticsArtifact !== "function") return;
           const result = await _actionHandlers.readAuthorityDiagnosticsArtifact(artifactPath);
           if (!result?.ok || !result?.payload) {
-            toastr.warning(`诊断包读取失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.diagnosticReadFailed", { error: result?.error || "unknown" }), "ST-BME");
             return;
           }
           const fileName = String(artifactPath.split("/").pop() || `st-bme-diagnostics-${artifactReason}.json`);
           _downloadJsonFile(result.payload, fileName);
-          toastr.success("诊断包已下载", "ST-BME");
+          toastr.success(t("authority.toast.diagnosticDownloaded"), "ST-BME");
         } else if (action === "delete") {
           if (typeof _actionHandlers.deleteAuthorityDiagnosticsArtifact !== "function") return;
-          const confirmed = globalThis.confirm?.(`确定删除该 diagnostics artifact？\n${artifactPath}`);
+          const confirmed = globalThis.confirm?.(t("authority.confirm.deleteArtifact", { path: artifactPath }));
           if (!confirmed) return;
           const result = await _actionHandlers.deleteAuthorityDiagnosticsArtifact(artifactPath);
           if (result?.ok) {
-            toastr.success("诊断包已删除", "ST-BME");
+            toastr.success(t("authority.toast.diagnosticDeleted"), "ST-BME");
           } else {
-            toastr.warning(`诊断包删除失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.diagnosticDeleteFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         }
       } catch (error) {
         toastr.error(
           action === "copy-path"
-            ? `复制路径失败: ${error?.message || error}`
+            ? t("authority.toast.copyPathFailed", { error: error?.message || error })
             : action === "download"
-              ? `下载诊断包失败: ${error?.message || error}`
-              : `删除诊断包失败: ${error?.message || error}`,
+              ? t("authority.toast.diagnosticDownloadFailed", { error: error?.message || error })
+              : t("authority.toast.diagnosticDeleteFailed", { error: error?.message || error }),
           "ST-BME",
         );
       } finally {
