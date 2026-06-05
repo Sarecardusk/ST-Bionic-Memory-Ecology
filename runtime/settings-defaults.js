@@ -202,6 +202,7 @@ export const defaultSettings = {
   backgroundMaintenanceMaxQueueItems: 24,
 
   // UI 面板
+  uiLocale: "auto",
   noticeDisplayMode: "normal",
   panelTheme: "crimson",
   graphLocalStorageMode: "auto",
