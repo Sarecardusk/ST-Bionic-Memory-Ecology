@@ -3,6 +3,7 @@
 // Extracted from index.js so the notice wording/contract can be tested by
 // direct import instead of slicing index.js. Side effects are delivered through
 // an injected updateStageNotice, so this module holds no global state.
+import { t } from "../i18n/index.js";
 
 /**
  * Emits the "history changed" stage notice (persistent + busy), without a
@@ -17,8 +18,11 @@ export function notifyHistoryDirtyNotice({ dirtyFrom, reason, updateStageNotice 
   if (typeof updateStageNotice !== "function") return;
   updateStageNotice(
     "history",
-    "检测到楼层历史变化",
-    `将从楼层 ${dirtyFrom} 之后自动恢复${reason ? `\n${reason}` : ""}`,
+    t("history.notice.dirty.title"),
+    t("history.notice.dirty.detail", {
+      dirtyFrom,
+      reasonText: reason ? t("history.notice.dirty.reasonSuffix", { reason }) : "",
+    }),
     "warning",
     {
       persist: true,

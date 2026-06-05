@@ -204,11 +204,14 @@ const auditSqlAheadReplicasBehind = buildAuthorityConsistencyAudit({
 });
 assert.equal(auditSqlAheadReplicasBehind.summary.level, "warning");
 assert.equal(auditSqlAheadReplicasBehind.summary.label, "副本待同步");
+assert.equal(auditSqlAheadReplicasBehind.summary.labelKey, "authority.summary.replicasPendingSync");
 assert.equal(auditSqlAheadReplicasBehind.summary.dataSafety, "saved-replicas-behind");
 assert.equal(auditSqlAheadReplicasBehind.summary.backupRedundancy, "degraded");
 assert.equal(auditSqlAheadReplicasBehind.summary.searchQuality, "degraded");
 assert.ok(auditSqlAheadReplicasBehind.issues.some((issue) => issue.code === "blob-checkpoint-behind"));
 assert.ok(auditSqlAheadReplicasBehind.issues.some((issue) => issue.code === "trivium-replica-behind"));
+assert.ok(auditSqlAheadReplicasBehind.issues.some((issue) => issue.messageKey === "authority.audit.blobBehindSql"));
+assert.ok(auditSqlAheadReplicasBehind.issues.some((issue) => issue.messageKey === "authority.audit.triviumBehindSql"));
 assert.ok(auditSqlAheadReplicasBehind.actions.includes("write-authority-checkpoint"));
 assert.ok(auditSqlAheadReplicasBehind.actions.includes("rebuild-authority-trivium"));
 assert.equal(auditSqlAheadReplicasBehind.actions.includes("restore-from-authority-blob-checkpoint"), false);
@@ -216,11 +219,19 @@ assert.equal(auditSqlAheadReplicasBehind.drift.checkpointRestorable, false);
 const sqlAheadRepairPlan = buildAuthorityConsistencyRepairPlan(auditSqlAheadReplicasBehind);
 assert.equal(sqlAheadRepairPlan.ok, true);
 assert.equal(sqlAheadRepairPlan.requiresConfirmation, false);
+assert.equal(sqlAheadRepairPlan.summary.labelKey, "authority.repair.summaryLabel");
 assert.deepEqual(
   sqlAheadRepairPlan.steps.map((step) => step.action),
   [
     "write-authority-checkpoint",
     "rebuild-authority-trivium",
+  ],
+);
+assert.deepEqual(
+  sqlAheadRepairPlan.steps.map((step) => step.labelKey),
+  [
+    "authority.repair.syncCheckpoint",
+    "authority.repair.syncTrivium",
   ],
 );
 

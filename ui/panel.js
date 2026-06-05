@@ -13,8 +13,6 @@ import {
 } from "./panel-ena-sections.js";
 import { getNodeDisplayName } from "../graph/node-labels.js";
 import {
-  buildRegionLine,
-  buildScopeBadgeText,
   normalizeMemoryScope,
 } from "../graph/memory-scope.js";
 import { listKnowledgeOwners } from "../graph/knowledge-state.js";
@@ -65,8 +63,32 @@ import {
   getMaintenanceExecutionModeLevel,
   normalizeMaintenanceExecutionMode,
 } from "../runtime/concurrency.js";
+import {
+  formatI18nValue,
+  formatUiStatusMeta,
+  formatUiStatusText,
+  hydrateI18n,
+  setLocale,
+  t,
+} from "../i18n/index.js";
+import {
+  normalizeOwnerUiType,
+  uiBuildScopeMetaText,
+  uiBuildRegionLine,
+  uiMemoryNodeTypeClass,
+  uiOwnerTypeLabel,
+  uiScopeBadgeText,
+  uiTypeLabel,
+} from "./ui-label-formatter.js";
 
 let defaultPromptCache = null;
+
+function _applyPanelLocale(settings = _getSettings?.() || {}) {
+  setLocale(settings?.uiLocale || "auto");
+  if (overlayEl) hydrateI18n(overlayEl);
+  else hydrateI18n(document);
+  _refreshFloatingBallTooltip();
+}
 
 function _refreshMemoryLlmProviderHelp(urlValue = null) {
   const helpEl = document.getElementById("bme-memory-llm-provider-help");
@@ -81,8 +103,7 @@ function _refreshMemoryLlmProviderHelp(urlValue = null) {
   ).trim();
 
   if (!rawUrl) {
-    helpEl.textContent =
-      "留空时复用当前聊天模型。支持自动识别 OpenAI 兼容渠道、Anthropic Claude、Google AI Studio / Gemini；填写完整 endpoint 时会自动规整为可复用的 base URL。";
+    helpEl.textContent = t("llm.providerHelp.auto");
     return;
   }
 
@@ -90,24 +111,26 @@ function _refreshMemoryLlmProviderHelp(urlValue = null) {
   const parts = [];
 
   if (resolved.isKnownProvider) {
-    parts.push(`已识别渠道：${resolved.providerLabel || resolved.providerId || "未知渠道"}`);
+    parts.push(t("llm.providerHelp.knownProvider", {
+      provider: resolved.providerLabel || resolved.providerId || t("common.unknown"),
+    }));
   } else {
-    parts.push("未识别为特定渠道，将按自定义 OpenAI 兼容接口处理");
+    parts.push(t("llm.providerHelp.customProvider"));
   }
 
   if (resolved.transportLabel) {
-    parts.push(`请求通道：${resolved.transportLabel}`);
+    parts.push(t("llm.providerHelp.transport", { transport: resolved.transportLabel }));
   }
 
   if (resolved.apiUrl && resolved.apiUrl !== rawUrl) {
-    parts.push(`规范化地址：${resolved.apiUrl}`);
+    parts.push(t("llm.providerHelp.normalizedUrl", { apiUrl: resolved.apiUrl }));
   }
 
   if (resolved.supportsModelFetch !== true) {
-    parts.push("该渠道暂不支持自动拉取模型，请手动填写模型名");
+    parts.push(t("llm.providerHelp.modelFetchUnsupported"));
   }
 
-  helpEl.textContent = parts.join("；");
+  helpEl.textContent = parts.join(t("common.clauseSeparator"));
 }
 
 function getDefaultPrompts() {
@@ -1210,6 +1233,8 @@ export async function initPanel({
     }
   }
 
+  _applyPanelLocale(_getSettings?.() || {});
+
   ensureOverlayMountedAtRoot();
   bindViewportSync();
   syncViewportCssVars();
@@ -1236,11 +1261,23 @@ export async function initPanel({
   _bindFabToggle();
 }
 
+export function updatePanelLocale(localeMode = "auto") {
+  _applyPanelLocale({ ...(_getSettings?.() || {}), uiLocale: localeMode });
+  _refreshRuntimeStatus();
+  _syncFloatingBallWithRuntimeStatus();
+  _getActiveGraphRenderer()?._render?.();
+}
+
 // ==================== 悬浮球 ====================
 
 const FAB_STORAGE_KEY = "bme-fab-position";
 const FAB_VISIBLE_KEY = "bme-fab-visible";
 let _fabEl = null;
+
+function _refreshFloatingBallTooltip() {
+  const tip = _fabEl?.querySelector?.(".bme-fab-tooltip");
+  if (tip) tip.textContent = t("panel.entry.floatingTooltip");
+}
 
 function _getFabVisible() {
   try {
@@ -1280,15 +1317,16 @@ function _initFloatingBall() {
     fab.setAttribute("data-status", "idle");
     fab.innerHTML = `
       <i class="fa-solid fa-brain bme-fab-icon"></i>
-      <span class="bme-fab-tooltip">BME 记忆图谱</span>
+      <span class="bme-fab-tooltip">${t("panel.entry.floatingTooltip")}</span>
     `;
   } else if (!fab.querySelector(".bme-fab-icon")) {
     fab.innerHTML = `
       <i class="fa-solid fa-brain bme-fab-icon"></i>
-      <span class="bme-fab-tooltip">BME 记忆图谱</span>
+      <span class="bme-fab-tooltip">${t("panel.entry.floatingTooltip")}</span>
     `;
   }
   _fabEl = fab;
+  _refreshFloatingBallTooltip();
   ensureFabMountedAtRoot();
 
   // 应用可见性
@@ -2696,24 +2734,6 @@ function _refreshTaskTimeline() {
 
 // ---------- Memory Browser (Master-Detail) ----------
 
-function _getMemoryNodeTypeClass(type) {
-  switch (type) {
-    case "pov_memory":
-    case "character":
-      return "type-character";
-    case "event":
-      return "type-event";
-    case "location":
-      return "type-location";
-    case "rule":
-      return "type-rule";
-    case "thread":
-      return "type-thread";
-    default:
-      return "type-default";
-  }
-}
-
 function _parseFloorFilter(raw) {
   const text = String(raw || "").trim();
   if (!text) return null;
@@ -2887,13 +2907,13 @@ function _refreshTaskMemoryBrowser() {
   const listItems = sorted.map((node) => {
     const sel = node.id === currentSelectedMemoryNodeId ? "selected" : "";
     const preview = _getNodeSnippet(node);
-    const scopeBadge = buildScopeBadgeText(node.scope);
+    const scopeBadge = uiScopeBadgeText(node.scope);
     const metaText = _buildScopeMetaText(node);
     const displayName = getNodeDisplayName(node);
     return `
       <div class="bme-memory-node-item ${sel}" data-node-id="${_escHtml(node.id)}">
         <div class="bme-memory-node-item__header">
-          <span class="bme-memory-node-item__type ${_getMemoryNodeTypeClass(node.type)}">${_escHtml(_typeLabel(node.type))}</span>
+          <span class="bme-memory-node-item__type ${uiMemoryNodeTypeClass(node.type)}">${_escHtml(uiTypeLabel(node.type))}</span>
           <span class="bme-memory-node-item__imp">IMP: ${typeof node.importance === "number" ? node.importance.toFixed(1) : "—"}</span>
         </div>
         <div class="bme-memory-node-item__title">${_escHtml(displayName)}</div>
@@ -2986,12 +3006,12 @@ function _renderTaskMemoryDetailPanel(detailEl, node, graph) {
       (e?.fromId === node.id || e?.toId === node.id),
   );
   const detailSummary = _getNodeSnippet(node);
-  const scopeBadge = buildScopeBadgeText(node.scope);
+  const scopeBadge = uiScopeBadgeText(node.scope);
   const displayName = getNodeDisplayName(node);
   const writeBlocked = _isGraphWriteBlocked();
   const disabledAttr = writeBlocked ? " disabled" : "";
   const badges = [
-    node.type ? `<span class="bme-memory-node-item__type ${_getMemoryNodeTypeClass(node.type)}">${_escHtml(_typeLabel(node.type))}</span>` : "",
+    node.type ? `<span class="bme-memory-node-item__type ${uiMemoryNodeTypeClass(node.type)}">${_escHtml(uiTypeLabel(node.type))}</span>` : "",
     scopeBadge ? `<span class="bme-memory-node-item__type type-default">${_escHtml(scopeBadge)}</span>` : "",
     node.archived ? '<span class="bme-memory-node-item__type type-default">ARCHIVED</span>' : "",
   ].filter(Boolean).join("");
@@ -3081,9 +3101,9 @@ function _openMemoryPopup(node, graph) {
   if (!popup || !bodyEl) return;
 
   const displayName = getNodeDisplayName(node);
-  const scopeBadge = buildScopeBadgeText(node.scope);
+  const scopeBadge = uiScopeBadgeText(node.scope);
   const badges = [
-    node.type ? `<span class="bme-memory-node-item__type ${_getMemoryNodeTypeClass(node.type)}">${_escHtml(_typeLabel(node.type))}</span>` : "",
+    node.type ? `<span class="bme-memory-node-item__type ${uiMemoryNodeTypeClass(node.type)}">${_escHtml(uiTypeLabel(node.type))}</span>` : "",
     scopeBadge ? `<span class="bme-memory-node-item__type type-default">${_escHtml(scopeBadge)}</span>` : "",
     node.archived ? '<span class="bme-memory-node-item__type type-default">ARCHIVED</span>' : "",
   ].filter(Boolean).join("");
@@ -3310,7 +3330,30 @@ function _refreshTaskPersistence() {
               ? "Authority 审计中"
               : "等待审计",
     detail: String(ps.authorityConsistencyError || "尚未运行一致性审计"),
+    labelKey:
+      ps.authorityConsistencyState === "success"
+        ? "authority.summary.aligned"
+        : ps.authorityConsistencyState === "warning"
+          ? "authority.summary.driftPending"
+          : ps.authorityConsistencyState === "error"
+            ? "error.auditFailed"
+            : ps.authorityConsistencyState === "running"
+              ? "authority.summary.auditRunning"
+              : "authority.summary.waitingForAudit",
+    labelParams: {},
+    detailKey: ps.authorityConsistencyError ? "" : "authority.summary.notYetAudited",
+    detailParams: {},
   };
+  const authorityAuditSummaryLabel = formatI18nValue(authorityAuditSummary, {
+    keyField: "labelKey",
+    paramsField: "labelParams",
+    fallbackField: "label",
+  });
+  const authorityAuditSummaryDetail = formatI18nValue(authorityAuditSummary, {
+    keyField: "detailKey",
+    paramsField: "detailParams",
+    fallbackField: "detail",
+  });
   const authorityAuditSqlRevision = Number.isFinite(Number(authorityAudit?.sql?.revision))
     ? String(Number(authorityAudit.sql.revision))
     : "—";
@@ -3326,14 +3369,21 @@ function _refreshTaskPersistence() {
     authorityAudit?.blob?.path || ps.authorityBlobCheckpointPath || "",
   ).trim() || "—";
   const authorityAuditIssuesLabel = Array.isArray(authorityAudit?.issues) && authorityAudit.issues.length
-    ? authorityAudit.issues.map((issue) => issue.message).filter(Boolean).join(" / ")
-    : authorityAuditSummary.detail || "—";
+    ? authorityAudit.issues
+        .map((issue) => formatI18nValue(issue, {
+          keyField: "messageKey",
+          paramsField: "messageParams",
+          fallbackField: "message",
+        }))
+        .filter(Boolean)
+        .join(" / ")
+    : authorityAuditSummaryDetail || "—";
   const authorityAuditActionsLabel = Array.isArray(authorityAudit?.actions) && authorityAudit.actions.length
     ? authorityAudit.actions.map((action) => ({
-        "write-authority-checkpoint": "同步备份 Checkpoint",
-        "rebuild-authority-trivium": "同步向量/Trivium 副本",
-        "run-authority-consistency-audit": "重新审计",
-        "restore-from-authority-blob-checkpoint": "灾难恢复：从 Checkpoint 覆盖 SQL",
+        "write-authority-checkpoint": t("authority.action.syncCheckpoint"),
+        "rebuild-authority-trivium": t("authority.action.syncTrivium"),
+        "run-authority-consistency-audit": t("authority.action.reaudit"),
+        "restore-from-authority-blob-checkpoint": t("authority.action.disasterRecovery"),
       }[action] || action)).join(" · ")
     : "—";
   const authorityAuditUpdatedLabel = ps.authorityConsistencyUpdatedAt
@@ -3348,12 +3398,12 @@ function _refreshTaskPersistence() {
   const authorityRestoreState = String(ps.authorityCheckpointRestoreState || "idle").trim();
   const authorityRestoreLabel =
     authorityRestoreState === "success"
-      ? "已恢复"
+      ? t("authority.restore.success")
       : authorityRestoreState === "error"
-        ? "恢复失败"
+        ? t("authority.restore.error")
         : authorityRestoreState === "running"
-          ? "恢复中"
-          : "未执行";
+          ? t("authority.restore.running")
+          : t("authority.restore.idle");
   const authorityRestoreUpdatedLabel = ps.authorityCheckpointRestoreUpdatedAt
     ? _formatTaskProfileTime(ps.authorityCheckpointRestoreUpdatedAt)
     : "—";
@@ -3370,28 +3420,37 @@ function _refreshTaskPersistence() {
   ).trim();
   const authorityRepairLabel =
     authorityRepairState === "success"
-      ? "同步完成"
+      ? t("authority.repair.status.success")
       : authorityRepairState === "error"
-        ? "同步失败"
+        ? t("authority.repair.status.error")
         : authorityRepairState === "warning"
-          ? "部分同步失败"
+          ? t("authority.repair.status.warning")
         : authorityRepairState === "running"
           ? authorityRepairResult?.handoffRequired
-            ? "等待 Job 交接"
-            : "同步中"
-          : "未执行";
+            ? t("authority.repair.status.handoff")
+            : t("authority.repair.status.running")
+          : t("authority.repair.status.idle");
   const authorityRepairUpdatedLabel = ps.authorityRepairUpdatedAt
     ? _formatTaskProfileTime(ps.authorityRepairUpdatedAt)
     : "—";
   const authorityRepairPlanLabel = authorityRepairPlan.ok
-    ? authorityRepairPlan.steps.map((step) => step.label).join(" → ")
-    : authorityRepairPlan.summary.label || "当前无需编排同步";
+    ? authorityRepairPlan.steps.map((step) => formatI18nValue(step, {
+        keyField: "labelKey",
+        paramsField: "labelParams",
+        fallbackField: "label",
+      })).join(" → ")
+    : formatI18nValue(authorityRepairPlan.summary, {
+        keyField: "labelKey",
+        paramsField: "labelParams",
+        fallbackField: "label",
+        fallback: t("authority.repair.none"),
+      });
   const authorityRepairResultLabel = authorityRepairResult?.steps?.length
-    ? `${Number(authorityRepairResult.steps.length || 0)} 步${
+    ? `${t("authority.repair.resultSteps", { count: Number(authorityRepairResult.steps.length || 0) })}${
         authorityRepairResult?.handoffRequired
           ? authorityRepairHandoffJobId
             ? ` · job ${authorityRepairHandoffJobId}`
-            : " · 已交接异步 Job"
+            : ` · ${t("authority.repair.resultHandoff")}`
           : ""
       }`
     : "—";
@@ -3460,6 +3519,11 @@ function _refreshTaskPersistence() {
   const authorityArtifactPruneLabel = ps.authorityDiagnosticsLastPrunedAt
     ? `${Number(ps.authorityDiagnosticsLastPrunedCount || 0)} 条 · ${_formatTaskProfileTime(ps.authorityDiagnosticsLastPrunedAt)}`
     : "未触发";
+  const authorityRepairPlanSummaryDetail = formatI18nValue(authorityRepairPlan.summary, {
+    keyField: "detailKey",
+    paramsField: "detailParams",
+    fallbackField: "detail",
+  });
   const activeRegionLabel = String(
     historyState?.activeRegion ||
       historyState?.lastExtractedRegion ||
@@ -3557,7 +3621,7 @@ function _refreshTaskPersistence() {
     ..._buildPersistDeltaDiagnosticRows(persistDeltaDiagnostics),
   );
   const authorityRows = [
-    ["审计状态", authorityAuditSummary.label],
+    ["审计状态", authorityAuditSummaryLabel],
     ["SQL rev", authorityAuditSqlRevision],
     ["Trivium rev", authorityAuditTriviumRevision],
     ["Blob rev", authorityAuditBlobRevision],
@@ -3615,28 +3679,28 @@ function _refreshTaskPersistence() {
   );
   const authorityActionButtons = [
     typeof _actionHandlers.runAuthorityConsistencyAudit === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="audit">执行 Authority 审计</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="audit">${_escHtml(t("authority.button.runAudit"))}</button>`
       : "",
     showAuthorityRepairAction && typeof _actionHandlers.runAuthorityConsistencyRepairPlan === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="repair-plan">执行副本同步</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="repair-plan">${_escHtml(t("authority.button.runRepair"))}</button>`
       : "",
     showAuthorityCheckpointWriteAction && typeof _actionHandlers.writeAuthorityCheckpoint === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="checkpoint">同步 Checkpoint</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="checkpoint">${_escHtml(t("authority.button.syncCheckpoint"))}</button>`
       : "",
     showAuthorityRestoreAction && typeof _actionHandlers.restoreAuthorityCheckpoint === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="restore">灾难恢复：Checkpoint 覆盖 SQL</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="restore">${_escHtml(t("authority.button.disasterRecovery"))}</button>`
       : "",
     showAuthorityTriviumRebuildAction && typeof _actionHandlers.rebuildVectorIndex === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="rebuild-trivium">同步 Authority Trivium</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="rebuild-trivium">${_escHtml(t("authority.button.syncTrivium"))}</button>`
       : "",
     typeof _actionHandlers.captureAuthorityPerformanceBaseline === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="baseline">捕获 Perf Baseline</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="baseline">${_escHtml(t("authority.button.captureBaseline"))}</button>`
       : "",
     typeof _actionHandlers.exportDiagnosticsBundle === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="bundle">导出诊断包</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="bundle">${_escHtml(t("authority.button.exportDiagnostics"))}</button>`
       : "",
     typeof _actionHandlers.refreshAuthorityDiagnosticsArtifacts === "function"
-      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="artifacts-refresh">刷新工件列表</button>`
+      ? `<button class="bme-config-secondary-btn" type="button" data-authority-persistence-action="artifacts-refresh">${_escHtml(t("authority.button.refreshArtifacts"))}</button>`
       : "",
   ].filter(Boolean).join("");
   const authorityArtifactsHtml = authorityArtifactEntries.length
@@ -3667,10 +3731,10 @@ function _refreshTaskPersistence() {
       </div>`
     : `<div class="bme-config-help" style="margin-top:12px">${_escHtml(
         ps.authorityDiagnosticsArtifactsError
-          ? `工件列表刷新失败：${ps.authorityDiagnosticsArtifactsError}`
+          ? t("authority.diagnostics.artifactsRefreshFailed", { error: ps.authorityDiagnosticsArtifactsError })
           : ps.authorityDiagnosticsArtifactsUpdatedAt
-            ? "最近工件列表已刷新，但暂无可用诊断包记录"
-            : "尚未刷新 diagnostics artifact 列表"
+            ? t("authority.diagnostics.noArtifacts")
+            : t("authority.diagnostics.notYetRefreshed")
       )}</div>`;
 
   el.innerHTML = `
@@ -3708,10 +3772,10 @@ function _refreshTaskPersistence() {
       </div>
       ${authorityActionButtons ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${authorityActionButtons}</div>` : ""}
       ${renderRowsTwoColumn(authorityRows)}
-      <div class="bme-config-help" style="margin-top:10px">${_escHtml(authorityAuditSummary.detail || "—")}</div>
+      <div class="bme-config-help" style="margin-top:10px">${_escHtml(authorityAuditSummaryDetail || "—")}</div>
       <div class="bme-config-help" style="margin-top:6px">${_escHtml(authorityAuditIssuesLabel)}</div>
-      <div class="bme-config-help" style="margin-top:6px">${_escHtml(authorityRepairPlan.summary.detail || "—")}</div>
-      <div class="bme-config-help" style="margin-top:10px">最近 diagnostics artifacts</div>
+      <div class="bme-config-help" style="margin-top:6px">${_escHtml(authorityRepairPlanSummaryDetail || "—")}</div>
+      <div class="bme-config-help" style="margin-top:10px">${_escHtml(t("authority.diagnostics.recentArtifacts"))}</div>
       ${authorityArtifactsHtml}
       ${ps.authorityRepairError ? `<div class="bme-config-help" style="margin-top:6px;color:#e74c3c">${_escHtml(ps.authorityRepairError)}</div>` : ""}
       ${ps.authorityCheckpointRestoreError ? `<div class="bme-config-help" style="margin-top:6px;color:#e74c3c">${_escHtml(ps.authorityCheckpointRestoreError)}</div>` : ""}
@@ -3728,56 +3792,66 @@ function _refreshTaskPersistence() {
       try {
         if (action === "audit") {
           if (typeof _actionHandlers.runAuthorityConsistencyAudit !== "function") return;
-          toastr.info("Authority 一致性审计中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.auditRunning"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.runAuthorityConsistencyAudit();
           if (result?.success) {
-            toastr.success(result?.audit?.summary?.label || "Authority 审计完成", "ST-BME");
+            toastr.success(
+              formatI18nValue(result?.audit?.summary, {
+                keyField: "labelKey",
+                paramsField: "labelParams",
+                fallbackField: "label",
+                fallback: t("authority.toast.auditCompleted"),
+              }) || t("authority.toast.auditCompleted"),
+              "ST-BME",
+            );
           } else {
-            toastr.warning(`Authority 审计失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.auditFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "repair-plan") {
           if (typeof _actionHandlers.runAuthorityConsistencyRepairPlan !== "function") return;
           if (authorityRepairPlan.requiresConfirmation) {
             const confirmed = globalThis.confirm?.(
-              `副本同步计划将按以下顺序执行：\n${authorityRepairPlan.steps.map((step, index) => `${index + 1}. ${step.label}`).join("\n")}\n\n其中包含从 Blob Checkpoint 恢复 SQL。此操作只适合 SQL 缺失、损坏或需要回滚时使用，确定继续？`,
+              t("authority.confirm.repairPlan", {
+                steps: authorityRepairPlan.steps.map((step, index) => `${index + 1}. ${formatI18nValue(step, { keyField: "labelKey", paramsField: "labelParams", fallbackField: "label" })}`).join("\n"),
+              }),
             );
             if (!confirmed) return;
           }
-          toastr.info("Authority 副本同步执行中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.repairRunning"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.runAuthorityConsistencyRepairPlan();
           if (result?.success) {
             const stepCount = Number(result?.repairResult?.steps?.length || result?.results?.length || 0);
             if (result?.partialFailure || result?.repairResult?.partialFailure || result?.outcome === "warning" || result?.repairResult?.outcome === "warning") {
-              toastr.warning(`Authority 副本部分同步失败；记忆图谱不受影响${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.warning(t("authority.toast.repairPartialFailure", { count: stepCount }), "ST-BME");
             } else if (result?.handoffRequired || result?.repairResult?.handoffRequired) {
-              toastr.success(`Authority 副本同步已交接异步 Job${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.success(t("authority.toast.repairHandedOff", { count: stepCount }), "ST-BME");
             } else {
-              toastr.success(`Authority 副本同步已完成${stepCount > 0 ? `（${stepCount} 步）` : ""}`, "ST-BME");
+              toastr.success(t("authority.toast.repairCompleted", { count: stepCount }), "ST-BME");
             }
           } else {
-            toastr.warning(`Authority 副本同步失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.repairFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "checkpoint") {
           if (typeof _actionHandlers.writeAuthorityCheckpoint !== "function") return;
-          toastr.info("Authority Checkpoint 写入中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.checkpointWriting"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.writeAuthorityCheckpoint();
           if (result?.success) {
-            toastr.success(`Authority Checkpoint 已写入：rev ${Number(result?.result?.checkpointRevision || result?.result?.revision || 0) || "?"}`, "ST-BME");
+            toastr.success(t("authority.toast.checkpointWritten", { revision: Number(result?.result?.checkpointRevision || result?.result?.revision || 0) || "?" }), "ST-BME");
           } else {
-            toastr.warning(`Authority Checkpoint 写入失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.checkpointWriteFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "restore") {
           if (typeof _actionHandlers.restoreAuthorityCheckpoint !== "function") return;
           const confirmed = globalThis.confirm?.(
-            `灾难恢复会用 Blob Checkpoint 覆盖 Authority SQL。\n\nSQL rev: ${authorityAuditSqlRevision}\nCheckpoint rev: ${authorityAuditBlobRevision}\n\n只有 SQL 缺失、损坏或明确需要回滚时才继续。确定执行？`,
+            t("authority.confirm.checkpointRestore", { sqlRevision: authorityAuditSqlRevision, checkpointRevision: authorityAuditBlobRevision }),
           );
           if (!confirmed) return;
-          toastr.info("Authority Checkpoint 恢复中…", "ST-BME", { timeOut: 2000 });
+          toastr.info(t("authority.toast.checkpointRestoring"), "ST-BME", { timeOut: 2000 });
           const result = await _actionHandlers.restoreAuthorityCheckpoint();
           if (result?.success) {
-            toastr.success(`Authority Checkpoint 已恢复：rev ${Number(result?.result?.revision || 0) || "?"}`, "ST-BME");
+            toastr.success(t("authority.toast.checkpointRestored", { revision: Number(result?.result?.revision || 0) || "?" }), "ST-BME");
           } else {
-            toastr.warning(`Authority Checkpoint 恢复失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.checkpointRestoreFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "rebuild-trivium") {
           if (typeof _actionHandlers.rebuildVectorIndex !== "function") return;
@@ -3787,9 +3861,9 @@ function _refreshTaskPersistence() {
           if (typeof _actionHandlers.captureAuthorityPerformanceBaseline !== "function") return;
           const result = await _actionHandlers.captureAuthorityPerformanceBaseline();
           if (result?.ok) {
-            toastr.success("Authority Perf Baseline 已捕获", "ST-BME");
+            toastr.success(t("authority.toast.baselineCaptured"), "ST-BME");
           } else {
-            toastr.warning(`Authority Perf Baseline 捕获失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.baselineCaptureFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         } else if (action === "bundle") {
           if (typeof _actionHandlers.exportDiagnosticsBundle !== "function") return;
@@ -3801,26 +3875,26 @@ function _refreshTaskPersistence() {
           if (typeof _actionHandlers.refreshAuthorityDiagnosticsArtifacts !== "function") return;
           const result = await _actionHandlers.refreshAuthorityDiagnosticsArtifacts();
           if (result?.ok) {
-            toastr.success(`已刷新 diagnostics artifact 列表（${Number(result?.entries?.length || 0)} 条）`, "ST-BME");
+            toastr.success(t("authority.toast.artifactsRefreshed", { count: Number(result?.entries?.length || 0) }), "ST-BME");
           } else {
-            toastr.warning(`diagnostics artifact 列表刷新失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.artifactsRefreshFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         }
       } catch (error) {
         toastr.error(
           action === "restore"
-            ? `Authority Checkpoint 恢复失败: ${error?.message || error}`
+            ? t("authority.toast.checkpointRestoreFailed", { error: error?.message || error })
             : action === "repair-plan"
-              ? `Authority 副本同步失败: ${error?.message || error}`
+              ? t("authority.toast.repairFailed", { error: error?.message || error })
             : action === "checkpoint"
-              ? `Authority Checkpoint 写入失败: ${error?.message || error}`
+              ? t("authority.toast.checkpointWriteFailed", { error: error?.message || error })
             : action === "rebuild-trivium"
-              ? `Authority Trivium 重建失败: ${error?.message || error}`
+              ? t("authority.toast.triviumRebuildFailed", { error: error?.message || error })
             : action === "baseline"
-              ? `Authority Perf Baseline 捕获失败: ${error?.message || error}`
+              ? t("authority.toast.baselineCaptureFailed", { error: error?.message || error })
             : action === "artifacts-refresh"
-              ? `diagnostics artifact 列表刷新失败: ${error?.message || error}`
-            : `Authority 审计失败: ${error?.message || error}`,
+              ? t("authority.toast.artifactsRefreshFailed", { error: error?.message || error })
+            : t("authority.toast.auditFailed", { error: error?.message || error }),
           "ST-BME",
         );
       } finally {
@@ -3840,35 +3914,35 @@ function _refreshTaskPersistence() {
       try {
         if (action === "copy-path") {
           await _copyTextToClipboard(artifactPath);
-          toastr.success("诊断包路径已复制", "ST-BME");
+          toastr.success(t("authority.toast.diagnosticPathCopied"), "ST-BME");
         } else if (action === "download") {
           if (typeof _actionHandlers.readAuthorityDiagnosticsArtifact !== "function") return;
           const result = await _actionHandlers.readAuthorityDiagnosticsArtifact(artifactPath);
           if (!result?.ok || !result?.payload) {
-            toastr.warning(`诊断包读取失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.diagnosticReadFailed", { error: result?.error || "unknown" }), "ST-BME");
             return;
           }
           const fileName = String(artifactPath.split("/").pop() || `st-bme-diagnostics-${artifactReason}.json`);
           _downloadJsonFile(result.payload, fileName);
-          toastr.success("诊断包已下载", "ST-BME");
+          toastr.success(t("authority.toast.diagnosticDownloaded"), "ST-BME");
         } else if (action === "delete") {
           if (typeof _actionHandlers.deleteAuthorityDiagnosticsArtifact !== "function") return;
-          const confirmed = globalThis.confirm?.(`确定删除该 diagnostics artifact？\n${artifactPath}`);
+          const confirmed = globalThis.confirm?.(t("authority.confirm.deleteArtifact", { path: artifactPath }));
           if (!confirmed) return;
           const result = await _actionHandlers.deleteAuthorityDiagnosticsArtifact(artifactPath);
           if (result?.ok) {
-            toastr.success("诊断包已删除", "ST-BME");
+            toastr.success(t("authority.toast.diagnosticDeleted"), "ST-BME");
           } else {
-            toastr.warning(`诊断包删除失败：${result?.error || "unknown"}`, "ST-BME");
+            toastr.warning(t("authority.toast.diagnosticDeleteFailed", { error: result?.error || "unknown" }), "ST-BME");
           }
         }
       } catch (error) {
         toastr.error(
           action === "copy-path"
-            ? `复制路径失败: ${error?.message || error}`
+            ? t("authority.toast.copyPathFailed", { error: error?.message || error })
             : action === "download"
-              ? `下载诊断包失败: ${error?.message || error}`
-              : `删除诊断包失败: ${error?.message || error}`,
+              ? t("authority.toast.diagnosticDownloadFailed", { error: error?.message || error })
+              : t("authority.toast.diagnosticDeleteFailed", { error: error?.message || error }),
           "ST-BME",
         );
       } finally {
@@ -3976,25 +4050,11 @@ function _ownerAvatarHsl(name) {
   return `hsl(${hue}, 55%, 42%)`;
 }
 
-function _normalizeOwnerUiType(ownerType = "") {
-  const normalized = String(ownerType || "").trim();
-  if (normalized === "user") return "user";
-  if (normalized === "character") return "character";
-  return "";
-}
-
 function _inferOwnerTypeFromKey(ownerKey = "") {
   const normalizedOwnerKey = String(ownerKey || "").trim().toLowerCase();
   if (normalizedOwnerKey.startsWith("user:")) return "user";
   if (normalizedOwnerKey.startsWith("character:")) return "character";
   return "";
-}
-
-function _getOwnerTypeDisplayLabel(ownerType = "") {
-  const normalizedType = _normalizeOwnerUiType(ownerType);
-  if (normalizedType === "user") return "用户";
-  if (normalizedType === "character") return "角色";
-  return "Owner";
 }
 
 function _buildOwnerCollisionIndex(owners = []) {
@@ -4004,7 +4064,7 @@ function _buildOwnerCollisionIndex(owners = []) {
       String(owner?.ownerName || owner?.ownerKey || "未命名角色").trim() ||
       "未命名角色";
     const nameKey = baseName.toLocaleLowerCase("zh-Hans-CN");
-    const ownerType = _normalizeOwnerUiType(owner?.ownerType) || "unknown";
+    const ownerType = normalizeOwnerUiType(owner?.ownerType) || "unknown";
     const entry = collisionIndex.get(nameKey) || {
       count: 0,
       typeCounts: new Map(),
@@ -4028,8 +4088,8 @@ function _getOwnerDisplayInfo(owner = {}, collisionIndex = null) {
     "未命名角色";
   const ownerKey = String(owner?.ownerKey || "").trim();
   const ownerType =
-    _normalizeOwnerUiType(owner?.ownerType) || _inferOwnerTypeFromKey(ownerKey);
-  const typeLabel = _getOwnerTypeDisplayLabel(ownerType);
+    normalizeOwnerUiType(owner?.ownerType) || _inferOwnerTypeFromKey(ownerKey);
+  const typeLabel = uiOwnerTypeLabel(ownerType);
   const collisionInfo =
     collisionIndex instanceof Map
       ? collisionIndex.get(baseName.toLocaleLowerCase("zh-Hans-CN")) || null
@@ -4700,7 +4760,7 @@ function _refreshDashboard() {
           .join(" · ")
       : "暂无恢复记录",
   );
-  _setText("bme-status-last-extract", extractionStatus.meta || "尚未执行提取");
+  _setText("bme-status-last-extract", formatUiStatusMeta(extractionStatus) || t("status.initial.extraction.detail"));
   _setText(
     "bme-status-last-persist",
     _formatDashboardPersistMeta(loadInfo, lastBatchStatus),
@@ -4710,9 +4770,9 @@ function _refreshDashboard() {
     _formatBackgroundMaintenanceSummary(loadInfo?.backgroundMaintenance, lastBatchStatus),
   );
   _refreshPersistenceRepairUi(loadInfo, lastBatchStatus);
-  _setText("bme-status-last-vector", vectorStatus.meta || "尚未执行向量任务");
+  _setText("bme-status-last-vector", formatUiStatusMeta(vectorStatus) || t("status.initial.vector.detail"));
   _setText("bme-status-authority-job", authorityJobUi.detail || authorityJobUi.label);
-  _setText("bme-status-last-recall", recallStatus.meta || "尚未执行召回");
+  _setText("bme-status-last-recall", formatUiStatusMeta(recallStatus) || t("status.initial.recall.detail"));
 
   _refreshCognitionDashboard(graph);
   _renderRecentList("bme-recent-extract", _getLastExtract?.() || []);
@@ -5252,7 +5312,7 @@ function _renderRecentList(elementId, items) {
 
     const badge = document.createElement("span");
     badge.className = `bme-type-badge ${_safeCssToken(item.type)}`;
-    badge.textContent = _typeLabel(item.type);
+    badge.textContent = uiTypeLabel(item.type);
     li.appendChild(badge);
 
     const content = document.createElement("div");
@@ -5363,11 +5423,11 @@ function _refreshMemoryBrowser() {
 
     const badge = document.createElement("span");
     badge.className = `bme-type-badge ${_safeCssToken(node.type)}`;
-    badge.textContent = _typeLabel(node.type);
+    badge.textContent = uiTypeLabel(node.type);
 
     const scopeChip = document.createElement("span");
     scopeChip.className = "bme-memory-scope-chip";
-    scopeChip.textContent = buildScopeBadgeText(node.scope);
+    scopeChip.textContent = uiScopeBadgeText(node.scope);
 
     head.append(badge, scopeChip);
 
@@ -6046,9 +6106,9 @@ function _describeStoryTimeSpanDisplay(storyTimeSpan = {}) {
       : normalized.startLabel || normalized.endLabel || "";
 
   if (!label) {
-    return normalized.mixed ? "混合时间" : "";
+    return normalized.mixed ? t("storyTime.mixedTime") : "";
   }
-  return normalized.mixed ? `${label} · 混合` : label;
+  return normalized.mixed ? `${label} · ${t("storyTime.mixed")}` : label;
 }
 
 function _describeNodeStoryTimeDisplay(node = {}) {
@@ -6178,11 +6238,11 @@ function _buildNodeDetailEditorFragment(raw, { idPrefix = "bme-detail" } = {}) {
   const fragment = document.createDocumentFragment();
   const inputId = (suffix) => `${idPrefix}-${suffix}`;
 
-  _appendNodeDetailReadOnly(fragment, "类型", _typeLabel(raw.type));
+  _appendNodeDetailReadOnly(fragment, "类型", uiTypeLabel(raw.type));
   _appendNodeDetailReadOnly(
     fragment,
     "作用域",
-    buildScopeBadgeText(raw.scope),
+    uiScopeBadgeText(raw.scope),
   );
   _appendNodeDetailReadOnly(fragment, "ID", raw.id || "—");
   _appendNodeDetailReadOnly(
@@ -6198,7 +6258,7 @@ function _buildNodeDetailEditorFragment(raw, { idPrefix = "bme-detail" } = {}) {
       `${scope.ownerType || "unknown"} / ${scope.ownerName || scope.ownerId || "—"}`,
     );
   }
-  const regionLine = buildRegionLine(scope);
+  const regionLine = uiBuildRegionLine(scope);
   if (regionLine) {
     _appendNodeDetailReadOnly(fragment, "地区", regionLine);
   }
@@ -7870,6 +7930,10 @@ function _refreshConfigTab() {
     settings.recallCardUserInputDisplayMode ?? "beautify_only",
   );
   _setInputValue(
+    "bme-setting-ui-locale",
+    settings.uiLocale || "auto",
+  );
+  _setInputValue(
     "bme-setting-notice-display-mode",
     settings.noticeDisplayMode ?? "normal",
   );
@@ -8201,6 +8265,13 @@ function _bindConfigControls() {
   bindCheckbox("bme-setting-debug-logging-enabled", (checked) => {
     _patchSettings({ debugLoggingEnabled: checked });
   });
+  const uiLocaleEl = document.getElementById("bme-setting-ui-locale");
+  if (uiLocaleEl && uiLocaleEl.dataset.bmeBound !== "true") {
+    uiLocaleEl.addEventListener("change", () => {
+      _patchSettings({ uiLocale: uiLocaleEl.value || "auto" });
+    });
+    uiLocaleEl.dataset.bmeBound = "true";
+  }
   bindCheckbox("bme-setting-graph-native-force-disable", (checked) => {
     _patchSettings({ graphNativeForceDisable: checked });
   });
@@ -14269,9 +14340,9 @@ function _refreshRuntimeStatus() {
   const runtimeStatus = _getRuntimeStatus?.() || {};
   const graphPersistence = _getGraphPersistenceSnapshot?.() || {};
   const upgradeState = graphPersistence.authorityUpgradeState || {};
-  const text = runtimeStatus.text || "待命";
-  const meta = runtimeStatus.meta || "准备就绪";
-  const upgradeText = upgradeState.text || graphPersistence.authorityUpgradeText || "";
+  const text = formatUiStatusText(runtimeStatus) || t("status.idle");
+  const meta = formatUiStatusMeta(runtimeStatus) || t("status.initial.runtime.detail");
+  const upgradeText = formatUiStatusText(upgradeState) || graphPersistence.authorityUpgradeText || "";
   const displayMeta = upgradeText ? `${meta} · ${upgradeText}` : meta;
   _setText("bme-status-text", text);
   _setText("bme-status-meta", displayMeta);
@@ -14293,7 +14364,7 @@ function _syncFloatingBallWithRuntimeStatus() {
   const status = _getRuntimeStatus?.() || {};
   const level = String(status.level || "idle");
   const fabStatus = level === "info" ? "idle" : level;
-  updateFloatingBallStatus(fabStatus, status.text || "BME 记忆图谱");
+  updateFloatingBallStatus(fabStatus, formatUiStatusText(status) || t("panel.entry.floatingTooltip"));
 }
 
 function _patchSettings(patch = {}, options = {}) {
@@ -14303,6 +14374,10 @@ function _patchSettings(patch = {}, options = {}) {
   if (options.refreshTaskWorkspace) _refreshTaskProfileWorkspace(settings);
   if (options.refreshTheme)
     _highlightThemeChoice(settings.panelTheme || "crimson");
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "uiLocale")) {
+    _applyPanelLocale(settings);
+    _refreshRuntimeStatus();
+  }
   _refreshCloudStorageModeUi(settings);
   _refreshNativeRolloutStatusUi(settings);
   return settings;
@@ -14798,18 +14873,7 @@ function _matchesMemoryFilter(node, filter = "all") {
 }
 
 function _buildScopeMetaText(node) {
-  const scope = normalizeMemoryScope(node?.scope);
-  const parts = [];
-  if (scope.layer === "pov") {
-    parts.push(
-      `${scope.ownerType === "user" ? "用户 POV" : "角色 POV"}: ${scope.ownerName || scope.ownerId || "未命名"}`,
-    );
-  }
-  const regionLine = buildRegionLine(scope);
-  if (regionLine) parts.push(regionLine);
-  const storyTime = _describeNodeStoryTimeDisplay(node);
-  if (storyTime) parts.push(`剧情时间: ${storyTime}`);
-  return parts.join(" · ");
+  return uiBuildScopeMetaText(node);
 }
 
 /** 记忆列表等指标：避免浮点误差打出 9.499999999999998 */
@@ -14831,20 +14895,6 @@ function _formatMemoryInt(value, fallback = 0) {
       : Number(value);
   if (!Number.isFinite(x)) return "—";
   return String(Math.trunc(x));
-}
-
-function _typeLabel(type) {
-  const map = {
-    character: "角色",
-    event: "事件",
-    location: "地点",
-    thread: "主线",
-    rule: "规则",
-    synopsis: "全局概要（旧）",
-    reflection: "反思",
-    pov_memory: "主观记忆",
-  };
-  return map[type] || type || "—";
 }
 
 function _getNodeSnippet(node) {

@@ -4,6 +4,18 @@
 
 This page is split out from the [README](../../README.en.md) as the main ST-BME user configuration reference, preserving setting names, defaults, and tables for quick lookup by feature.
 
+### Interface language
+
+`Interface Language` only affects ST-BME frontend UI: the panel, menu entries, floating button, status messages, Toasts, recall cards, and graph system labels.
+
+Options:
+
+- `Auto`: follows the SillyTavern / browser language when available, otherwise falls back to Chinese.
+- `Simplified Chinese`: forces the Chinese UI.
+- `English`: forces the English UI.
+
+This setting **does not** translate chat content, user input, AI replies, memory nodes, recall injection text, or prompt construction. Switching the interface language does not change the memory graph or model behavior.
+
 ### Memory LLM
 
 The memory LLM is used for:

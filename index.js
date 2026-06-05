@@ -1576,10 +1576,33 @@ const GRAPH_LOAD_RETRY_DELAYS_MS = [120, 450, 1200, 2500];
 const AUTO_EXTRACTION_DEFER_RETRY_DELAYS_MS = [120, 320, 800, 1600, 2800];
 const AUTO_EXTRACTION_HOST_SETTLE_MS = 120;
 const AUTHORITY_RECENT_JOBS_LIMIT = 8;
-let runtimeStatus = createUiStatus("待命", "准备就绪", "idle");
-let lastExtractionStatus = createUiStatus("待命", "尚未执行提取", "idle");
-let lastVectorStatus = createUiStatus("待命", "尚未执行向量任务", "idle");
-let lastRecallStatus = createUiStatus("待命", "尚未执行召回", "idle");
+function createInitialUiStatus(kind = "runtime") {
+  const metaKey = kind === "extraction"
+    ? "status.initial.extraction.detail"
+    : kind === "vector"
+      ? "status.initial.vector.detail"
+      : kind === "recall"
+        ? "status.initial.recall.detail"
+        : "status.initial.runtime.detail";
+  const metaFallback = kind === "extraction"
+    ? "尚未执行提取"
+    : kind === "vector"
+      ? "尚未执行向量任务"
+      : kind === "recall"
+        ? "尚未执行召回"
+        : "准备就绪";
+  return createUiStatus({
+    textKey: "status.idle",
+    textFallback: "待命",
+    metaKey,
+    metaFallback,
+    level: "idle",
+  });
+}
+let runtimeStatus = createInitialUiStatus("runtime");
+let lastExtractionStatus = createInitialUiStatus("extraction");
+let lastVectorStatus = createInitialUiStatus("vector");
+let lastRecallStatus = createInitialUiStatus("recall");
 let graphPersistenceState = createGraphPersistenceState();
 let authorityCapabilityState = createDefaultAuthorityCapabilityState();
 let authorityBrowserState = createAuthorityBrowserState();
@@ -4462,53 +4485,88 @@ function createGraphLoadUiStatus() {
   switch (state) {
     case GRAPH_LOAD_STATES.NO_CHAT:
       if (hasMeaningfulRuntimeGraphForChat(chatId)) {
-        return createUiStatus(
-          "图谱已加载",
-          chatId
+        return createUiStatus({
+          textKey: "status.graphLoad.title",
+          textFallback: "图谱已加载",
+          metaKey: chatId
+            ? "status.graphLoad.noHostChat.detail"
+            : "status.graphLoad.noHostChatNoId.detail",
+          metaParams: { chatId },
+          metaFallback: chatId
             ? `已读取聊天 ${chatId} 的图谱；宿主当前聊天 ID 暂不可用，维护操作会使用图谱身份继续`
             : "已读取当前图谱；宿主当前聊天 ID 暂不可用，维护操作会使用图谱身份继续",
-          "warning",
-        );
+          level: "warning",
+        });
       }
-      return createUiStatus("待命", "当前尚未进入聊天", "idle");
+      return createUiStatus({
+        textKey: "status.idle",
+        textFallback: "待命",
+        metaKey: "status.graphLoad.noChat.detail",
+        metaFallback: "当前尚未进入聊天",
+        level: "idle",
+      });
     case GRAPH_LOAD_STATES.LOADING:
       if (hasMeaningfulRuntimeGraphForChat(chatId)) {
-        return createUiStatus(
-          "图谱已暂载",
-          chatId
+        return createUiStatus({
+          textKey: "status.graphLoad.temp.title",
+          textFallback: "图谱已暂载",
+          metaKey: chatId
+            ? "status.graphLoad.loadingTemp.detail"
+            : "status.graphLoad.loadingTempNoChat.detail",
+          metaParams: { chatId },
+          metaFallback: chatId
             ? `已读到聊天 ${chatId} 的临时图谱，正在确认本地存储`
             : "已读到临时图谱，正在确认本地存储",
-          "warning",
-        );
+          level: "warning",
+        });
       }
-      return createUiStatus(
-        "图谱加载中",
-        chatId
+      return createUiStatus({
+        textKey: "status.loading",
+        textFallback: "图谱加载中",
+        metaKey: chatId
+          ? "status.graphLoad.loading.detail"
+          : "status.graphLoad.loadingNoChat.detail",
+        metaParams: { chatId },
+        metaFallback: chatId
           ? `正在读取聊天 ${chatId} 的 IndexedDB 图谱`
           : "正在等待聊天上下文准备完成",
-        "running",
-      );
+        level: "running",
+      });
     case GRAPH_LOAD_STATES.SHADOW_RESTORED:
-      return createUiStatus(
-        "图谱临时恢复",
-        "已从本次会话临时恢复，正在等待正式聊天元数据",
-        "warning",
-      );
+      return createUiStatus({
+        textKey: "status.graphLoad.shadow.title",
+        textFallback: "图谱临时恢复",
+        metaKey: "status.graphLoad.shadow.detail",
+        metaFallback: "已从本次会话临时恢复，正在等待正式聊天元数据",
+        level: "warning",
+      });
     case GRAPH_LOAD_STATES.EMPTY_CONFIRMED:
-      return createUiStatus(
-        "图谱待命",
-        chatId ? "当前聊天还没有图谱" : "当前尚未进入聊天",
-        "idle",
-      );
+      return createUiStatus({
+        textKey: "status.graphLoad.waiting.title",
+        textFallback: "图谱待命",
+        metaKey: chatId
+          ? "status.graphLoad.empty.detail"
+          : "status.graphLoad.noChat.detail",
+        metaFallback: chatId ? "当前聊天还没有图谱" : "当前尚未进入聊天",
+        level: "idle",
+      });
     case GRAPH_LOAD_STATES.BLOCKED:
-      return createUiStatus(
-        "图谱加载受阻",
-        "当前图谱未能完成 IndexedDB 确认，请稍后重试",
-        "warning",
-      );
+      return createUiStatus({
+        textKey: "status.graphLoad.blocked.title",
+        textFallback: "图谱加载受阻",
+        metaKey: "status.graphLoad.blocked.detail",
+        metaFallback: "当前图谱未能完成 IndexedDB 确认，请稍后重试",
+        level: "warning",
+      });
     case GRAPH_LOAD_STATES.LOADED:
     default:
-      return createUiStatus("待命", "已加载聊天图谱，等待下一次任务", "idle");
+      return createUiStatus({
+        textKey: "status.idle",
+        textFallback: "待命",
+        metaKey: "status.graphLoad.loaded.detail",
+        metaFallback: "已加载聊天图谱，等待下一次任务",
+        level: "idle",
+      });
   }
 }
 
@@ -13024,19 +13082,19 @@ function restoreRuntimeUiState(snapshot = {}) {
     ? snapshot.lastRecalledItems.map((item) => ({ ...item }))
     : [];
   runtimeStatus = {
-    ...createUiStatus("待命", "准备就绪", "idle"),
+    ...createInitialUiStatus("runtime"),
     ...(snapshot.runtimeStatus || {}),
   };
   lastExtractionStatus = {
-    ...createUiStatus("待命", "尚未执行提取", "idle"),
+    ...createInitialUiStatus("extraction"),
     ...(snapshot.lastExtractionStatus || {}),
   };
   lastVectorStatus = {
-    ...createUiStatus("待命", "尚未执行向量任务", "idle"),
+    ...createInitialUiStatus("vector"),
     ...(snapshot.lastVectorStatus || {}),
   };
   lastRecallStatus = {
-    ...createUiStatus("待命", "尚未执行召回", "idle"),
+    ...createInitialUiStatus("recall"),
     ...(snapshot.lastRecallStatus || {}),
   };
   if (snapshot.graphPersistenceState) {

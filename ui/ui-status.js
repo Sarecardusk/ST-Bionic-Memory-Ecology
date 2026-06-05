@@ -4,6 +4,7 @@
 import { sanitizePlannerMessageText } from "../runtime/planner-tag-utils.js";
 import { AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT } from "../maintenance/authority-diagnostics-bundle.js";
 import { createAuthorityUpgradeState } from "../runtime/authority-upgrade-state.js";
+import { createI18nStatus, t } from "../i18n/index.js";
 
 // ═══════════════════════════════════════════════════════════
 // 常量
@@ -20,9 +21,23 @@ export const BATCH_STAGE_SEVERITY = {
 // UI 状态工厂
 // ═══════════════════════════════════════════════════════════
 
-export function createUiStatus(text = "待命", meta = "", level = "idle") {
+export function createUiStatus(text = "", meta = "", level = "idle") {
+  if (text && typeof text === "object") {
+    return createI18nStatus({
+      ...(text || {}),
+      level: text.level || level || "idle",
+    });
+  }
+  if (!text && !meta) {
+    return createI18nStatus({
+      textKey: "status.idle",
+      textFallback: "Idle",
+      metaFallback: "",
+      level,
+    });
+  }
   return {
-    text: String(text || "待命"),
+    text: String(text || "Idle"),
     meta: String(meta || ""),
     level,
     updatedAt: Date.now(),
@@ -33,7 +48,7 @@ export function createGraphPersistenceState() {
   return {
     loadState: "no-chat",
     chatId: "",
-    reason: "当前尚未进入聊天",
+    reason: t("status.noChat", {}, { fallback: "No chat is currently open" }),
     attemptIndex: 0,
     revision: 0,
     lastPersistedRevision: 0,
@@ -146,8 +161,8 @@ export function createGraphPersistenceState() {
     authorityDegradedReason: "",
     authorityUpgradeState: createAuthorityUpgradeState(),
     authorityUpgradeMode: "standalone",
-    authorityUpgradeText: "纯前端模式",
-    authorityUpgradeMeta: "未检测到可用服务端增强，BME 将继续本地运行",
+    authorityUpgradeText: "Frontend-only mode",
+    authorityUpgradeMeta: "No server-side enhancement detected; BME will continue running locally",
     authorityUpgradeLevel: "idle",
     authorityUpgradeReady: false,
     authorityMigrationState: "idle",
@@ -439,15 +454,15 @@ export function normalizeStageNoticeLevel(level = "info") {
 export function getStageNoticeTitle(stage) {
   switch (stage) {
     case "extraction":
-      return "ST-BME 提取";
+      return t("stageNotice.title.extraction");
     case "vector":
-      return "ST-BME 向量";
+      return t("stageNotice.title.vector");
     case "recall":
-      return "ST-BME 召回";
+      return t("stageNotice.title.recall");
     case "history":
-      return "ST-BME 历史恢复";
+      return t("stageNotice.title.history");
     default:
-      return "ST-BME";
+      return t("stageNotice.title.generic");
   }
 }
 
