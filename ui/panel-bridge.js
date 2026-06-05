@@ -252,6 +252,6 @@ export async function initializePanelBridgeController(runtime) {
       "[ST-BME] 操控面板加载失败（核心功能不受影响）:",
       panelError,
     );
-    globalThis.toastr?.error?.("记忆图谱面板预加载失败，可稍后重试点击菜单", "ST-BME");
+    globalThis.toastr?.error?.(t("panel.entry.preloadFailed"), "ST-BME");
   }
 }

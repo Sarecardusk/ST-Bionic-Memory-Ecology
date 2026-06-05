@@ -5,6 +5,7 @@
 export default {
   "common.appName": "ST-BME",
   "common.cancel": "取消",
+  "common.clauseSeparator": "；",
   "common.close": "关闭",
   "common.confirm": "确认",
   "common.delete": "删除",
@@ -45,6 +46,11 @@ export default {
   "panel.entry.menuLabel": "记忆图谱",
   "panel.entry.openPanelAction": "打开面板",
   "panel.entry.openFailed": "记忆图谱面板加载失败，请查看控制台报错",
+  "panel.entry.preloadFailed": "记忆图谱面板预加载失败，可稍后重试点击菜单",
+  "panel.appearance.locale.subtitle": "只切换 BME 前端界面，不翻译聊天内容、记忆节点或提示词。",
+  "panel.appearance.locale.title": "界面语言",
+  "panel.appearance.theme.subtitle": "选择最适合当前故事氛围和阅读习惯的面板风格。",
+  "panel.appearance.theme.title": "面板主题",
   "panel.title": "ST-BME 记忆图谱",
   "panel.header.fabToggleTitle": "显示/隐藏悬浮球",
   "panel.header.themePickerTitle": "切换主题",
@@ -214,4 +220,12 @@ export default {
   "status.initial.recall.detail": "尚未执行召回",
   "status.initial.runtime.detail": "准备就绪",
   "status.initial.vector.detail": "尚未执行向量任务",
+
+  "llm.providerHelp.auto": "留空时复用当前聊天模型。支持自动识别 OpenAI 兼容渠道、Anthropic Claude、Google AI Studio / Gemini；填写完整 endpoint 时会自动规整为可复用的 base URL。",
+  "llm.providerHelp.baseUrl": "基础地址：{baseUrl}",
+  "llm.providerHelp.customProvider": "未识别为特定渠道，将按自定义 OpenAI 兼容接口处理",
+  "llm.providerHelp.knownProvider": "已识别渠道：{provider}",
+  "llm.providerHelp.modelFetchUnsupported": "该渠道暂不支持自动拉取模型，请手动填写模型名",
+  "llm.providerHelp.normalizedUrl": "规范化地址：{apiUrl}",
+  "llm.providerHelp.transport": "请求通道：{transport}",
 };

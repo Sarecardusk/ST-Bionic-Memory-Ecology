@@ -93,8 +93,7 @@ function _refreshMemoryLlmProviderHelp(urlValue = null) {
   ).trim();
 
   if (!rawUrl) {
-    helpEl.textContent =
-      "留空时复用当前聊天模型。支持自动识别 OpenAI 兼容渠道、Anthropic Claude、Google AI Studio / Gemini；填写完整 endpoint 时会自动规整为可复用的 base URL。";
+    helpEl.textContent = t("llm.providerHelp.auto");
     return;
   }
 
@@ -102,24 +101,26 @@ function _refreshMemoryLlmProviderHelp(urlValue = null) {
   const parts = [];
 
   if (resolved.isKnownProvider) {
-    parts.push(`已识别渠道：${resolved.providerLabel || resolved.providerId || "未知渠道"}`);
+    parts.push(t("llm.providerHelp.knownProvider", {
+      provider: resolved.providerLabel || resolved.providerId || t("common.unknown"),
+    }));
   } else {
-    parts.push("未识别为特定渠道，将按自定义 OpenAI 兼容接口处理");
+    parts.push(t("llm.providerHelp.customProvider"));
   }
 
   if (resolved.transportLabel) {
-    parts.push(`请求通道：${resolved.transportLabel}`);
+    parts.push(t("llm.providerHelp.transport", { transport: resolved.transportLabel }));
   }
 
   if (resolved.apiUrl && resolved.apiUrl !== rawUrl) {
-    parts.push(`规范化地址：${resolved.apiUrl}`);
+    parts.push(t("llm.providerHelp.normalizedUrl", { apiUrl: resolved.apiUrl }));
   }
 
   if (resolved.supportsModelFetch !== true) {
-    parts.push("该渠道暂不支持自动拉取模型，请手动填写模型名");
+    parts.push(t("llm.providerHelp.modelFetchUnsupported"));
   }
 
-  helpEl.textContent = parts.join("；");
+  helpEl.textContent = parts.join(t("common.clauseSeparator"));
 }
 
 function getDefaultPrompts() {
@@ -7896,6 +7897,10 @@ function _refreshConfigTab() {
     settings.recallCardUserInputDisplayMode ?? "beautify_only",
   );
   _setInputValue(
+    "bme-setting-ui-locale",
+    settings.uiLocale || "auto",
+  );
+  _setInputValue(
     "bme-setting-notice-display-mode",
     settings.noticeDisplayMode ?? "normal",
   );
@@ -8227,6 +8232,13 @@ function _bindConfigControls() {
   bindCheckbox("bme-setting-debug-logging-enabled", (checked) => {
     _patchSettings({ debugLoggingEnabled: checked });
   });
+  const uiLocaleEl = document.getElementById("bme-setting-ui-locale");
+  if (uiLocaleEl && uiLocaleEl.dataset.bmeBound !== "true") {
+    uiLocaleEl.addEventListener("change", () => {
+      _patchSettings({ uiLocale: uiLocaleEl.value || "auto" });
+    });
+    uiLocaleEl.dataset.bmeBound = "true";
+  }
   bindCheckbox("bme-setting-graph-native-force-disable", (checked) => {
     _patchSettings({ graphNativeForceDisable: checked });
   });

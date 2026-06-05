@@ -132,15 +132,23 @@ function buildDocument({ includeExtensionsMenu = true } = {}) {
   return document;
 }
 
-function buildRuntime(document) {
+function buildRuntime(document, initialSettings = {}) {
+  let settings = { ...initialSettings };
   const calls = { opened: 0, hidden: [], css: [] };
-  const panelModule = { openPanel: () => { calls.opened += 1; } };
+  const panelModule = {
+    openPanel: () => { calls.opened += 1; },
+    updatePanelLocale: (localeMode) => { calls.updatedLocale = localeMode; },
+  };
   return {
     calls,
     console,
     document,
     getPanelModule: () => panelModule,
-    getSettings: () => ({}),
+    getSettings: () => settings,
+    updateSettings: (patch) => {
+      settings = { ...settings, ...patch };
+      return settings;
+    },
     $: (selector) => ({
       hide: () => calls.hidden.push(selector),
       css: (name, value) => calls.css.push([selector, name, value]),
@@ -166,6 +174,26 @@ const { initializePanelBridgeController } = await import("../ui/panel-bridge.js"
   await wandEntry.click();
   assert.equal(runtime.calls.opened, 1, "magic-wand entry opens BME panel");
   assert.ok(runtime.calls.hidden.includes("#extensionsMenu"), "magic-wand entry closes extensions menu");
+}
+
+{
+  const document = buildDocument();
+  const runtime = buildRuntime(document, { uiLocale: "en-US" });
+
+  await initializePanelBridgeController(runtime);
+  const optionsEntry = document.getElementById("option_st_bme_panel");
+  const wandEntry = document.getElementById("st_bme_extensions_menu_entry");
+  const fab = document.getElementById("bme-floating-ball");
+
+  assert.match(optionsEntry.innerHTML, /Memory Graph/, "legacy menu entry follows English locale");
+  assert.match(wandEntry.innerHTML, /Memory Graph/, "magic-wand entry follows English locale");
+  assert.match(fab.innerHTML, /BME Memory Graph/, "floating bootstrap follows English locale");
+
+  runtime.updateSettings({ uiLocale: "zh-CN" });
+  await initializePanelBridgeController(runtime);
+  assert.match(optionsEntry.innerHTML, /记忆图谱/, "legacy menu entry refreshes when locale changes");
+  assert.match(wandEntry.innerHTML, /记忆图谱/, "magic-wand entry refreshes when locale changes");
+  assert.match(fab.innerHTML, /BME 记忆图谱/, "floating bootstrap refreshes when locale changes");
 }
 
 {

@@ -5,6 +5,7 @@
 export default {
   "common.appName": "ST-BME",
   "common.cancel": "Cancel",
+  "common.clauseSeparator": "; ",
   "common.close": "Close",
   "common.confirm": "Confirm",
   "common.delete": "Delete",
@@ -45,6 +46,11 @@ export default {
   "panel.entry.menuLabel": "Memory Graph",
   "panel.entry.openPanelAction": "Open Panel",
   "panel.entry.openFailed": "Memory Graph panel failed to load. Check the console for details.",
+  "panel.entry.preloadFailed": "Memory Graph panel preloading failed. Try opening it from the menu again later.",
+  "panel.appearance.locale.subtitle": "Only changes the BME frontend UI. It does not translate chat content, memory nodes, or prompts.",
+  "panel.appearance.locale.title": "Interface Language",
+  "panel.appearance.theme.subtitle": "Choose the panel style that best fits the current story mood and reading habits.",
+  "panel.appearance.theme.title": "Panel Theme",
   "panel.title": "ST-BME Memory Graph",
   "panel.header.fabToggleTitle": "Show/Hide FAB",
   "panel.header.themePickerTitle": "Switch Theme",
@@ -214,4 +220,12 @@ export default {
   "status.initial.recall.detail": "Recall has not run yet",
   "status.initial.runtime.detail": "Ready",
   "status.initial.vector.detail": "Vector tasks have not run yet",
+
+  "llm.providerHelp.auto": "Leave blank to reuse the current chat model. BME can detect OpenAI-compatible endpoints, Anthropic Claude, and Google AI Studio / Gemini; full endpoints are normalized into reusable base URLs.",
+  "llm.providerHelp.baseUrl": "Base URL: {baseUrl}",
+  "llm.providerHelp.customProvider": "Provider not recognized; treating it as a custom OpenAI-compatible endpoint",
+  "llm.providerHelp.knownProvider": "Detected provider: {provider}",
+  "llm.providerHelp.modelFetchUnsupported": "This provider cannot fetch models automatically yet; enter the model name manually.",
+  "llm.providerHelp.normalizedUrl": "Normalized URL: {apiUrl}",
+  "llm.providerHelp.transport": "Transport: {transport}",
 };
