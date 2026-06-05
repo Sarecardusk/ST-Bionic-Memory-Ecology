@@ -11,8 +11,7 @@
       <button
         class="bme-fab-toggle-btn"
         id="bme-fab-toggle-btn"
-        title="显示/隐藏悬浮球"
-        data-i18n-title="panel.header.fabToggleTitle"
+        title="显示/隐藏悬浮球" data-i18n-title="panel.header.fabToggleTitle"
         type="button"
       >
         <i class="fa-solid fa-circle-dot"></i>
@@ -21,8 +20,7 @@
         <button
           class="bme-theme-picker-btn"
           id="bme-theme-picker-btn"
-          title="切换主题"
-        data-i18n-title="panel.header.themePickerTitle"
+          title="切换主题" data-i18n-title="panel.header.themePickerTitle"
           type="button"
         >
           <i class="fa-solid fa-palette"></i>
@@ -57,8 +55,7 @@
       <button
         class="bme-panel-close"
         id="bme-panel-close"
-        title="关闭"
-        data-i18n-title="common.close"
+        title="关闭" data-i18n-title="common.close"
         type="button"
       >
         <i class="fa-solid fa-xmark"></i>
@@ -238,7 +235,7 @@
             <div class="bme-config-card">
               <div class="bme-section-header" data-i18n="panel.dashboard.runStatus">运行状态</div>
               <div class="bme-config-row">
-                <label>当前聊天</label>
+                <label data-i18n="panel.dashboard.label.currentChat">当前聊天</label>
                 <div class="bme-recent-meta" id="bme-status-chat-id">—</div>
               </div>
               <div class="bme-config-row">
@@ -329,35 +326,35 @@
                 <div class="bme-action-grid">
                   <button class="bme-action-btn" id="bme-act-extract" type="button">
                     <i class="fa-solid fa-rotate"></i>
-                    <span>重新提取</span>
+                    <span data-i18n="panel.actions.reExtract">重新提取</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-compress" type="button">
                     <i class="fa-solid fa-compress"></i>
-                    <span>手动压缩</span>
+                    <span data-i18n="panel.actions.manualCompress">手动压缩</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-synopsis" type="button">
                     <i class="fa-solid fa-scroll"></i>
-                    <span>生成小总结</span>
+                    <span data-i18n="panel.actions.generateSynopsis">生成小总结</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-summary-rollup" type="button">
                     <i class="fa-solid fa-layer-group"></i>
-                    <span>执行总结折叠</span>
+                    <span data-i18n="panel.actions.summaryRollup">执行总结折叠</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-summary-rebuild" type="button">
                     <i class="fa-solid fa-sitemap"></i>
-                    <span>重建总结状态</span>
+                    <span data-i18n="panel.actions.rebuildSummaryState">重建总结状态</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-evolve" type="button">
                     <i class="fa-solid fa-dna"></i>
-                    <span>强制进化</span>
+                    <span data-i18n="panel.actions.forceEvolve">强制进化</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-sleep" type="button">
                     <i class="fa-solid fa-moon"></i>
-                    <span>执行遗忘</span>
+                    <span data-i18n="panel.actions.executeSleep">执行遗忘</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-undo-maintenance" type="button">
                     <i class="fa-solid fa-rotate-left"></i>
-                    <span>撤销最近维护</span>
+                    <span data-i18n="panel.actions.undoMaintenance">撤销最近维护</span>
                   </button>
                 </div>
                 <div class="bme-action-group-extra">
@@ -380,7 +377,7 @@
                         type="number"
                         min="0"
                         max="999999"
-                        placeholder="留空 = 当前重提"
+                        placeholder="留空 = 当前重提" data-i18n-placeholder="panel.actions.extractStartPlaceholder"
                       />
                     </div>
                     <div class="bme-config-row">
@@ -391,7 +388,7 @@
                         type="number"
                         min="0"
                         max="999999"
-                        placeholder="留空 = 到最新"
+                        placeholder="留空 = 到最新" data-i18n-placeholder="panel.actions.extractEndPlaceholder"
                       />
                     </div>
                   </div>
@@ -413,15 +410,15 @@
                 <div class="bme-action-grid">
                   <button class="bme-action-btn" id="bme-act-vector-rebuild" type="button">
                     <i class="fa-solid fa-database"></i>
-                    <span>重建向量</span>
+                    <span data-i18n="panel.actions.rebuildVector">重建向量</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-vector-range" type="button">
                     <i class="fa-solid fa-layer-group"></i>
-                    <span>范围重建</span>
+                    <span data-i18n="panel.actions.rangeRebuild">范围重建</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-vector-reembed" type="button">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
-                    <span>直连重嵌</span>
+                    <span data-i18n="panel.actions.directReembed">直连重嵌</span>
                   </button>
                 </div>
                 <div class="bme-action-group-extra">
@@ -462,15 +459,15 @@
                 <div class="bme-action-grid">
                   <button class="bme-action-btn" id="bme-act-export" type="button">
                     <i class="fa-solid fa-file-export"></i>
-                    <span>导出图谱</span>
+                    <span data-i18n="panel.actions.exportGraph">导出图谱</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-import" type="button">
                     <i class="fa-solid fa-file-import"></i>
-                    <span>导入图谱</span>
+                    <span data-i18n="panel.actions.importGraph">导入图谱</span>
                   </button>
                   <button class="bme-action-btn danger" id="bme-act-rebuild" type="button">
                     <i class="fa-solid fa-triangle-exclamation"></i>
-                    <span>重建图谱</span>
+                    <span data-i18n="panel.actions.rebuildGraph">重建图谱</span>
                   </button>
                 </div>
               </div>
@@ -483,27 +480,27 @@
                 <div class="bme-action-grid">
                   <button class="bme-action-btn" id="bme-act-retry-persist" type="button">
                     <i class="fa-solid fa-arrows-rotate"></i>
-                    <span>重试持久化</span>
+                    <span data-i18n="panel.actions.retryPersist">重试持久化</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-probe-graph-load" type="button">
                     <i class="fa-solid fa-satellite-dish"></i>
-                    <span>重新探测图谱</span>
+                    <span data-i18n="panel.actions.reprobeGraph">重新探测图谱</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-rebuild-luker-cache" type="button">
                     <i class="fa-solid fa-database"></i>
-                    <span>重建本地缓存</span>
+                    <span data-i18n="panel.actions.rebuildLocalCache">重建本地缓存</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-repair-luker-sidecar" type="button">
                     <i class="fa-solid fa-screwdriver-wrench"></i>
-                    <span>修复主 Sidecar</span>
+                    <span data-i18n="panel.actions.repairSidecar">修复主 Sidecar</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-compact-luker-sidecar" type="button">
                     <i class="fa-solid fa-box-archive"></i>
-                    <span>压实主 Sidecar</span>
+                    <span data-i18n="panel.actions.compactSidecar">压实主 Sidecar</span>
                   </button>
                   <button class="bme-action-btn" id="bme-act-export-diagnostics" type="button">
                     <i class="fa-solid fa-file-waveform"></i>
-                    <span>导出诊断包</span>
+                    <span data-i18n="panel.actions.exportDiagnostics">导出诊断包</span>
                   </button>
                 </div>
                 <div class="bme-action-group-extra">
@@ -707,8 +704,7 @@
                   class="bme-detail-action-btn bme-detail-action-danger"
                   id="bme-detail-delete"
                   type="button"
-                  title="删除节点"
-                  data-i18n-title="panel.nodeDetail.delete"
+                  title="删除节点" data-i18n-title="panel.nodeDetail.delete"
                 >
                   <i class="fa-solid fa-trash"></i>
                 </button>
@@ -716,8 +712,7 @@
                   class="bme-detail-action-btn"
                   id="bme-detail-save"
                   type="button"
-                  title="保存修改"
-                  data-i18n-title="panel.nodeDetail.save"
+                  title="保存修改" data-i18n-title="panel.nodeDetail.save"
                 >
                   <i class="fa-solid fa-floppy-disk"></i>
                 </button>
@@ -725,8 +720,7 @@
                   class="bme-panel-close"
                   id="bme-detail-close"
                   type="button"
-                  title="关闭"
-                  data-i18n-title="common.close"
+                  title="关闭" data-i18n-title="common.close"
                 >
                   <i class="fa-solid fa-xmark"></i>
                 </button>
@@ -844,29 +838,29 @@
                         <button
                           id="bme-llm-preset-save"
                           class="bme-config-secondary-btn"
-                          title="覆盖保存当前模板"
+                          title="覆盖保存当前模板" data-i18n-title="panel.preset.saveTitle"
                           type="button"
                         >
                           <i class="fa-solid fa-floppy-disk"></i>
-                          <span>保存</span>
+                          <span data-i18n="common.save">保存</span>
                         </button>
                         <button
                           id="bme-llm-preset-save-as"
                           class="bme-config-secondary-btn"
-                          title="另存为新模板"
+                          title="另存为新模板" data-i18n-title="panel.preset.saveAsTitle"
                           type="button"
                         >
                           <i class="fa-solid fa-file-circle-plus"></i>
-                          <span>另存为</span>
+                          <span data-i18n="panel.preset.saveAs">另存为</span>
                         </button>
                         <button
                           id="bme-llm-preset-delete"
                           class="bme-config-secondary-btn"
-                          title="删除当前模板"
+                          title="删除当前模板" data-i18n-title="panel.preset.deleteTitle"
                           type="button"
                         >
                           <i class="fa-solid fa-trash-can"></i>
-                          <span>删除</span>
+                          <span data-i18n="common.delete">删除</span>
                         </button>
                       </div>
                     </div>
@@ -908,7 +902,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-rotate"></i>
-                      <span>拉取模型</span>
+                      <span data-i18n="panel.api.fetchModels">拉取模型</span>
                     </button>
                     <select
                       id="bme-select-llm-model"
@@ -925,7 +919,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-plug"></i>
-                      <span>测试记忆 LLM</span>
+                      <span data-i18n="panel.api.testLlm">测试记忆 LLM</span>
                     </button>
                   </div>
                 </div>
@@ -985,13 +979,13 @@
                     </div>
                     <div class="bme-model-fetch-block">
                       <button
-                        class="bme-config-secondary-btn"
-                        id="bme-fetch-embed-backend-models"
-                        type="button"
-                      >
-                        <i class="fa-solid fa-rotate"></i>
-                        <span>拉取模型</span>
-                      </button>
+                         class="bme-config-secondary-btn"
+                         id="bme-fetch-embed-backend-models"
+                         type="button"
+                       >
+                         <i class="fa-solid fa-rotate"></i>
+                         <span data-i18n="panel.api.fetchModels">拉取模型</span>
+                       </button>
                       <select
                         id="bme-select-embed-backend-model"
                         class="bme-config-input bme-model-select"
@@ -1008,7 +1002,7 @@
                         id="bme-setting-embed-backend-url"
                         class="bme-config-input"
                         type="text"
-                        placeholder="仅 Ollama / llama.cpp / vLLM 需要填写"
+                          placeholder="仅 Ollama / llama.cpp / vLLM 需要填写" data-i18n-placeholder="panel.api.embedBackendUrlPlaceholder"
                       />
                     </div>
                     <div class="bme-config-row inline">
@@ -1069,13 +1063,13 @@
                     </div>
                     <div class="bme-model-fetch-block">
                       <button
-                        class="bme-config-secondary-btn"
-                        id="bme-fetch-embed-direct-models"
-                        type="button"
-                      >
-                        <i class="fa-solid fa-rotate"></i>
-                        <span>拉取模型</span>
-                      </button>
+                         class="bme-config-secondary-btn"
+                         id="bme-fetch-embed-direct-models"
+                         type="button"
+                       >
+                         <i class="fa-solid fa-rotate"></i>
+                         <span data-i18n="panel.api.fetchModels">拉取模型</span>
+                       </button>
                       <select
                         id="bme-select-embed-direct-model"
                         class="bme-config-input bme-model-select"
@@ -1093,7 +1087,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-plug"></i>
-                      <span>测试 Embedding</span>
+                      <span data-i18n="panel.api.testEmbedding">测试 Embedding</span>
                     </button>
                   </div>
                 </div>
@@ -1176,15 +1170,15 @@
                   class="bme-capability-card bme-capability-card-mode"
                   id="bme-maintenance-mode-card"
                   role="group"
-                  aria-label="维护执行模式"
-                  title="1 严格串行；2 均衡加速；3 快速后台（最终一致）"
+                  aria-label="维护执行模式" data-i18n-aria-label="panel.toggles.maintenanceModeAria"
+                  title="1 严格串行；2 均衡加速；3 快速后台（最终一致）" data-i18n-title="panel.toggles.maintenanceModeTitle"
                 >
                   <div class="bme-cap-header">
                     <span class="bme-cap-icon bme-mode-gauge" aria-hidden="true"></span>
                     <div class="bme-mode-segmented" id="bme-setting-maintenance-execution-mode">
-                      <button type="button" data-mode="strict" aria-label="1 严格串行">1</button>
-                      <button type="button" data-mode="balanced" aria-label="2 均衡加速">2</button>
-                      <button type="button" data-mode="fast" aria-label="3 快速后台">3</button>
+                      <button type="button" data-mode="strict" aria-label="1 严格串行" data-i18n-aria-label="panel.toggles.modeStrictAria">1</button>
+                      <button type="button" data-mode="balanced" aria-label="2 均衡加速" data-i18n-aria-label="panel.toggles.modeBalancedAria">2</button>
+                      <button type="button" data-mode="fast" aria-label="3 快速后台" data-i18n-aria-label="panel.toggles.modeFastAria">3</button>
                     </div>
                   </div>
                   <div class="bme-cap-title">并发模式</div>
@@ -1302,7 +1296,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-cloud-arrow-up"></i>
-                    <span>备份到云端</span>
+                    <span data-i18n="panel.toggles.backupToCloud">备份到云端</span>
                   </button>
                   <button
                     class="bme-config-secondary-btn"
@@ -1310,7 +1304,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-cloud-arrow-down"></i>
-                    <span>从云端获取备份</span>
+                    <span data-i18n="panel.toggles.restoreFromCloud">从云端获取备份</span>
                   </button>
                   <button
                     class="bme-config-secondary-btn"
@@ -1318,7 +1312,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-box-archive"></i>
-                    <span>管理服务器备份</span>
+                    <span data-i18n="panel.toggles.manageServerBackups">管理服务器备份</span>
                   </button>
                   <button
                     class="bme-config-secondary-btn"
@@ -1327,7 +1321,7 @@
                     disabled
                   >
                     <i class="fa-solid fa-rotate-left"></i>
-                    <span>回滚上次恢复</span>
+                    <span data-i18n="panel.toggles.rollbackLastRestore">回滚上次恢复</span>
                   </button>
                 </div>
               </div>
@@ -1361,7 +1355,7 @@
                         id="bme-setting-wi-filter-keywords"
                         class="bme-config-input"
                         type="text"
-                        placeholder="用逗号分隔，如：BME,mvu,测试"
+                        placeholder="用逗号分隔，如：BME,mvu,测试" data-i18n-placeholder="panel.toggles.wiFilterKeywordsPlaceholder"
                       />
                     </div>
                     <div class="bme-config-help">
@@ -1384,7 +1378,7 @@
                     for="bme-setting-hide-old-messages-enabled"
                   >
                     <span class="bme-toggle-copy">
-                      <span class="bme-toggle-title">启用旧楼层隐藏</span>
+                      <span class="bme-toggle-title" data-i18n="panel.toggles.hideOldMessages">启用旧楼层隐藏</span>
                       <span class="bme-toggle-desc">
                         适合长聊天控 token。切聊天会自动重新应用，不会删除原楼层。
                       </span>
@@ -1404,7 +1398,7 @@
                       type="number"
                       min="0"
                       max="200"
-                      placeholder="0 = 不隐藏"
+                      placeholder="0 = 不隐藏" data-i18n-placeholder="panel.toggles.hideOldKeepLastNPlaceholder"
                     />
                   </div>
                   <div class="bme-config-help">
@@ -1412,14 +1406,14 @@
                   </div>
                   <div class="bme-config-help">
                     当前隐藏：<strong id="bme-hide-old-messages-hidden-count">0</strong>
-                    层；<span id="bme-hide-old-messages-status-detail">未应用</span>
+                    层；<span id="bme-hide-old-messages-status-detail" data-i18n="panel.toggles.hideOldStatusNotApplied">未应用</span>
                   </div>
                   <label
                     class="bme-toggle-item"
                     for="bme-setting-hide-old-messages-render-limit-enabled"
                   >
                     <span class="bme-toggle-copy">
-                      <span class="bme-toggle-title">限制聊天区渲染楼层</span>
+                      <span class="bme-toggle-title" data-i18n="panel.toggles.limitRenderFloors">限制聊天区渲染楼层</span>
                       <span class="bme-toggle-desc">
                         只控制前端最多加载最近多少层；不等于隐藏，未隐藏楼层仍可能进入上下文。
                       </span>
@@ -1439,7 +1433,7 @@
                       type="number"
                       min="0"
                       max="1000"
-                      placeholder="0 = 不限制渲染"
+                      placeholder="0 = 不限制渲染" data-i18n-placeholder="panel.toggles.renderLimitPlaceholder"
                     />
                   </div>
                   <div class="bme-config-help">
@@ -1452,7 +1446,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-eye-slash"></i>
-                      <span>重新应用当前隐藏</span>
+                      <span data-i18n="panel.toggles.reapplyHide">重新应用当前隐藏</span>
                     </button>
                     <button
                       class="bme-config-secondary-btn"
@@ -1460,7 +1454,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-eye"></i>
-                      <span>取消全部隐藏</span>
+                      <span data-i18n="panel.toggles.clearAllHide">取消全部隐藏</span>
                     </button>
                   </div>
                 </div>
@@ -1503,7 +1497,7 @@
                     for="bme-setting-debug-logging-enabled"
                   >
                     <span class="bme-toggle-copy">
-                      <span class="bme-toggle-title">启用调试日志</span>
+                      <span class="bme-toggle-title" data-i18n="panel.toggles.enableDebugLog">启用调试日志</span>
                       <span class="bme-toggle-desc">
                         只在开启后输出内部诊断日志与流程跟踪，可能包含脱敏后的 prompt 组装摘要。
                       </span>
@@ -1529,7 +1523,7 @@
                     for="bme-setting-graph-native-force-disable"
                   >
                     <span class="bme-toggle-copy">
-                      <span class="bme-toggle-title">全局强制关闭 Native</span>
+                      <span class="bme-toggle-title" data-i18n="panel.toggles.forceDisableNative">全局强制关闭 Native</span>
                       <span class="bme-toggle-desc">
                         打开后会统一禁止 layout / persist / hydrate 的 native 路径，直接走 JS 回退。
                       </span>
@@ -1544,7 +1538,7 @@
                     for="bme-setting-native-engine-fail-open"
                   >
                     <span class="bme-toggle-copy">
-                      <span class="bme-toggle-title">Fail-open 回退</span>
+                      <span class="bme-toggle-title" data-i18n="panel.toggles.failOpenFallback">Fail-open 回退</span>
                       <span class="bme-toggle-desc">
                         native 模块不可用或执行失败时，自动回退到 JS；关闭后会按严格模式抛错。
                       </span>
@@ -1562,7 +1556,7 @@
                       id="bme-setting-graph-use-native-layout"
                       type="checkbox"
                     />
-                    <span>图布局使用 native Worker / WASM</span>
+                    <span data-i18n="panel.toggles.nativeLayoutWorker">图布局使用 native Worker / WASM</span>
                   </label>
                   <label
                     class="bme-inline-checkbox"
@@ -1572,7 +1566,7 @@
                       id="bme-setting-persist-use-native-delta"
                       type="checkbox"
                     />
-                    <span>Persist Delta 使用 native 加速</span>
+                    <span data-i18n="panel.toggles.nativePersistDelta">Persist Delta 使用 native 加速</span>
                   </label>
                   <label
                     class="bme-inline-checkbox"
@@ -1582,7 +1576,7 @@
                       id="bme-setting-load-use-native-hydrate"
                       type="checkbox"
                     />
-                    <span>快照 Hydrate 使用 native 加速</span>
+                    <span data-i18n="panel.toggles.nativeHydrate">快照 Hydrate 使用 native 加速</span>
                   </label>
                   <div class="bme-config-help" id="bme-native-rollout-status">
                     当前会在这里显示 native rollout 总状态与最近一次命中/回退摘要。
@@ -1791,7 +1785,7 @@
                           id="bme-setting-extract-auto-delay-latest-assistant"
                           type="checkbox"
                         />
-                        <span>自动提取晚一楼</span>
+                        <span data-i18n="panel.toggles.extractDelayLatest">自动提取晚一楼</span>
                       </label>
                       <div class="bme-config-help">
                         开启后，最新 AI 楼先不自动提取，要等下一条 AI 楼出现后，才提取前一批内容。提取未处理和范围重提不受影响。
@@ -1865,7 +1859,7 @@
                           id="bme-setting-extract-include-summaries"
                           type="checkbox"
                         />
-                        <span>提取时包含活跃总结</span>
+                        <span data-i18n="panel.toggles.extractIncludeSummaries">提取时包含活跃总结</span>
                       </label>
                       <label
                         class="bme-inline-checkbox"
@@ -1875,7 +1869,7 @@
                           id="bme-setting-extract-include-story-time"
                           type="checkbox"
                         />
-                        <span>提取时包含故事时间线</span>
+                        <span data-i18n="panel.toggles.extractIncludeStoryTime">提取时包含故事时间线</span>
                       </label>
                     </div>
                   </div>
@@ -1951,7 +1945,7 @@
                           id="bme-setting-recall-vector-prefilter-enabled"
                           type="checkbox"
                         />
-                        <span>启用向量预筛</span>
+                        <span data-i18n="panel.toggles.enableVectorPrefilter">启用向量预筛</span>
                       </label>
                       <div class="bme-config-row bme-stage-param">
                         <label for="bme-setting-recall-top-k">向量预筛 Top-K</label>
@@ -1991,7 +1985,7 @@
                           id="bme-setting-recall-graph-diffusion-enabled"
                           type="checkbox"
                         />
-                        <span>启用图扩散</span>
+                        <span data-i18n="panel.toggles.enableGraphDiffusion">启用图扩散</span>
                       </label>
                       <div class="bme-config-row bme-stage-param">
                         <label for="bme-setting-recall-diffusion-top-k"
@@ -2032,7 +2026,7 @@
                           id="bme-setting-recall-multi-intent-enabled"
                           type="checkbox"
                         />
-                        <span>启用多意图拆分</span>
+                        <span data-i18n="panel.toggles.enableMultiIntent">启用多意图拆分</span>
                       </label>
                       <div class="bme-config-row">
                         <label for="bme-setting-recall-multi-intent-max-segments"
@@ -2067,7 +2061,7 @@
                           id="bme-setting-recall-temporal-links-enabled"
                           type="checkbox"
                         />
-                        <span>启用时间链合成边</span>
+                        <span data-i18n="panel.toggles.enableTemporalLinks">启用时间链合成边</span>
                       </label>
                       <div class="bme-config-row">
                         <label for="bme-setting-recall-temporal-link-strength"
@@ -2110,7 +2104,7 @@
                               id="bme-setting-scoped-memory-enabled"
                               type="checkbox"
                             />
-                            <span>启用作用域记忆召回</span>
+                            <span data-i18n="panel.toggles.enableScopedMemory">启用作用域记忆召回</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2130,7 +2124,7 @@
                               id="bme-setting-region-scoped-objective-enabled"
                               type="checkbox"
                             />
-                            <span>启用地区客观层加权</span>
+                            <span data-i18n="panel.toggles.enableRegionObjective">启用地区客观层加权</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2140,7 +2134,7 @@
                               id="bme-setting-cognitive-memory-enabled"
                               type="checkbox"
                             />
-                            <span>启用多角色认知层</span>
+                            <span data-i18n="panel.toggles.enableCognitiveMemory">启用多角色认知层</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2150,7 +2144,7 @@
                               id="bme-setting-spatial-adjacency-enabled"
                               type="checkbox"
                             />
-                            <span>启用地区邻接图</span>
+                            <span data-i18n="panel.toggles.enableSpatialAdjacency">启用地区邻接图</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2160,7 +2154,7 @@
                               id="bme-setting-enable-story-timeline"
                               type="checkbox"
                             />
-                            <span>启用剧情时间层</span>
+                            <span data-i18n="panel.toggles.enableStoryTimeline">启用剧情时间层</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2170,7 +2164,7 @@
                               id="bme-setting-story-time-soft-directing"
                               type="checkbox"
                             />
-                            <span>启用剧情时间软导演</span>
+                            <span data-i18n="panel.toggles.enableStoryTimeSoftDirecting">启用剧情时间软导演</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2180,7 +2174,7 @@
                               id="bme-setting-inject-story-time-label"
                               type="checkbox"
                             />
-                            <span>注入时间标签</span>
+                            <span data-i18n="panel.toggles.injectStoryTimeLabel">注入时间标签</span>
                           </label>
                           <div class="bme-config-row">
                             <label for="bme-setting-recall-character-pov-weight"
@@ -2255,7 +2249,7 @@
                               id="bme-setting-inject-user-pov-memory"
                               type="checkbox"
                             />
-                            <span>注入用户 POV 记忆</span>
+                            <span data-i18n="panel.toggles.injectUserPovMemory">注入用户 POV 记忆</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2265,7 +2259,7 @@
                               id="bme-setting-inject-objective-global-memory"
                               type="checkbox"
                             />
-                            <span>注入少量全局客观记忆</span>
+                            <span data-i18n="panel.toggles.injectObjectiveGlobalMemory">注入少量全局客观记忆</span>
                           </label>
                           <label
                             class="bme-inline-checkbox"
@@ -2275,7 +2269,7 @@
                               id="bme-setting-inject-low-confidence-objective-memory"
                               type="checkbox"
                             />
-                            <span>允许低置信客观记忆直接注入</span>
+                            <span data-i18n="panel.toggles.injectLowConfidenceObjective">允许低置信客观记忆直接注入</span>
                           </label>
                         </div>
                         <div class="bme-config-subgroup">
@@ -2291,7 +2285,7 @@
                               id="bme-setting-recall-context-query-blend-enabled"
                               type="checkbox"
                             />
-                            <span>启用上下文混合查询</span>
+                            <span data-i18n="panel.toggles.enableContextQueryBlend">启用上下文混合查询</span>
                           </label>
                           <div class="bme-config-row">
                             <label for="bme-setting-recall-context-assistant-weight"
@@ -2327,7 +2321,7 @@
                               id="bme-setting-recall-lexical-boost-enabled"
                               type="checkbox"
                             />
-                            <span>启用文字命中补分</span>
+                            <span data-i18n="panel.toggles.enableLexicalBoost">启用文字命中补分</span>
                           </label>
                           <div class="bme-config-row">
                             <label for="bme-setting-recall-lexical-weight"
@@ -2356,7 +2350,7 @@
                               id="bme-setting-recall-diversity-enabled"
                               type="checkbox"
                             />
-                            <span>启用 DPP 多样性去重</span>
+                            <span data-i18n="panel.toggles.enableDppDiversity">启用 DPP 多样性去重</span>
                           </label>
                           <div class="bme-config-row">
                             <label for="bme-setting-recall-dpp-candidate-multiplier"
@@ -2391,7 +2385,7 @@
                               id="bme-setting-recall-cooccurrence-enabled"
                               type="checkbox"
                             />
-                            <span>启用共现补强</span>
+                            <span data-i18n="panel.toggles.enableCooccurrence">启用共现补强</span>
                           </label>
                           <div class="bme-config-row">
                             <label for="bme-setting-recall-cooccurrence-scale"
@@ -2432,7 +2426,7 @@
                               id="bme-setting-recall-residual-enabled"
                               type="checkbox"
                             />
-                            <span>启用弱信号残差召回</span>
+                            <span data-i18n="panel.toggles.enableResidualRecall">启用弱信号残差召回</span>
                           </label>
                           <div class="bme-config-row">
                             <label for="bme-setting-recall-residual-basis-max-nodes"
@@ -2579,7 +2573,7 @@
                         for="bme-setting-recall-llm"
                       >
                         <input id="bme-setting-recall-llm" type="checkbox" />
-                        <span>启用 LLM 精排</span>
+                        <span data-i18n="panel.toggles.enableLlmRefine">启用 LLM 精排</span>
                       </label>
                       <div class="bme-config-row bme-stage-param">
                         <label for="bme-setting-recall-llm-context-messages"
@@ -2719,7 +2713,7 @@
                           id="bme-setting-trigger-patterns"
                           class="bme-config-input"
                           type="text"
-                          placeholder="突然,真相,秘密,背叛 或正则"
+                          placeholder="突然,真相,秘密,背叛 或正则" data-i18n-placeholder="panel.toggles.triggerPatternsPlaceholder"
                         />
                       </div>
                       <div class="bme-config-row">
@@ -2930,7 +2924,7 @@
                 </p>
                 <div class="bme-planner-status-strip" id="bme-planner-status-strip">
                   <span class="bme-planner-status-chip" id="bme-planner-state-chip">加载中…</span>
-                  <span class="bme-planner-status-chip" id="bme-planner-save-chip" data-tone="idle">就绪</span>
+                  <span class="bme-planner-status-chip" id="bme-planner-save-chip" data-tone="idle" data-i18n="planner.status.ready">就绪</span>
                 </div>
               </div>
 
@@ -2978,7 +2972,7 @@
                       id="bme-planner-test-input"
                       class="bme-config-input bme-planner-textarea"
                       rows="3"
-                      placeholder="输入一段剧情描述，测试规划器输出..."
+                      placeholder="输入一段剧情描述，测试规划器输出..." data-i18n-placeholder="panel.planner.testInputPlaceholder"
                     ></textarea>
                   </div>
                   <div class="bme-config-actions">
@@ -2988,7 +2982,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-flask"></i>
-                      <span>运行规划测试</span>
+                      <span data-i18n="panel.planner.runTest">运行规划测试</span>
                     </button>
                   </div>
                   <div class="bme-planner-status-text" id="bme-planner-test-status"></div>
@@ -3112,7 +3106,7 @@
                       id="bme-planner-exclude-tags"
                       class="bme-config-input"
                       type="text"
-                      placeholder="行动选项, UpdateVariable, StatusPlaceHolderImpl"
+                      placeholder="行动选项, UpdateVariable, StatusPlaceHolderImpl" data-i18n-placeholder="panel.planner.excludeTagsPlaceholder"
                     />
                   </div>
                   <div class="bme-config-row">
@@ -3144,7 +3138,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-book"></i>
-                      <span>诊断世界书</span>
+                      <span data-i18n="panel.planner.debugWorldBook">诊断世界书</span>
                     </button>
                     <button
                       class="bme-config-secondary-btn"
@@ -3152,7 +3146,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-user"></i>
-                      <span>诊断角色卡</span>
+                      <span data-i18n="panel.planner.debugCharCard">诊断角色卡</span>
                     </button>
                   </div>
                   <pre class="bme-planner-debug-output" id="bme-planner-debug-output" hidden></pre>
@@ -3194,7 +3188,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-rotate"></i>
-                      <span>刷新</span>
+                      <span data-i18n="panel.planner.refresh">刷新</span>
                     </button>
                     <button
                       class="bme-config-secondary-btn"
@@ -3202,7 +3196,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-file-arrow-down"></i>
-                      <span>导出 JSON</span>
+                      <span data-i18n="panel.planner.exportJson">导出 JSON</span>
                     </button>
                     <button
                       class="bme-config-secondary-btn bme-config-danger-btn"
@@ -3210,7 +3204,7 @@
                       type="button"
                     >
                       <i class="fa-solid fa-trash-can"></i>
-                      <span>清空日志</span>
+                      <span data-i18n="panel.planner.clearLogs">清空日志</span>
                     </button>
                   </div>
                   <div id="bme-planner-log-body" class="bme-planner-log-list">
@@ -3411,7 +3405,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-trash-can"></i>
-                    <span>清空当前图谱</span>
+                    <span data-i18n="panel.cleanup.clearGraph">清空当前图谱</span>
                   </button>
                   <button
                     class="bme-action-btn danger"
@@ -3419,7 +3413,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-scissors"></i>
-                    <span>按楼层范围清理</span>
+                    <span data-i18n="panel.cleanup.clearGraphRange">按楼层范围清理</span>
                   </button>
                 </div>
                 <div class="bme-action-group-extra">
@@ -3467,7 +3461,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-eraser"></i>
-                    <span>清空当前聊天总结状态</span>
+                    <span data-i18n="panel.cleanup.clearSummaryState">清空当前聊天总结状态</span>
                   </button>
                 </div>
               </div>
@@ -3489,7 +3483,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-database"></i>
-                    <span>清空向量缓存</span>
+                    <span data-i18n="panel.cleanup.clearVectorCache">清空向量缓存</span>
                   </button>
                   <button
                     class="bme-action-btn"
@@ -3497,7 +3491,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-clock-rotate-left"></i>
-                    <span>清空提取历史</span>
+                    <span data-i18n="panel.cleanup.clearExtractHistory">清空提取历史</span>
                   </button>
                 </div>
               </div>
@@ -3519,7 +3513,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-hard-drive"></i>
-                    <span>清空当前聊天本地存储</span>
+                    <span data-i18n="panel.cleanup.deleteCurrentIdb">清空当前聊天本地存储</span>
                   </button>
                   <button
                     class="bme-action-btn danger"
@@ -3527,7 +3521,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-explosion"></i>
-                    <span>清空全部 BME 本地存储</span>
+                    <span data-i18n="panel.cleanup.deleteAllIdb">清空全部 BME 本地存储</span>
                   </button>
                   <button
                     class="bme-action-btn danger"
@@ -3535,7 +3529,7 @@
                     type="button"
                   >
                     <i class="fa-solid fa-cloud-arrow-down"></i>
-                    <span>清空服务端同步数据</span>
+                    <span data-i18n="panel.cleanup.deleteServerSync">清空服务端同步数据</span>
                   </button>
                 </div>
                 <div class="bme-config-help bme-cleanup-warning-text">
