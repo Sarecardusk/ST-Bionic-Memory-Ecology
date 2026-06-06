@@ -12,6 +12,8 @@ const BME_REMOTE_SYNC_FORMAT_VERSION_V2 = 2;
 const BME_REMOTE_SYNC_NODE_CHUNK_SIZE = 2000;
 const BME_REMOTE_SYNC_EDGE_CHUNK_SIZE = 4000;
 const BME_REMOTE_SYNC_TOMBSTONE_CHUNK_SIZE = 2000;
+const BME_REMOTE_SYNC_CHUNK_GC_GRACE_MS = 24 * 60 * 60 * 1000;
+const BME_REMOTE_SYNC_CHUNK_GC_MAX_PENDING = 512;
 const BME_BACKUP_FILE_PREFIX = "ST-BME_backup_";
 const BME_BACKUP_MANIFEST_FILENAME = "ST-BME_BackupManifest.json";
 const BME_BACKUP_SCHEMA_VERSION = 1;
@@ -1318,6 +1320,182 @@ function buildRemoteChunkFilename(baseFilename, kind, index, payload) {
   return `${normalizedBase}.__${normalizedKind}.${String(index).padStart(3, "0")}.${hash}.json`;
 }
 
+function isRemoteSyncChunkFilenameForBase(filename = "", baseFilename = "") {
+  const normalizedFilename = normalizeRemoteFileName(filename);
+  const normalizedBase = normalizeRemoteFileName(baseFilename).replace(/\.json$/i, "");
+  if (!normalizedFilename || !normalizedBase) return false;
+  const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^${escapedBase}\\.__(nodes|edges|tombstones|runtime-meta)\\.\\d{3}\\.[A-Za-z0-9]+\\.json$`,
+  ).test(normalizedFilename);
+}
+
+function collectRemoteSyncChunkFilenames(manifest = {}, baseFilename = "") {
+  if (Number(manifest?.formatVersion || 0) !== BME_REMOTE_SYNC_FORMAT_VERSION_V2) {
+    return new Set();
+  }
+  const filenames = new Set();
+  for (const chunk of Array.isArray(manifest?.chunks) ? manifest.chunks : []) {
+    const filename = resolveRemoteFileName(chunk?.filename || "");
+    if (!isRemoteSyncChunkFilenameForBase(filename, baseFilename)) continue;
+    filenames.add(filename);
+  }
+  return filenames;
+}
+
+async function readPreviousRemoteSyncManifest(filename = "", options = {}) {
+  const result = await readRemoteJsonFileResult(filename, options);
+  if (result.status === 404) return null;
+  if (!result.ok) {
+    console.warn("[ST-BME] 读取旧同步 manifest 失败，跳过旧 chunk 清理:", result.reason || result.error || result.status);
+    return null;
+  }
+  if (Number(result.payload?.formatVersion || 0) !== BME_REMOTE_SYNC_FORMAT_VERSION_V2) {
+    return null;
+  }
+  return result.payload;
+}
+
+function normalizeRemoteSyncChunkGcPendingEntry(entry = {}, baseFilename = "") {
+  const filename = resolveRemoteFileName(entry?.filename || "");
+  if (!isRemoteSyncChunkFilenameForBase(filename, baseFilename)) return null;
+  const firstSeenAt = normalizeTimestamp(entry?.firstSeenAt, Date.now());
+  const eligibleAt = normalizeTimestamp(entry?.eligibleAt, firstSeenAt + BME_REMOTE_SYNC_CHUNK_GC_GRACE_MS);
+  return {
+    filename,
+    firstSeenAt,
+    eligibleAt,
+    sourceRevision: normalizeRevision(entry?.sourceRevision),
+  };
+}
+
+function readRemoteSyncChunkGcPending(manifest = {}, baseFilename = "") {
+  const rawPending = Array.isArray(manifest?.chunkGc?.pending)
+    ? manifest.chunkGc.pending
+    : [];
+  const pendingByFilename = new Map();
+  for (const entry of rawPending) {
+    const normalized = normalizeRemoteSyncChunkGcPendingEntry(entry, baseFilename);
+    if (!normalized) continue;
+    const existing = pendingByFilename.get(normalized.filename);
+    if (!existing || normalized.firstSeenAt < existing.firstSeenAt) {
+      pendingByFilename.set(normalized.filename, normalized);
+    }
+  }
+  return pendingByFilename;
+}
+
+function buildRemoteSyncChunkGcState(
+  previousManifest = null,
+  nextManifest = null,
+  baseFilename = "",
+  options = {},
+) {
+  if (Number(nextManifest?.formatVersion || 0) !== BME_REMOTE_SYNC_FORMAT_VERSION_V2) return null;
+
+  const nowMs = normalizeTimestamp(options.nowMs ?? options.currentTimeMs, Date.now());
+  const graceMs = Math.max(
+    0,
+    Math.floor(Number(options.remoteSyncChunkGcGraceMs ?? BME_REMOTE_SYNC_CHUNK_GC_GRACE_MS) || 0),
+  );
+  const nextChunks = collectRemoteSyncChunkFilenames(nextManifest, baseFilename);
+  const pendingByFilename = readRemoteSyncChunkGcPending(previousManifest, baseFilename);
+  for (const filename of nextChunks) {
+    pendingByFilename.delete(filename);
+  }
+
+  const previousChunks = collectRemoteSyncChunkFilenames(previousManifest, baseFilename);
+  const previousRevision = normalizeRevision(previousManifest?.meta?.revision);
+  for (const filename of previousChunks) {
+    if (nextChunks.has(filename) || pendingByFilename.has(filename)) continue;
+    pendingByFilename.set(filename, {
+      filename,
+      firstSeenAt: nowMs,
+      eligibleAt: nowMs + graceMs,
+      sourceRevision: previousRevision,
+    });
+  }
+
+  const pending = [...pendingByFilename.values()]
+    .filter((entry) => !nextChunks.has(entry.filename))
+    .sort((left, right) => left.eligibleAt - right.eligibleAt || left.filename.localeCompare(right.filename))
+    .slice(0, BME_REMOTE_SYNC_CHUNK_GC_MAX_PENDING);
+
+  return {
+    version: 1,
+    updatedAt: nowMs,
+    graceMs,
+    pending,
+  };
+}
+
+function areRemoteSyncManifestsEquivalent(left = {}, right = {}) {
+  return stableSerialize(left) === stableSerialize(right);
+}
+
+async function cleanupEligibleRemoteSyncChunks(
+  expectedManifest = null,
+  baseFilename = "",
+  options = {},
+) {
+  const cleanupStartedAt = readSyncTimingNow();
+  const empty = (reason = "not-needed") => ({
+    attempted: 0,
+    deleted: 0,
+    skipped: 0,
+    failed: 0,
+    reason,
+    ms: normalizeSyncTimingMs(readSyncTimingNow() - cleanupStartedAt),
+  });
+
+  if (options.disableRemoteSyncChunkCleanup === true) return empty("disabled");
+  if (getAuthorityBlobAdapter(options)) return empty("authority-blob-skip");
+  if (Number(expectedManifest?.formatVersion || 0) !== BME_REMOTE_SYNC_FORMAT_VERSION_V2) {
+    return empty("non-v2-manifest");
+  }
+
+  const pending = readRemoteSyncChunkGcPending(expectedManifest, baseFilename);
+  if (!pending.size) return empty("no-pending-chunks");
+
+  const currentResult = await readRemoteJsonFileResult(baseFilename, options);
+  if (!currentResult.ok) return empty(currentResult.reason || "head-read-failed");
+  if (!areRemoteSyncManifestsEquivalent(currentResult.payload, expectedManifest)) {
+    return empty("remote-head-changed");
+  }
+
+  const nowMs = normalizeTimestamp(options.nowMs ?? options.currentTimeMs, Date.now());
+  const currentChunks = collectRemoteSyncChunkFilenames(currentResult.payload, baseFilename);
+  const eligibleChunks = [...pending.values()]
+    .filter((entry) => entry.eligibleAt <= nowMs)
+    .filter((entry) => !currentChunks.has(entry.filename));
+
+  let deleted = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const entry of eligibleChunks) {
+    try {
+      const result = await deleteRemoteJsonFile(entry.filename, options);
+      if (result.deleted) deleted += 1;
+      else skipped += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn("[ST-BME] 清理旧同步 chunk 失败:", {
+        filename: entry.filename,
+        error: error instanceof Error ? error.message : String(error || ""),
+      });
+    }
+  }
+
+  return {
+    attempted: eligibleChunks.length,
+    deleted,
+    skipped,
+    failed,
+    ms: normalizeSyncTimingMs(readSyncTimingNow() - cleanupStartedAt),
+  };
+}
+
 function chunkArray(records = [], chunkSize = 1000) {
   const normalizedRecords = Array.isArray(records) ? records : [];
   const normalizedChunkSize = Math.max(1, Math.floor(Number(chunkSize) || 1));
@@ -2550,11 +2728,20 @@ async function writeSnapshotToRemote(snapshot, chatId, options = {}) {
   const normalizedChatId = normalizeChatId(chatId);
   const normalizedSnapshot = normalizeSyncSnapshot(snapshot, normalizedChatId);
   const filename = await resolveSyncFilename(normalizedChatId, options);
+  const previousManifestReadStartedAt = readSyncTimingNow();
+  const previousManifest = await readPreviousRemoteSyncManifest(filename, options);
+  const previousManifestReadMs = readSyncTimingNow() - previousManifestReadStartedAt;
   const envelopeBuildStartedAt = readSyncTimingNow();
   const syncEnvelope = buildRemoteSyncEnvelopeV2(
     normalizedSnapshot,
     normalizedChatId,
     filename,
+  );
+  syncEnvelope.manifest.chunkGc = buildRemoteSyncChunkGcState(
+    previousManifest,
+    syncEnvelope.manifest,
+    filename,
+    options,
   );
   const envelopeBuildMs = readSyncTimingNow() - envelopeBuildStartedAt;
   let chunkSerializeMs = 0;
@@ -2573,19 +2760,27 @@ async function writeSnapshotToRemote(snapshot, chatId, options = {}) {
   const manifestUploadStartedAt = readSyncTimingNow();
   const uploadResult = await writeRemoteJsonFile(filename, manifestPayload, options);
   const manifestUploadMs = readSyncTimingNow() - manifestUploadStartedAt;
+  const cleanupResult = await cleanupEligibleRemoteSyncChunks(
+    syncEnvelope.manifest,
+    filename,
+    options,
+  );
 
   return {
     filename,
     path: String(uploadResult?.path || ""),
     backend: String(uploadResult?.backend || ""),
     payload: syncEnvelope.manifest,
+    cleanup: cleanupResult,
     timings: finalizeSyncTimings(
       {
+        previousManifestReadMs,
         envelopeBuildMs,
         chunkSerializeMs,
         chunkUploadMs,
         manifestSerializeMs,
         manifestUploadMs,
+        chunkCleanupMs: Number(cleanupResult?.ms || 0),
         responseParseMs: 0,
       },
       writeStartedAt,
@@ -3123,14 +3318,17 @@ export async function upload(chatId, options = {}) {
       filename: uploadResult.filename,
       remotePath: uploadResult.path,
       revision: normalizeRevision(localSnapshot.meta.revision),
+      cleanup: uploadResult.cleanup || null,
       timings: finalizeSyncTimings(
         {
           exportMs,
+          previousManifestReadMs: Number(uploadTimings.previousManifestReadMs || 0),
           envelopeBuildMs: Number(uploadTimings.envelopeBuildMs || 0),
           chunkSerializeMs: Number(uploadTimings.chunkSerializeMs || 0),
           chunkUploadMs: Number(uploadTimings.chunkUploadMs || 0),
           manifestSerializeMs: Number(uploadTimings.manifestSerializeMs || 0),
           manifestUploadMs: Number(uploadTimings.manifestUploadMs || 0),
+          chunkCleanupMs: Number(uploadTimings.chunkCleanupMs || 0),
           responseParseMs: Number(uploadTimings.responseParseMs || 0),
           metaPatchMs,
         },
