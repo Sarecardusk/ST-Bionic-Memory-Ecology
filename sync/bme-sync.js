@@ -3901,16 +3901,26 @@ export function autoSyncOnVisibility(options = {}) {
   };
 }
 
-export async function deleteRemoteSyncFile(chatId, options = {}) {
+function cancelPendingSyncUpload(chatId) {
   const normalizedChatId = normalizeChatId(chatId);
-  if (!normalizedChatId) {
-    return {
-      deleted: false,
-      chatId: "",
-      reason: "missing-chat-id",
-    };
+  const pendingTimer = uploadDebounceTimerByChatId.get(normalizedChatId);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    uploadDebounceTimerByChatId.delete(normalizedChatId);
+    return true;
   }
+  return false;
+}
 
+async function waitForChatSyncIdle(chatId) {
+  const normalizedChatId = normalizeChatId(chatId);
+  const existingTask = syncInFlightByChatId.get(normalizedChatId);
+  if (!existingTask) return;
+  await existingTask.catch(() => null);
+}
+
+async function deleteRemoteSyncFileUnlocked(chatId, options = {}) {
+  const normalizedChatId = normalizeChatId(chatId);
   try {
     const filenames = await resolveSyncFilenameCandidates(
       normalizedChatId,
@@ -3919,22 +3929,71 @@ export async function deleteRemoteSyncFile(chatId, options = {}) {
     let lastNotFoundFilename = filenames[0] || "";
 
     for (const filename of filenames) {
-      try {
-        const manifestPayload = await readRemoteJsonFile(filename, options);
+      const chunkFilenamesToDelete = new Set();
+      let cleanupAttempted = 0;
+      let cleanupDeleted = 0;
+      let cleanupSkipped = 0;
+      let cleanupFailed = 0;
+      let cleanupReason = "not-needed";
+      const manifestReadResult = await readRemoteJsonFileResult(filename, options);
+      if (manifestReadResult.status === 404) {
+        cleanupReason = "manifest-not-found";
+      } else if (!manifestReadResult.ok) {
+        return {
+          deleted: false,
+          chatId: normalizedChatId,
+          filename,
+          reason: "manifest-read-error",
+          status: manifestReadResult.status,
+          error: manifestReadResult.error || null,
+          cleanup: {
+            attempted: 0,
+            deleted: 0,
+            skipped: 0,
+            failed: 0,
+            reason: manifestReadResult.reason || "manifest-read-error",
+          },
+        };
+      } else {
+        const manifestPayload = manifestReadResult.payload;
         if (Number(manifestPayload?.formatVersion || 0) === BME_REMOTE_SYNC_FORMAT_VERSION_V2) {
-          for (const chunk of Array.isArray(manifestPayload?.chunks) ? manifestPayload.chunks : []) {
-            const chunkFilename = String(chunk?.filename || "").trim();
-            if (!chunkFilename) continue;
-            await deleteRemoteJsonFile(chunkFilename, options).catch(() => null);
+          for (const chunkFilename of [
+            ...collectRemoteSyncChunkFilenames(manifestPayload, filename),
+            ...readRemoteSyncChunkGcPending(manifestPayload, filename).keys(),
+          ]) {
+            chunkFilenamesToDelete.add(chunkFilename);
           }
+          cleanupReason = chunkFilenamesToDelete.size ? "pending" : "no-chunks";
+        } else {
+          cleanupReason = "non-v2-manifest";
         }
-      } catch {
-        // best-effort chunk cleanup
       }
       const deleteResult = await deleteRemoteJsonFile(filename, options);
       if (!deleteResult.deleted) {
         lastNotFoundFilename = filename;
         continue;
+      }
+
+      const headAfterDelete = await readRemoteJsonFileResult(filename, options);
+      if (headAfterDelete.ok) {
+        cleanupReason = "remote-head-recreated";
+      } else if (headAfterDelete.status !== 404) {
+        cleanupReason = headAfterDelete.reason || "head-check-failed";
+      } else {
+        cleanupReason = chunkFilenamesToDelete.size ? "manifest-deleted" : cleanupReason;
+      }
+
+      if (cleanupReason === "manifest-deleted") {
+        for (const chunkFilename of chunkFilenamesToDelete) {
+          cleanupAttempted += 1;
+          try {
+            const chunkDeleteResult = await deleteRemoteJsonFile(chunkFilename, options);
+            if (chunkDeleteResult.deleted) cleanupDeleted += 1;
+            else cleanupSkipped += 1;
+          } catch {
+            cleanupFailed += 1;
+          }
+        }
       }
 
       sanitizedFilenameByChatId.delete(normalizedChatId);
@@ -3943,6 +4002,13 @@ export async function deleteRemoteSyncFile(chatId, options = {}) {
         chatId: normalizedChatId,
         filename,
         backend: String(deleteResult.backend || ""),
+        cleanup: {
+          attempted: cleanupAttempted,
+          deleted: cleanupDeleted,
+          skipped: cleanupSkipped,
+          failed: cleanupFailed,
+          reason: cleanupReason,
+        },
       };
     }
 
@@ -3960,6 +4026,29 @@ export async function deleteRemoteSyncFile(chatId, options = {}) {
       reason: "delete-error",
       error,
     };
+  }
+}
+
+export async function deleteRemoteSyncFile(chatId, options = {}) {
+  const normalizedChatId = normalizeChatId(chatId);
+  if (!normalizedChatId) {
+    return {
+      deleted: false,
+      chatId: "",
+      reason: "missing-chat-id",
+    };
+  }
+
+  cancelPendingSyncUpload(normalizedChatId);
+  await waitForChatSyncIdle(normalizedChatId);
+  const deleteTask = deleteRemoteSyncFileUnlocked(normalizedChatId, options);
+  syncInFlightByChatId.set(normalizedChatId, deleteTask);
+  try {
+    return await deleteTask;
+  } finally {
+    if (syncInFlightByChatId.get(normalizedChatId) === deleteTask) {
+      syncInFlightByChatId.delete(normalizedChatId);
+    }
   }
 }
 

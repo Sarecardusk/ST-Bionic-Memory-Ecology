@@ -1523,7 +1523,7 @@ export async function onDeleteServerSyncFileController(runtime) {
   }
 
   const userInput = runtime.prompt(
-    "此操作会删除当前聊天在服务端的同步数据。\n\n如果该聊天已经升级到远端 v2，同步 manifest 和 chunk 文件都会一起删除。\n\n请输入 DELETE 确认：",
+    "此操作会删除当前聊天在服务端的同步 manifest。\n\n如果该聊天已经升级到远端 v2，会在 manifest 删除成功后尝试清理当前 manifest 引用的 chunk，以及 manifest 记录的待清理 chunk。\n\n注意：普通 SillyTavern 不提供 user/files 目录枚举，因此已经脱离 manifest 的历史孤儿 chunk 无法通过此按钮自动发现。\n\n请输入 DELETE 确认：",
   );
   if (userInput !== "DELETE") {
     if (userInput != null) {
@@ -1535,11 +1535,41 @@ export async function onDeleteServerSyncFileController(runtime) {
   try {
     const result = await runtime.deleteRemoteSyncFile(chatId);
     if (result?.deleted) {
-      runtime.toastr.success(`已删除服务端同步数据: ${result.filename}`);
+      const cleanup = result.cleanup || {};
+      const cleanupSummary = Number(cleanup.attempted || 0) > 0
+        ? `；chunk 清理 删除 ${Number(cleanup.deleted || 0)}/${Number(cleanup.attempted || 0)}，跳过 ${Number(cleanup.skipped || 0)}，失败 ${Number(cleanup.failed || 0)}`
+        : "";
+      const cleanupReason = String(cleanup.reason || "");
+      const cleanupReasonLabel = {
+        "remote-head-recreated": "远端 manifest 已被重新创建，chunk 清理已跳过",
+        "head-check-failed": "删除后无法确认远端状态，chunk 清理已跳过",
+        "manifest-read-error": "读取 manifest 失败，chunk 列表不可用",
+      }[cleanupReason] || "";
+      const benignCleanupReasons = new Set([
+        "",
+        "manifest-deleted",
+        "no-chunks",
+        "non-v2-manifest",
+        "manifest-not-found",
+        "not-needed",
+      ]);
+      const shouldWarnCleanup =
+        Number(cleanup.failed || 0) > 0
+        || Number(cleanup.skipped || 0) > 0
+        || Boolean(cleanupReasonLabel)
+        || !benignCleanupReasons.has(cleanupReason);
+      const message = `已删除服务端同步 manifest: ${result.filename}${cleanupSummary}`;
+      if (shouldWarnCleanup) {
+        runtime.toastr.warning(`${message}${cleanupReasonLabel ? `；${cleanupReasonLabel}` : "；部分 chunk 可能仍残留"}`);
+      } else {
+        runtime.toastr.success(message);
+      }
     } else {
       runtime.toastr.info(
         result?.reason === "not-found"
           ? "服务端没有找到同步数据"
+          : result?.reason === "manifest-read-error"
+            ? "读取服务端同步 manifest 失败，已取消删除以避免残留坏数据"
           : `删除未成功: ${result?.reason || "未知原因"}`,
       );
     }

@@ -1425,6 +1425,218 @@ async function testDeleteRemoteSyncFile() {
   assert.equal(logs.deleteCalls > deleteCallsAfterFirstDelete, true);
 }
 
+async function testDeleteRemoteSyncFileV2CleansChunksAndGcPending() {
+  const { fetch, remoteFiles, logs } = createMockFetchEnvironment();
+  const dbByChatId = new Map();
+  const chatId = "chat-v2-delete-cleanup";
+  dbByChatId.set(chatId, new FakeDb(chatId));
+
+  // Manually set up a v2 manifest with chunks and chunkGc.pending entries in remote storage
+  const manifestFilename = "ST-BME_sync_chat-v2-delete-cleanup.json";
+  const chunkNodeFile = "ST-BME_sync_chat-v2-delete-cleanup.__nodes.000.abc123.json";
+  const chunkEdgeFile = "ST-BME_sync_chat-v2-delete-cleanup.__edges.000.def456.json";
+  const gcPendingFile = "ST-BME_sync_chat-v2-delete-cleanup.__runtime-meta.000.ghi789.json";
+
+  remoteFiles.set(chunkNodeFile, { kind: "nodes", index: 0, records: [{ id: "n1" }] });
+  remoteFiles.set(chunkEdgeFile, { kind: "edges", index: 0, records: [{ id: "e1" }] });
+  remoteFiles.set(gcPendingFile, { kind: "runtime-meta", index: 0, records: [] });
+  remoteFiles.set(manifestFilename, {
+    formatVersion: 2,
+    meta: { chatId, revision: 5, lastModified: 500, nodeCount: 1, edgeCount: 1, tombstoneCount: 0, schemaVersion: 1 },
+    state: { lastProcessedFloor: 3, extractionCount: 2 },
+    chunks: [
+      { kind: "nodes", index: 0, count: 1, filename: chunkNodeFile },
+      { kind: "edges", index: 0, count: 1, filename: chunkEdgeFile },
+    ],
+    chunkGc: {
+      pending: [
+        { filename: gcPendingFile, firstSeenAt: 400, eligibleAt: 900, sourceRevision: 4 },
+      ],
+    },
+  });
+
+  const runtime = buildRuntimeOptions({ dbByChatId, fetch });
+  const deleteResult = await deleteRemoteSyncFile(chatId, runtime);
+
+  assert.equal(deleteResult.deleted, true);
+  assert.equal(deleteResult.chatId, chatId);
+  assert.equal(deleteResult.filename, manifestFilename);
+
+  // All chunk files and gc-pending files should be deleted
+  assert.equal(remoteFiles.has(chunkNodeFile), false, "manifest.chunks node file should be deleted");
+  assert.equal(remoteFiles.has(chunkEdgeFile), false, "manifest.chunks edge file should be deleted");
+  assert.equal(remoteFiles.has(gcPendingFile), false, "manifest.chunkGc.pending file should be deleted");
+  assert.equal(remoteFiles.has(manifestFilename), false, "manifest itself should be deleted");
+  assert.equal(deleteResult.cleanup.attempted, 3);
+  assert.equal(deleteResult.cleanup.deleted, 3);
+  assert.equal(deleteResult.cleanup.skipped, 0);
+  assert.equal(deleteResult.cleanup.failed, 0);
+
+  // Verify delete calls: 2 chunks + 1 gc-pending + 1 manifest = 4
+  assert.equal(logs.deleteCalls, 4, "should delete 2 chunks + 1 gc-pending + 1 manifest");
+}
+
+async function testDeleteRemoteSyncFileManifestDeleteFailureKeepsChunks() {
+  const { fetch, remoteFiles } = createMockFetchEnvironment();
+  const dbByChatId = new Map();
+  const chatId = "chat-delete-manifest-fails";
+  dbByChatId.set(chatId, new FakeDb(chatId));
+
+  const manifestFilename = "ST-BME_sync_chat-delete-manifest-fails.json";
+  const chunkNodeFile = "ST-BME_sync_chat-delete-manifest-fails.__nodes.000.abc123.json";
+  const gcPendingFile = "ST-BME_sync_chat-delete-manifest-fails.__runtime-meta.000.ghi789.json";
+
+  remoteFiles.set(chunkNodeFile, { kind: "nodes", index: 0, records: [{ id: "n1" }] });
+  remoteFiles.set(gcPendingFile, { kind: "runtime-meta", index: 0, records: [] });
+  remoteFiles.set(manifestFilename, {
+    formatVersion: 2,
+    meta: { chatId, revision: 5, lastModified: 500, nodeCount: 1, edgeCount: 0, tombstoneCount: 0, schemaVersion: 1 },
+    state: { lastProcessedFloor: 3, extractionCount: 2 },
+    chunks: [
+      { kind: "nodes", index: 0, count: 1, filename: chunkNodeFile },
+    ],
+    chunkGc: {
+      pending: [
+        { filename: gcPendingFile, firstSeenAt: 400, eligibleAt: 900, sourceRevision: 4 },
+      ],
+    },
+  });
+
+  const guardedFetch = async (url, options = {}) => {
+    if (url === "/api/files/delete" && String(options?.method || "").toUpperCase() === "POST") {
+      const body = JSON.parse(String(options.body || "{}"));
+      if (String(body.path || "") === `/user/files/${manifestFilename}`) {
+        return createJsonResponse(500, "manifest delete failed");
+      }
+    }
+    return await fetch(url, options);
+  };
+
+  const deleteResult = await deleteRemoteSyncFile(
+    chatId,
+    buildRuntimeOptions({ dbByChatId, fetch: guardedFetch }),
+  );
+
+  assert.equal(deleteResult.deleted, false);
+  assert.equal(deleteResult.reason, "delete-error");
+  assert.equal(remoteFiles.has(manifestFilename), true, "manifest remains after delete failure");
+  assert.equal(remoteFiles.has(chunkNodeFile), true, "chunk must remain when manifest delete fails");
+  assert.equal(remoteFiles.has(gcPendingFile), true, "pending chunk must remain when manifest delete fails");
+}
+
+async function testDeleteRemoteSyncFileManifestReadFailureAbortsDelete() {
+  const { fetch, remoteFiles } = createMockFetchEnvironment();
+  const dbByChatId = new Map();
+  const chatId = "chat-delete-manifest-read-fails";
+  dbByChatId.set(chatId, new FakeDb(chatId));
+
+  const manifestFilename = "ST-BME_sync_chat-delete-manifest-read-fails.json";
+  const chunkNodeFile = "ST-BME_sync_chat-delete-manifest-read-fails.__nodes.000.abc123.json";
+  remoteFiles.set(chunkNodeFile, { kind: "nodes", index: 0, records: [{ id: "n1" }] });
+  remoteFiles.set(manifestFilename, {
+    formatVersion: 2,
+    meta: { chatId, revision: 5, lastModified: 500, nodeCount: 1, edgeCount: 0, tombstoneCount: 0, schemaVersion: 1 },
+    state: { lastProcessedFloor: 3, extractionCount: 2 },
+    chunks: [
+      { kind: "nodes", index: 0, count: 1, filename: chunkNodeFile },
+    ],
+  });
+
+  const guardedFetch = async (url, options = {}) => {
+    if (
+      String(url).startsWith(`/user/files/${manifestFilename}`)
+      && String(options?.method || "GET").toUpperCase() === "GET"
+    ) {
+      return createJsonResponse(500, "manifest read failed");
+    }
+    return await fetch(url, options);
+  };
+
+  const deleteResult = await deleteRemoteSyncFile(
+    chatId,
+    buildRuntimeOptions({ dbByChatId, fetch: guardedFetch }),
+  );
+
+  assert.equal(deleteResult.deleted, false);
+  assert.equal(deleteResult.reason, "manifest-read-error");
+  assert.equal(deleteResult.cleanup.reason, "http-error");
+  assert.equal(remoteFiles.has(manifestFilename), true, "manifest must remain after read failure");
+  assert.equal(remoteFiles.has(chunkNodeFile), true, "chunk must remain after read failure");
+}
+
+async function testDeleteRemoteSyncFileRemoteHeadRecreatedSkipsChunkCleanup() {
+  const { fetch, remoteFiles } = createMockFetchEnvironment();
+  const dbByChatId = new Map();
+  const chatId = "chat-delete-head-recreated";
+  dbByChatId.set(chatId, new FakeDb(chatId));
+
+  const manifestFilename = "ST-BME_sync_chat-delete-head-recreated.json";
+  const chunkNodeFile = "ST-BME_sync_chat-delete-head-recreated.__nodes.000.abc123.json";
+  const manifestPayload = {
+    formatVersion: 2,
+    meta: { chatId, revision: 5, lastModified: 500, nodeCount: 1, edgeCount: 0, tombstoneCount: 0, schemaVersion: 1 },
+    state: { lastProcessedFloor: 3, extractionCount: 2 },
+    chunks: [
+      { kind: "nodes", index: 0, count: 1, filename: chunkNodeFile },
+    ],
+  };
+  remoteFiles.set(chunkNodeFile, { kind: "nodes", index: 0, records: [{ id: "n1" }] });
+  remoteFiles.set(manifestFilename, manifestPayload);
+
+  const guardedFetch = async (url, options = {}) => {
+    if (url === "/api/files/delete" && String(options?.method || "").toUpperCase() === "POST") {
+      const body = JSON.parse(String(options.body || "{}"));
+      if (String(body.path || "") === `/user/files/${manifestFilename}`) {
+        const response = await fetch(url, options);
+        remoteFiles.set(manifestFilename, {
+          ...manifestPayload,
+          meta: { ...manifestPayload.meta, revision: 6, lastModified: 600 },
+        });
+        return response;
+      }
+    }
+    return await fetch(url, options);
+  };
+
+  const deleteResult = await deleteRemoteSyncFile(
+    chatId,
+    buildRuntimeOptions({ dbByChatId, fetch: guardedFetch }),
+  );
+
+  assert.equal(deleteResult.deleted, true);
+  assert.equal(deleteResult.cleanup.reason, "remote-head-recreated");
+  assert.equal(deleteResult.cleanup.attempted, 0);
+  assert.equal(remoteFiles.has(manifestFilename), true, "recreated manifest must remain");
+  assert.equal(remoteFiles.has(chunkNodeFile), true, "chunk must remain when head is recreated");
+}
+
+async function testDeleteRemoteSyncFileMissingManifestNoSpeculativeDelete() {
+  const { fetch, remoteFiles, logs } = createMockFetchEnvironment();
+  const dbByChatId = new Map();
+  const chatId = "chat-missing-manifest-no-delete";
+  dbByChatId.set(chatId, new FakeDb(chatId));
+
+  // Pre-populate orphan-looking chunk files that match the chatId naming pattern
+  const orphanChunk = "ST-BME_sync_chat-missing-manifest-no-delete.__nodes.000.orphan.json";
+  const orphanGcPending = "ST-BME_sync_chat-missing-manifest-no-delete.__edges.000.stale.json";
+  remoteFiles.set(orphanChunk, { kind: "nodes", index: 0, records: [] });
+  remoteFiles.set(orphanGcPending, { kind: "edges", index: 0, records: [] });
+
+  const deleteCallsBefore = logs.deleteCalls;
+  const runtime = buildRuntimeOptions({ dbByChatId, fetch });
+  const deleteResult = await deleteRemoteSyncFile(chatId, runtime);
+
+  assert.equal(deleteResult.deleted, false);
+  assert.equal(deleteResult.reason, "not-found");
+
+  // Orphan chunks must NOT be speculatively deleted — only manifest filename candidates
+  // may be attempted for deletion (which 404 because the manifest was never uploaded),
+  // but chunks and gc-pending files must remain untouched.
+  assert.equal(remoteFiles.has(orphanChunk), true, "orphan chunk must not be speculatively deleted");
+  assert.equal(remoteFiles.has(orphanGcPending), true, "orphan gc-pending must not be speculatively deleted");
+  assert.equal(remoteFiles.size, 2, "both orphan files should remain untouched after missing-manifest delete");
+}
+
 async function testDeleteRemoteSyncFileFallsBackToLegacyFilename() {
   const { fetch, remoteFiles, logs } = createMockFetchEnvironment();
   const dbByChatId = new Map();
@@ -1683,6 +1895,11 @@ async function main() {
   await testDeleteUsesExplicitManifestFilenameAndClearsLocalBackupMeta();
   await testSyncNowLockAndAutoSync();
   await testDeleteRemoteSyncFile();
+  await testDeleteRemoteSyncFileV2CleansChunksAndGcPending();
+  await testDeleteRemoteSyncFileManifestDeleteFailureKeepsChunks();
+  await testDeleteRemoteSyncFileManifestReadFailureAbortsDelete();
+  await testDeleteRemoteSyncFileRemoteHeadRecreatedSkipsChunkCleanup();
+  await testDeleteRemoteSyncFileMissingManifestNoSpeculativeDelete();
   await testDeleteRemoteSyncFileFallsBackToLegacyFilename();
   await testAutoSyncOnVisibility();
   await testSyncNowRemoteReadErrorPath();
