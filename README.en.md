@@ -28,7 +28,7 @@ Quick links: [Configuration](docs/usage/configuration.md) · [Panel guide](docs/
 
 ## Core capabilities
 
-- **Automatic memory extraction** — After each AI reply, ST-BME extracts structured nodes and relations from the conversation (characters, events, locations, rules, plot threads, reflections, subjective memories), excluding reasoning tags like `think`/`analysis`/`reasoning` by default.
+- **Automatic memory extraction** — After each AI reply, ST-BME extracts structured nodes and relations from the conversation (characters, events, locations, rules, plot threads, reflections, subjective memories), using a default two-stage objective + subjective/POV commit pipeline and excluding reasoning tags like `think`/`analysis`/`reasoning`.
 - **Multi-layer hybrid recall** — Before generation, relevant memories are recalled through vector prefilter, graph diffusion, lexical boosting, multi-intent splitting, DPP diversity sampling, and optional LLM reranking; per-message persistent recall cards are supported.
 - **Cognitive architecture** — Character POV / user POV / objective world memory, spatial region weighting, and a story timeline.
 - **Summarization & maintenance** — Small summaries, summary rollup, reflection, consolidation, automatic compression, active forgetting — all logged and reversible.
@@ -49,7 +49,7 @@ ST-BME can be understood as three pipelines: **write** (conversation → memory)
 flowchart LR
     subgraph Write["Write: conversation → memory"]
         A["AI reply"] --> B["Structured message preprocessing"]
-        B --> C["LLM extracts nodes/edges"]
+        B --> C["LLM objective extraction + subjective/POV extraction"]
         C --> D["Nearest-neighbor reconciliation + cognitive scoping"]
         D --> E["Write graph + vector sync + timeline"]
         E --> F["Consolidate / compress / summarize / reflect"]

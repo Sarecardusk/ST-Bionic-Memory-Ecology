@@ -15,6 +15,8 @@ import { DEFAULT_TASK_PROFILE_TEMPLATES } from "./default-task-profile-templates
 
 const TASK_TYPES = [
   "extract",
+  "extract_objective",
+  "extract_subjective",
   "recall",
   "compress",
   "synopsis",
@@ -28,6 +30,16 @@ const TASK_TYPE_META = {
   extract: {
     label: "提取",
     description: "从当前对话批次中抽取结构化记忆。",
+  },
+  extract_objective: {
+    label: "客观提取",
+    description: "从当前对话批次中抽取客观层结构化记忆。",
+    hidden: true,
+  },
+  extract_subjective: {
+    label: "主观提取",
+    description: "从客观提取草稿与视角上下文中抽取主观记忆。",
+    hidden: true,
   },
   recall: {
     label: "召回",
@@ -187,6 +199,48 @@ const BUILTIN_BLOCK_DEFINITIONS = [
     description: "注入当前活跃的故事时间线标签与来源。extract 任务使用，帮助 LLM 定位本批对话在剧情时间轴上的位置。",
   },
   {
+    sourceKey: "objectiveExtractionDraft",
+    name: "客观提取草稿",
+    role: "system",
+    description: "注入未来拆分提取链路中的客观层提取草稿。仅供客观/主观拆分提取预设显式添加时使用。",
+    taskTypes: ["extract_objective", "extract_subjective"],
+  },
+  {
+    sourceKey: "objectiveRefMap",
+    name: "客观引用映射",
+    role: "system",
+    description: "注入未来拆分提取链路中的客观层 ref 到节点/草稿的映射。仅供客观/主观拆分提取预设显式添加时使用。",
+    taskTypes: ["extract_objective", "extract_subjective"],
+  },
+  {
+    sourceKey: "ownerContext",
+    name: "视角主体上下文",
+    role: "system",
+    description: "注入未来主观提取链路中的 POV owner 身份、作用域和相关约束。仅供拆分提取预设显式添加时使用。",
+    taskTypes: ["extract_objective", "extract_subjective"],
+  },
+  {
+    sourceKey: "batchStoryTime",
+    name: "批次故事时间",
+    role: "system",
+    description: "注入未来拆分提取链路中的批次故事时间对象。仅供拆分提取预设显式添加时使用。",
+    taskTypes: ["extract_objective", "extract_subjective"],
+  },
+  {
+    sourceKey: "relevantPovMemories",
+    name: "相关主观记忆",
+    role: "system",
+    description: "注入未来主观提取链路中与当前 owner 相关的既有 POV 记忆。仅供拆分提取预设显式添加时使用。",
+    taskTypes: ["extract_objective", "extract_subjective"],
+  },
+  {
+    sourceKey: "cognitionStateDigest",
+    name: "认知状态摘要",
+    role: "system",
+    description: "注入未来主观提取链路中 owner 的认知状态摘要。仅供拆分提取预设显式添加时使用。",
+    taskTypes: ["extract_objective", "extract_subjective"],
+  },
+  {
     sourceKey: "plannerCharacterCard",
     name: "规划:角色卡",
     role: "system",
@@ -239,6 +293,8 @@ const DEFAULT_TASK_INPUT = Object.freeze({
 
 const LEGACY_PROMPT_FIELD_MAP = {
   extract: "extractPrompt",
+  extract_objective: "extractObjectivePrompt",
+  extract_subjective: "extractSubjectivePrompt",
   recall: "recallPrompt",
   compress: "compressPrompt",
   synopsis: "synopsisPrompt",
@@ -1001,11 +1057,12 @@ function getDefaultTaskProfileTemplate(taskType) {
   if (String(taskType || "") === "planner") {
     return buildPlannerDefaultTaskProfileTemplate();
   }
-  const template = DEFAULT_TASK_PROFILE_TEMPLATES?.[taskType];
+  const templateKey = String(taskType || "");
+  const template = DEFAULT_TASK_PROFILE_TEMPLATES?.[templateKey];
   if (!template || typeof template !== "object") {
     return null;
   }
-  return applyRuntimeDefaultTemplateOverrides(taskType, cloneJson(template));
+  return applyRuntimeDefaultTemplateOverrides(templateKey, cloneJson(template));
 }
 
 function hashTemplateFingerprint(value = "") {
@@ -1976,6 +2033,48 @@ function shouldRefreshBuiltinDefaultProfile(taskType, profile = {}) {
   return false;
 }
 
+export function isExtractProfileSplitSafe(settings = {}) {
+  if (String(settings?.extractPrompt || "").trim()) {
+    return false;
+  }
+
+  const rawTaskProfiles = settings?.taskProfiles?.extract;
+  if (!rawTaskProfiles) return true;
+
+  const profiles = Array.isArray(rawTaskProfiles?.profiles) ? rawTaskProfiles.profiles : [];
+  const activeProfileId = String(rawTaskProfiles?.activeProfileId || DEFAULT_PROFILE_ID);
+  const rawActiveProfile = profiles.find((profile) => String(profile?.id || "") === activeProfileId);
+  if (!rawActiveProfile) return false;
+  if (String(rawActiveProfile?.id || "") !== DEFAULT_PROFILE_ID) return false;
+  if (rawActiveProfile?.builtin !== true) return false;
+  if (rawActiveProfile?.metadata?.migratedFromLegacy === true) return false;
+
+  const canonicalDefault = createDefaultTaskProfile("extract");
+  if (shouldRefreshBuiltinDefaultProfile("extract", rawActiveProfile)) return false;
+  if (
+    JSON.stringify(buildPromptBlockComparisonPayload(rawActiveProfile?.blocks || [])) !==
+    JSON.stringify(buildPromptBlockComparisonPayload(canonicalDefault.blocks || []))
+  ) {
+    return false;
+  }
+  if (JSON.stringify(rawActiveProfile?.generation || {}) !== JSON.stringify(canonicalDefault.generation || {})) {
+    return false;
+  }
+  if (JSON.stringify(rawActiveProfile?.input || {}) !== JSON.stringify(canonicalDefault.input || {})) {
+    return false;
+  }
+  if (JSON.stringify(rawActiveProfile?.regex || {}) !== JSON.stringify(canonicalDefault.regex || {})) {
+    return false;
+  }
+  if (String(rawActiveProfile?.promptMode || "") !== String(canonicalDefault.promptMode || "")) {
+    return false;
+  }
+  if ((rawActiveProfile?.enabled !== false) !== (canonicalDefault.enabled !== false)) {
+    return false;
+  }
+  return true;
+}
+
 function createFallbackDefaultTaskProfile(taskType) {
   const legacyPromptField = LEGACY_PROMPT_FIELD_MAP[taskType];
   const templateStamp = getDefaultTaskProfileTemplateStamp(taskType);
@@ -2512,11 +2611,14 @@ export function getTaskTypeMeta(taskType) {
     id: taskType,
     label: TASK_TYPE_META[taskType]?.label || taskType,
     description: TASK_TYPE_META[taskType]?.description || "",
+    hidden: TASK_TYPE_META[taskType]?.hidden === true,
   };
 }
 
 export function getTaskTypeOptions() {
-  return TASK_TYPES.map((taskType) => getTaskTypeMeta(taskType));
+  return TASK_TYPES
+    .map((taskType) => getTaskTypeMeta(taskType))
+    .filter((meta) => meta.hidden !== true);
 }
 
 export function getTaskTypes() {

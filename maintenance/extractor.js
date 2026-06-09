@@ -41,6 +41,7 @@ import {
   buildTaskLlmPayload,
   buildTaskPrompt,
 } from "../prompting/prompt-builder.js";
+import { isExtractProfileSplitSafe } from "../prompting/prompt-profiles.js";
 import { RELATION_TYPES } from "../graph/schema.js";
 import { applyTaskRegex } from "../prompting/task-regex.js";
 import { getSTContextForPrompt, getSTContextSnapshot } from "../host/st-context.js";
@@ -843,6 +844,330 @@ function applyOperationStoryTimeToNode(
   node.storyTimeSpan = createSpanFromStoryTime(null, source);
 }
 
+function resolveExtractionDraft({ llmResult, schema, graph, scopeRuntime }) {
+  const llmFailure =
+    llmResult && typeof llmResult === "object" && "ok" in llmResult
+      ? llmResult
+      : null;
+  const result = llmFailure
+    ? llmFailure.ok
+      ? llmFailure.data
+      : null
+    : llmResult;
+  const normalizedResult = normalizeExtractionResultPayload(result, schema);
+  const ownershipWarnings = [];
+  const extractionOwnerContext = deriveExtractionOwnerContext(
+    graph,
+    normalizedResult,
+    scopeRuntime,
+  );
+  const normalizedCognitionUpdates = normalizeCognitionUpdatesWithOwnerContext(
+    graph,
+    normalizedResult?.cognitionUpdates,
+    scopeRuntime,
+    extractionOwnerContext,
+    ownershipWarnings,
+  );
+
+  return {
+    llmFailure,
+    result,
+    normalizedResult,
+    ownershipWarnings,
+    extractionOwnerContext,
+    normalizedCognitionUpdates,
+  };
+}
+
+function validateExtractionDraft({
+  draft,
+  lastProcessedSeq,
+}) {
+  const { result, llmFailure, normalizedResult } = draft;
+  if (!normalizedResult || !Array.isArray(normalizedResult.operations)) {
+    const diagType = result === null
+      ? "null"
+      : Array.isArray(result)
+        ? `array(len=${result.length})`
+        : typeof result;
+    const diagKeys = isPlainObject(result)
+      ? Object.keys(result).slice(0, 10).join(", ")
+      : "";
+    const diagPreview = typeof result === "string"
+      ? result.slice(0, 120)
+      : "";
+    console.warn(
+      `[ST-BME] 提取 LLM 未返回有效操作 ` +
+        `[type=${diagType}]` +
+        (diagKeys ? ` [keys=${diagKeys}]` : "") +
+        (diagPreview ? ` [preview=${diagPreview}]` : "") +
+        (llmFailure?.ok === false && llmFailure?.errorType
+          ? ` [failureType=${String(llmFailure.errorType)}]`
+          : "") +
+        (llmFailure?.ok === false && llmFailure?.failureReason
+          ? ` [failureReason=${String(llmFailure.failureReason).slice(0, 200)}]`
+          : ""),
+    );
+    const failureReason =
+      llmFailure?.ok === false
+        ? String(llmFailure.failureReason || "").trim()
+        : "";
+    return {
+      success: false,
+      error: failureReason
+        ? `提取 LLM 未返回有效操作: ${failureReason}`
+        : "提取 LLM 未返回有效操作",
+      newNodes: 0,
+      updatedNodes: 0,
+      newEdges: 0,
+      newNodeIds: [],
+      processedRange: [lastProcessedSeq, lastProcessedSeq],
+    };
+  }
+  return null;
+}
+
+function commitExtractionPlan({
+  graph,
+  normalizedResult,
+  currentSeq,
+  schema,
+  scopeRuntime,
+  extractionOwnerContext,
+  ownershipWarnings,
+  effectiveStartSeq,
+  effectiveEndSeq,
+}) {
+  // 执行操作
+  const stats = { newNodes: 0, updatedNodes: 0, newEdges: 0 };
+  const newNodeIds = []; // v2: 收集新建节点 ID（用于进化引擎）
+  const updatedNodeIds = [];
+  const refMap = new Map();
+  const pendingLinkJobs = [];
+  const suppressedDefaultPairKeys = new Set();
+  const operationErrors = [];
+  const normalizedBatchStoryTime = normalizedResult?.batchStoryTime || null;
+
+  for (const op of normalizedResult.operations) {
+    try {
+      switch (op.action) {
+        case "create": {
+          const createResult = handleCreate(
+            graph,
+            op,
+            currentSeq,
+            schema,
+            refMap,
+            stats,
+            scopeRuntime,
+            extractionOwnerContext,
+            ownershipWarnings,
+            normalizedBatchStoryTime,
+          );
+          if (createResult?.nodeId) {
+            queueOperationLinks(pendingLinkJobs, createResult.nodeId, op.links);
+          }
+          if (createResult?.created === true && createResult.nodeId) {
+            newNodeIds.push(createResult.nodeId);
+          }
+          if (createResult?.updated === true && createResult.nodeId) {
+            updatedNodeIds.push(createResult.nodeId);
+          }
+          break;
+        }
+        case "update":
+          {
+            const updatedNodeId = handleUpdate(
+              graph,
+              op,
+              currentSeq,
+              stats,
+              scopeRuntime,
+              extractionOwnerContext,
+              ownershipWarnings,
+              normalizedBatchStoryTime,
+            );
+            if (updatedNodeId) {
+              updatedNodeIds.push(updatedNodeId);
+              queueOperationLinks(pendingLinkJobs, updatedNodeId, op.links);
+            }
+          }
+          break;
+        case "delete":
+          handleDelete(graph, op, stats);
+          break;
+        case "_skip":
+          // Mem0 对照判定为重复，跳过
+          break;
+        default: {
+          const message = `[ST-BME] 未知操作类型: ${op?.action ?? "<missing>"}`;
+          console.warn(message, op);
+          operationErrors.push(message);
+          break;
+        }
+      }
+    } catch (e) {
+      console.error(`[ST-BME] 操作执行失败:`, op, e);
+      operationErrors.push(e?.message || String(e));
+    }
+  }
+
+  if (operationErrors.length > 0) {
+    return {
+      success: false,
+      error: operationErrors.join(" | "),
+      ...stats,
+      newNodeIds,
+      processedRange: [effectiveStartSeq, effectiveEndSeq],
+    };
+  }
+
+  return {
+    success: true,
+    stats,
+    newNodeIds,
+    updatedNodeIds,
+    refMap,
+    pendingLinkJobs,
+    suppressedDefaultPairKeys,
+    normalizedBatchStoryTime,
+  };
+}
+
+async function applyExtractionPostCommit({
+  graph,
+  pendingLinkJobs,
+  refMap,
+  stats,
+  settings,
+  newNodeIds,
+  updatedNodeIds,
+  embeddingConfig,
+  signal,
+  effectiveEndSeq,
+  ownershipWarnings,
+  normalizedCognitionUpdates,
+  normalizedResult,
+  normalizedBatchStoryTime,
+  scopeRuntime,
+  extractionOwnerContext,
+  suppressedDefaultPairKeys,
+}) {
+  applyPendingLinks(graph, pendingLinkJobs, refMap, stats, {
+    suppressedDefaultPairKeys,
+  });
+  applyDefaultBatchEdges(
+    graph,
+    [...new Set([...newNodeIds, ...updatedNodeIds])],
+    stats,
+    settings,
+    {
+      suppressedDefaultPairKeys,
+    },
+  );
+
+  // 为新建节点生成 embedding。失败不应回滚整批图谱写入。
+  try {
+    await generateNodeEmbeddings(graph, embeddingConfig, signal);
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+    console.error("[ST-BME] 节点 embedding 生成失败，保留图谱写入:", error);
+  }
+
+  // 更新处理进度：统一记录为已处理到的末个 chat 索引
+  graph.lastProcessedSeq = Math.max(
+    graph.lastProcessedSeq ?? -1,
+    effectiveEndSeq,
+  );
+  const changedNodeIds = [...new Set([...newNodeIds, ...updatedNodeIds])];
+  if (ownershipWarnings.length > 0) {
+    debugWarn(
+      `[ST-BME] 已跳过 ${ownershipWarnings.length} 条缺少具体人物 owner 的主观记忆或认知更新`,
+    );
+  }
+  applyCognitionUpdates(graph, normalizedCognitionUpdates, {
+    refMap,
+    changedNodeIds,
+    scopeRuntime,
+    source: "extract",
+  });
+  applyRegionUpdates(graph, normalizedResult.regionUpdates, {
+    changedNodeIds,
+    source: "extract",
+  });
+  const batchStoryTimeResult = applyBatchStoryTime(
+    graph,
+    normalizedBatchStoryTime,
+    "extract",
+  );
+  updateRuntimeScopeState(graph, newNodeIds, scopeRuntime, extractionOwnerContext);
+
+  return {
+    changedNodeIds,
+    batchStoryTimeResult,
+  };
+}
+
+function resolveExtractPipelineVersion(settings = {}) {
+  const requested = String(settings?.extractPipelineVersion || "split-v1").trim().toLowerCase();
+  if (requested === "split-v1" && !isExtractProfileSplitSafe(settings)) {
+    return "legacy-single";
+  }
+  return requested;
+}
+
+function shouldUseSplitExtractionPipeline(settings = {}) {
+  return resolveExtractPipelineVersion(settings) === "split-v1";
+}
+
+function cloneNormalizedExtractionResult(result = {}) {
+  return {
+    ...result,
+    operations: Array.isArray(result?.operations)
+      ? result.operations.map((op) => ({ ...op }))
+      : [],
+    cognitionUpdates: Array.isArray(result?.cognitionUpdates)
+      ? result.cognitionUpdates.map((item) => ({ ...item }))
+      : [],
+    regionUpdates: Array.isArray(result?.regionUpdates)
+      ? result.regionUpdates.map((item) => ({ ...item }))
+      : result?.regionUpdates,
+  };
+}
+
+function filterObjectiveExtractionResult(result = {}) {
+  const next = cloneNormalizedExtractionResult(result);
+  next.operations = next.operations.filter((op) => String(op?.type || "") !== "pov_memory");
+  next.cognitionUpdates = [];
+  return next;
+}
+
+function filterSubjectiveExtractionResult(result = {}) {
+  const next = cloneNormalizedExtractionResult(result);
+  next.operations = next.operations.filter((op) => String(op?.type || "") === "pov_memory");
+  next.regionUpdates = {};
+  next.batchStoryTime = null;
+  return next;
+}
+
+function mergeSplitExtractionResults(objectiveResult = {}, subjectiveResult = {}) {
+  return {
+    ...objectiveResult,
+    operations: [
+      ...(Array.isArray(objectiveResult?.operations) ? objectiveResult.operations : []),
+      ...(Array.isArray(subjectiveResult?.operations) ? subjectiveResult.operations : []),
+    ],
+    cognitionUpdates: [
+      ...(Array.isArray(objectiveResult?.cognitionUpdates) ? objectiveResult.cognitionUpdates : []),
+      ...(Array.isArray(subjectiveResult?.cognitionUpdates) ? subjectiveResult.cognitionUpdates : []),
+    ],
+    regionUpdates: objectiveResult?.regionUpdates || {},
+    batchStoryTime: objectiveResult?.batchStoryTime || null,
+  };
+}
+
 /**
  * 对未处理的对话楼层执行记忆提取
  *
@@ -1152,237 +1477,188 @@ export async function extractMemories({
     }
   }
 
-  // 调用 LLM
-  const llmResult = await callLLMForJSON({
-    systemPrompt: llmSystemPrompt,
-    userPrompt: promptPayload.userPrompt,
-    maxRetries: 2,
-    signal,
-    taskType: "extract",
-    debugContext: createExtractTaskLlmDebugContext(
-      promptBuild,
-      extractRegexInput,
-      extractionInput?.debug || null,
-    ),
-    promptMessages: promptPayload.promptMessages,
-    additionalMessages: promptPayloadAdditionalMessages,
-    onStreamProgress,
-    returnFailureDetails: true,
-  });
-  throwIfAborted(signal);
-  const llmFailure =
-    llmResult && typeof llmResult === "object" && "ok" in llmResult
-      ? llmResult
-      : null;
-  const result = llmFailure
-    ? llmFailure.ok
-      ? llmFailure.data
-      : null
-    : llmResult;
-  const normalizedResult = normalizeExtractionResultPayload(result, schema);
-  const ownershipWarnings = [];
-  const extractionOwnerContext = deriveExtractionOwnerContext(
-    graph,
-    normalizedResult,
-    scopeRuntime,
-  );
-  const normalizedCognitionUpdates = normalizeCognitionUpdatesWithOwnerContext(
-    graph,
-    normalizedResult?.cognitionUpdates,
-    scopeRuntime,
-    extractionOwnerContext,
-    ownershipWarnings,
-  );
+  const callExtractionStage = async (taskType) => {
+    const stageResult = await callLLMForJSON({
+      systemPrompt: llmSystemPrompt,
+      userPrompt: promptPayload.userPrompt,
+      maxRetries: 2,
+      signal,
+      taskType,
+      debugContext: createExtractTaskLlmDebugContext(
+        promptBuild,
+        extractRegexInput,
+        extractionInput?.debug || null,
+      ),
+      promptMessages: promptPayload.promptMessages,
+      additionalMessages: promptPayloadAdditionalMessages,
+      onStreamProgress,
+      returnFailureDetails: true,
+    });
+    throwIfAborted(signal);
+    return stageResult;
+  };
 
-  if (!normalizedResult || !Array.isArray(normalizedResult.operations)) {
-    const diagType = result === null
-      ? "null"
-      : Array.isArray(result)
-        ? `array(len=${result.length})`
-        : typeof result;
-    const diagKeys = isPlainObject(result)
-      ? Object.keys(result).slice(0, 10).join(", ")
-      : "";
-    const diagPreview = typeof result === "string"
-      ? result.slice(0, 120)
-      : "";
-    console.warn(
-      `[ST-BME] 提取 LLM 未返回有效操作 ` +
-        `[type=${diagType}]` +
-        (diagKeys ? ` [keys=${diagKeys}]` : "") +
-        (diagPreview ? ` [preview=${diagPreview}]` : "") +
-        (llmFailure?.ok === false && llmFailure?.errorType
-          ? ` [failureType=${String(llmFailure.errorType)}]`
-          : "") +
-        (llmFailure?.ok === false && llmFailure?.failureReason
-          ? ` [failureReason=${String(llmFailure.failureReason).slice(0, 200)}]`
-          : ""),
+  const buildAndCallStageForSplit = async (stageTaskType) => {
+    const stagePromptBuild = await buildTaskPrompt(settings, stageTaskType, {
+      taskName: "extract",
+      schema: schemaDescription,
+      schemaDescription,
+      recentMessages: promptRecentMessages,
+      chatMessages: structuredMessages,
+      dialogueText,
+      graphStats: graphOverview,
+      graphOverview,
+      currentRange,
+      activeSummaries,
+      storyTimeContext,
+      taskInputDebug: extractionInput?.debug || null,
+      __skipWorldInfo: extractWorldbookMode === "none",
+      ...getSTContextForPrompt(),
+    });
+
+    const stageRegexInput = { entries: [] };
+    const stageSystemPrompt = applyTaskRegex(
+      settings,
+      stageTaskType,
+      "finalPrompt",
+      stagePromptBuild.systemPrompt ||
+        extractPrompt ||
+        buildDefaultExtractPrompt(schema),
+      stageRegexInput,
+      "system",
     );
-    const failureReason =
-      llmFailure?.ok === false
-        ? String(llmFailure.failureReason || "").trim()
-        : "";
-    return {
-      success: false,
-      error: failureReason
-        ? `提取 LLM 未返回有效操作: ${failureReason}`
-        : "提取 LLM 未返回有效操作",
-      newNodes: 0,
-      updatedNodes: 0,
-      newEdges: 0,
-      newNodeIds: [],
-      processedRange: [lastProcessedSeq, lastProcessedSeq],
-    };
+    const stagePromptPayload = resolveTaskPromptPayload(stagePromptBuild, userPrompt);
+    const stageLlmSystemPrompt = resolveTaskLlmSystemPrompt(stagePromptPayload, stageSystemPrompt);
+
+    const stageResult = await callLLMForJSON({
+      systemPrompt: stageLlmSystemPrompt,
+      userPrompt: stagePromptPayload.userPrompt,
+      maxRetries: 2,
+      signal,
+      taskType: stageTaskType,
+      debugContext: createExtractTaskLlmDebugContext(
+        stagePromptBuild,
+        stageRegexInput,
+        extractionInput?.debug || null,
+      ),
+      promptMessages: stagePromptPayload.promptMessages,
+      additionalMessages: Array.isArray(stagePromptPayload.additionalMessages)
+        ? [
+            ...stagePromptPayload.additionalMessages,
+            { role: "system", content: extractionAugmentPrompt },
+          ]
+        : [{ role: "system", content: extractionAugmentPrompt }],
+      onStreamProgress,
+      returnFailureDetails: true,
+    });
+    throwIfAborted(signal);
+    return stageResult;
+  };
+
+  let draft = null;
+  if (shouldUseSplitExtractionPipeline(settings)) {
+    const objectiveLlmResult = await buildAndCallStageForSplit("extract_objective");
+    const objectiveDraft = resolveExtractionDraft({
+      llmResult: objectiveLlmResult,
+      schema,
+      graph,
+      scopeRuntime,
+    });
+    const objectiveValidationFailure = validateExtractionDraft({
+      draft: objectiveDraft,
+      lastProcessedSeq,
+    });
+    if (objectiveValidationFailure) return objectiveValidationFailure;
+
+    const subjectiveLlmResult = await buildAndCallStageForSplit("extract_subjective");
+    const subjectiveDraft = resolveExtractionDraft({
+      llmResult: subjectiveLlmResult,
+      schema,
+      graph,
+      scopeRuntime,
+    });
+    const subjectiveValidationFailure = validateExtractionDraft({
+      draft: subjectiveDraft,
+      lastProcessedSeq,
+    });
+    if (subjectiveValidationFailure) return subjectiveValidationFailure;
+
+    draft = resolveExtractionDraft({
+      llmResult: mergeSplitExtractionResults(
+        filterObjectiveExtractionResult(objectiveDraft.normalizedResult),
+        filterSubjectiveExtractionResult(subjectiveDraft.normalizedResult),
+      ),
+      schema,
+      graph,
+      scopeRuntime,
+    });
+    const mergedValidationFailure = validateExtractionDraft({
+      draft,
+      lastProcessedSeq,
+    });
+    if (mergedValidationFailure) return mergedValidationFailure;
+  } else {
+    // 调用 LLM
+    const llmResult = await callExtractionStage("extract");
+    draft = resolveExtractionDraft({
+      llmResult,
+      schema,
+      graph,
+      scopeRuntime,
+    });
+    const validationFailure = validateExtractionDraft({
+      draft,
+      lastProcessedSeq,
+    });
+    if (validationFailure) return validationFailure;
   }
 
-  // 执行操作
-  const stats = { newNodes: 0, updatedNodes: 0, newEdges: 0 };
-  const newNodeIds = []; // v2: 收集新建节点 ID（用于进化引擎）
-  const updatedNodeIds = [];
-  const refMap = new Map();
-  const pendingLinkJobs = [];
-  const suppressedDefaultPairKeys = new Set();
-  const operationErrors = [];
-  const normalizedBatchStoryTime = normalizedResult?.batchStoryTime || null;
-
-  for (const op of normalizedResult.operations) {
-    try {
-      switch (op.action) {
-        case "create": {
-          const createResult = handleCreate(
-            graph,
-            op,
-            currentSeq,
-            schema,
-            refMap,
-            stats,
-            scopeRuntime,
-            extractionOwnerContext,
-            ownershipWarnings,
-            normalizedBatchStoryTime,
-          );
-          if (createResult?.nodeId) {
-            queueOperationLinks(pendingLinkJobs, createResult.nodeId, op.links);
-          }
-          if (createResult?.created === true && createResult.nodeId) {
-            newNodeIds.push(createResult.nodeId);
-          }
-          if (createResult?.updated === true && createResult.nodeId) {
-            updatedNodeIds.push(createResult.nodeId);
-          }
-          break;
-        }
-        case "update":
-          {
-            const updatedNodeId = handleUpdate(
-              graph,
-              op,
-              currentSeq,
-              stats,
-              scopeRuntime,
-              extractionOwnerContext,
-              ownershipWarnings,
-              normalizedBatchStoryTime,
-            );
-            if (updatedNodeId) {
-              updatedNodeIds.push(updatedNodeId);
-              queueOperationLinks(pendingLinkJobs, updatedNodeId, op.links);
-            }
-          }
-          break;
-        case "delete":
-          handleDelete(graph, op, stats);
-          break;
-        case "_skip":
-          // Mem0 对照判定为重复，跳过
-          break;
-        default: {
-          const message = `[ST-BME] 未知操作类型: ${op?.action ?? "<missing>"}`;
-          console.warn(message, op);
-          operationErrors.push(message);
-          break;
-        }
-      }
-    } catch (e) {
-      console.error(`[ST-BME] 操作执行失败:`, op, e);
-      operationErrors.push(e?.message || String(e));
-    }
-  }
-
-  if (operationErrors.length > 0) {
-    return {
-      success: false,
-      error: operationErrors.join(" | "),
-      ...stats,
-      newNodeIds,
-      processedRange: [effectiveStartSeq, effectiveEndSeq],
-    };
-  }
-
-  applyPendingLinks(graph, pendingLinkJobs, refMap, stats, {
-    suppressedDefaultPairKeys,
-  });
-  applyDefaultBatchEdges(
+  const commitResult = commitExtractionPlan({
     graph,
-    [...new Set([...newNodeIds, ...updatedNodeIds])],
-    stats,
-    settings,
-    {
-      suppressedDefaultPairKeys,
-    },
-  );
-
-  // 为新建节点生成 embedding。失败不应回滚整批图谱写入。
-  try {
-    await generateNodeEmbeddings(graph, embeddingConfig, signal);
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error;
-    }
-    console.error("[ST-BME] 节点 embedding 生成失败，保留图谱写入:", error);
-  }
-
-  // 更新处理进度：统一记录为已处理到的末个 chat 索引
-  graph.lastProcessedSeq = Math.max(
-    graph.lastProcessedSeq ?? -1,
+    normalizedResult: draft.normalizedResult,
+    currentSeq,
+    schema,
+    scopeRuntime,
+    extractionOwnerContext: draft.extractionOwnerContext,
+    ownershipWarnings: draft.ownershipWarnings,
+    effectiveStartSeq,
     effectiveEndSeq,
-  );
-  const changedNodeIds = [...new Set([...newNodeIds, ...updatedNodeIds])];
-  if (ownershipWarnings.length > 0) {
-    debugWarn(
-      `[ST-BME] 已跳过 ${ownershipWarnings.length} 条缺少具体人物 owner 的主观记忆或认知更新`,
-    );
-  }
-  applyCognitionUpdates(graph, normalizedCognitionUpdates, {
-    refMap,
-    changedNodeIds,
-    scopeRuntime,
-    source: "extract",
   });
-  applyRegionUpdates(graph, normalizedResult.regionUpdates, {
-    changedNodeIds,
-    source: "extract",
-  });
-  const batchStoryTimeResult = applyBatchStoryTime(
+  if (commitResult.success === false) return commitResult;
+
+  const postCommitResult = await applyExtractionPostCommit({
     graph,
-    normalizedBatchStoryTime,
-    "extract",
-  );
-  updateRuntimeScopeState(graph, newNodeIds, scopeRuntime, extractionOwnerContext);
+    pendingLinkJobs: commitResult.pendingLinkJobs,
+    refMap: commitResult.refMap,
+    stats: commitResult.stats,
+    settings,
+    newNodeIds: commitResult.newNodeIds,
+    updatedNodeIds: commitResult.updatedNodeIds,
+    embeddingConfig,
+    signal,
+    effectiveEndSeq,
+    ownershipWarnings: draft.ownershipWarnings,
+    normalizedCognitionUpdates: draft.normalizedCognitionUpdates,
+    normalizedResult: draft.normalizedResult,
+    normalizedBatchStoryTime: commitResult.normalizedBatchStoryTime,
+    scopeRuntime,
+    extractionOwnerContext: draft.extractionOwnerContext,
+    suppressedDefaultPairKeys: commitResult.suppressedDefaultPairKeys,
+  });
 
   debugLog(
-    `[ST-BME] 提取完成: 新建 ${stats.newNodes}, 更新 ${stats.updatedNodes}, 新边 ${stats.newEdges}, lastProcessedSeq=${graph.lastProcessedSeq}`,
+    `[ST-BME] 提取完成: 新建 ${commitResult.stats.newNodes}, 更新 ${commitResult.stats.updatedNodes}, 新边 ${commitResult.stats.newEdges}, lastProcessedSeq=${graph.lastProcessedSeq}`,
   );
 
   return {
     success: true,
     error: "",
-    ...stats,
-    newNodeIds,
-    changedNodeIds,
-    ownerWarnings: ownershipWarnings,
-    batchStoryTime: normalizedBatchStoryTime,
-    batchStoryTimeResult,
+    ...commitResult.stats,
+    newNodeIds: commitResult.newNodeIds,
+    changedNodeIds: postCommitResult.changedNodeIds,
+    ownerWarnings: draft.ownershipWarnings,
+    batchStoryTime: commitResult.normalizedBatchStoryTime,
+    batchStoryTimeResult: postCommitResult.batchStoryTimeResult,
     processedRange: [effectiveStartSeq, effectiveEndSeq],
   };
 }

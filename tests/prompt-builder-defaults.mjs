@@ -47,6 +47,7 @@ installResolveHooks([
 
 const { buildTaskLlmPayload, buildTaskPrompt } = await import("../prompting/prompt-builder.js");
 const {
+  createBuiltinPromptBlock,
   createDefaultGlobalTaskRegex,
   createDefaultTaskProfiles,
 } = await import("../prompting/prompt-profiles.js");
@@ -255,5 +256,149 @@ assert.equal(
 );
 
 initializeHostAdapter({});
+
+const splitContextTaskProfiles = createDefaultTaskProfiles();
+const subjectiveProfile = splitContextTaskProfiles.extract_subjective.profiles[0];
+subjectiveProfile.blocks = [
+  createBuiltinPromptBlock("extract_subjective", "objectiveExtractionDraft", {
+    name: "客观提取草稿",
+    order: 0,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "objectiveRefMap", {
+    name: "客观引用映射",
+    order: 1,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "ownerContext", {
+    name: "视角主体上下文",
+    order: 2,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "batchStoryTime", {
+    name: "批次故事时间",
+    order: 3,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "relevantPovMemories", {
+    name: "相关主观记忆",
+    order: 4,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "cognitionStateDigest", {
+    name: "认知状态摘要",
+    order: 5,
+  }),
+];
+
+const splitContextPromptBuild = await buildTaskPrompt(
+  {
+    taskProfilesVersion: 3,
+    taskProfiles: splitContextTaskProfiles,
+  },
+  "extract_subjective",
+  {
+    objectiveExtractionDraft: { operations: [{ ref: "evt1", type: "event" }] },
+    objectiveRefMap: { evt1: "node-evt1" },
+    ownerContext: { ownerType: "character", ownerName: "艾琳" },
+    batchStoryTime: { label: "第二天清晨", confidence: "high" },
+    relevantPovMemories: ["旧 POV 记忆"],
+    cognitionStateDigest: "艾琳知道 evt1",
+  },
+);
+const splitContextPayload = buildTaskLlmPayload(
+  splitContextPromptBuild,
+  "fallback-user",
+);
+assert.deepEqual(
+  splitContextPayload.promptMessages
+    .map((message) => message.sourceKey)
+    .filter(Boolean),
+  [
+    "objectiveExtractionDraft",
+    "objectiveRefMap",
+    "ownerContext",
+    "batchStoryTime",
+    "relevantPovMemories",
+    "cognitionStateDigest",
+  ],
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "objectiveExtractionDraft",
+    )?.content || "",
+  ),
+  /"ref": "evt1"/,
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "ownerContext",
+    )?.content || "",
+  ),
+  /"ownerName": "艾琳"/,
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "batchStoryTime",
+    )?.content || "",
+  ),
+  /"第二天清晨"/,
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "relevantPovMemories",
+    )?.content || "",
+  ),
+  /旧 POV 记忆/,
+);
+
+// Verify objective template: no pov_memory or cognitionUpdates in format/rules blocks
+const objPromptBuild = await buildTaskPrompt(settings, "extract_objective", {
+  taskName: "extract_objective",
+  charDescription: "角色描述",
+  recentMessages: "A: 你好\nB: 世界",
+  graphStats: "node_count=3",
+  schema: "event(title, summary)",
+  currentRange: "1 ~ 2",
+});
+const objPayload = buildTaskLlmPayload(objPromptBuild, "fallback-user");
+const objFormatBlock = objPayload.promptMessages.find((m) => m.blockName === "输出格式");
+const objRulesBlock = objPayload.promptMessages.find((m) => m.blockName === "行为规则");
+assert.equal(
+  (objPayload.promptMessages || [])
+    .filter((m) => m.role === "user")
+    .map((m) => m.blockName)
+    .join(","),
+  "输出格式,行为规则",
+  "extract_objective should have format + rules user blocks",
+);
+assert.match(String(objFormatBlock?.content || ""), /batchStoryTime/);
+assert.match(String(objFormatBlock?.content || ""), /regionUpdates/);
+assert.match(String(objFormatBlock?.content || ""), /\"type\": \"event\"/);
+assert.match(String(objFormatBlock?.content || ""), /\"region\": \"钟楼\"/);
+assert.match(String(objFormatBlock?.content || ""), /\"adjacent\": \[\"旧城区\", \"内廷\"\]/);
+assert.doesNotMatch(String(objFormatBlock?.content || ""), /\\\"region\\\"/);
+assert.doesNotMatch(String(objFormatBlock?.content || ""), /\\n\s*\{\\\"region/);
+assert.doesNotMatch(String(objFormatBlock?.content || ""), /pov_memory/);
+assert.doesNotMatch(String(objFormatBlock?.content || ""), /cognitionUpdates/);
+assert.match(String(objRulesBlock?.content || ""), /禁止输出/);
+assert.doesNotMatch(String(objRulesBlock?.content || ""), /POV 记忆字段/);
+
+// Verify subjective template: no objective types in format block
+const subPromptBuild = await buildTaskPrompt(settings, "extract_subjective", {
+  taskName: "extract_subjective",
+  charDescription: "角色描述",
+  recentMessages: "A: 你好\nB: 世界",
+  graphStats: "node_count=3",
+  schema: "event(title, summary)",
+  currentRange: "1 ~ 2",
+});
+const subPayload = buildTaskLlmPayload(subPromptBuild, "fallback-user");
+const subFormatBlock = subPayload.promptMessages.find((m) => m.blockName === "输出格式");
+const subRulesBlock = subPayload.promptMessages.find((m) => m.blockName === "行为规则");
+assert.match(String(subFormatBlock?.content || ""), /pov_memory/);
+assert.match(String(subFormatBlock?.content || ""), /cognitionUpdates/);
+assert.doesNotMatch(String(subFormatBlock?.content || ""), /\"type\": \"event\"/);
+assert.doesNotMatch(String(subFormatBlock?.content || ""), /\\\"type\\\"/);
+assert.match(String(subRulesBlock?.content || ""), /POV 记忆字段/);
 
 console.log("prompt-builder-defaults tests passed");

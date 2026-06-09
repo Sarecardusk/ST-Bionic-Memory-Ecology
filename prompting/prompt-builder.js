@@ -37,6 +37,12 @@ const INPUT_CONTEXT_MVU_FIELDS = [
   "contradictionSummary",
   "charDescription",
   "userPersona",
+  "objectiveExtractionDraft",
+  "objectiveRefMap",
+  "ownerContext",
+  "batchStoryTime",
+  "relevantPovMemories",
+  "cognitionStateDigest",
 ];
 
 const INPUT_REGEX_STAGE_BY_FIELD = {
@@ -51,6 +57,12 @@ const INPUT_REGEX_STAGE_BY_FIELD = {
   characterSummary: "input.candidateText",
   threadSummary: "input.candidateText",
   contradictionSummary: "input.candidateText",
+  objectiveExtractionDraft: "input.candidateText",
+  objectiveRefMap: "input.candidateText",
+  ownerContext: "input.candidateText",
+  batchStoryTime: "input.candidateText",
+  relevantPovMemories: "input.candidateText",
+  cognitionStateDigest: "input.candidateText",
 };
 
 const INPUT_REGEX_ROLE_BY_FIELD = {
@@ -74,6 +86,12 @@ const INPUT_HOST_REGEX_SOURCE_BY_FIELD = {
   contradictionSummary: "ai_output",
   charDescription: "ai_output",
   userPersona: "user_input",
+  objectiveExtractionDraft: "ai_output",
+  objectiveRefMap: "ai_output",
+  ownerContext: "ai_output",
+  batchStoryTime: "ai_output",
+  relevantPovMemories: "ai_output",
+  cognitionStateDigest: "ai_output",
 };
 
 function cloneRuntimeDebugValue(value, fallback = null) {

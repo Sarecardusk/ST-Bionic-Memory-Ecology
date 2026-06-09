@@ -37,7 +37,7 @@ ST-BME 的运行可以归纳为三条相对独立的链路。
 助手消息落层
   → 自动提取计划（够不够触发？智能触发？）
   → 构建结构化提取输入（过滤 think/analysis 等）
-  → LLM 提取 → 规范化操作（create/update/delete/link）
+  → LLM 客观提取 + 主观/POV 提取 → 规范化操作（create/update/delete/link）
   → 写入图谱节点与关系（含时序边）
   → 后处理：整合去重 → 分层总结 → 反思 → 睡眠遗忘 → 压缩
   → 向量同步（为新节点生成 embedding）

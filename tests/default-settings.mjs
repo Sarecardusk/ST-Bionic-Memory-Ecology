@@ -109,9 +109,14 @@ assert.equal(defaultSettings.loadNativeHydrateThresholdRecords, 30000);
 assert.equal(defaultSettings.nativeRolloutVersion, 2);
 assert.equal(defaultSettings.nativeEngineFailOpen, true);
 assert.equal(defaultSettings.graphNativeForceDisable, false);
+assert.equal(defaultSettings.extractPipelineVersion, "split-v1");
 assert.equal(defaultSettings.taskProfilesVersion, 3);
+assert.equal(defaultSettings.extractObjectivePrompt, "");
+assert.equal(defaultSettings.extractSubjectivePrompt, "");
 assert.ok(defaultSettings.taskProfiles);
 assert.ok(defaultSettings.taskProfiles.extract);
+assert.ok(defaultSettings.taskProfiles.extract_objective);
+assert.ok(defaultSettings.taskProfiles.extract_subjective);
 assert.ok(defaultSettings.taskProfiles.recall);
 assert.ok(defaultSettings.globalTaskRegex);
 assert.deepEqual(

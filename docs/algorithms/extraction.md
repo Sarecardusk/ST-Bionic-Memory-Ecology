@@ -43,9 +43,22 @@
 
 可选近期消息上限 `extractRecentMessageCap`（默认 0 = 不限）。提示词模式 `extractPromptStructuredMode` 默认 `"both"`（可选 `transcript` / `structured` / `both`）。
 
-## 3. 构建提取提示词
+## 3. 默认 split-v1 提取管线
 
-`buildTaskPrompt(settings, "extract", ...)` 分层组装：
+默认 `extractPipelineVersion` 是 `"split-v1"`。同一批结构化输入会进入两个职责更窄的 LLM 阶段：
+
+1. **客观阶段**（`extract_objective`）：只保留客观图谱操作，例如事件、角色、地点、规则、线程、区域和故事时间。该阶段输出中的 `pov_memory` 与 cognition 更新会被过滤掉。
+2. **主观/POV 阶段**（`extract_subjective`）：只保留 `pov_memory` 与 cognition 更新。该阶段输出中的客观节点、区域更新和批次故事时间会被过滤掉。
+
+两个阶段都通过校验后，才合并为一个 commit plan，并一次性写入图谱；如果主观阶段失败或输出无效，客观阶段不会先落库。这保证默认提取仍然保持“一次 batch、一次提交、一次持久化”的原子边界。
+
+为了不破坏旧用户的自定义提取 Prompt，运行时会先检查旧 `extractPrompt` 和 `taskProfiles.extract`：只要检测到旧式自定义、迁移自旧 Prompt、陈旧默认模板或被修改过的默认 `extract` profile，就自动回退到 `legacy-single` 的单请求提取路径。
+
+> 当前阶段没有改默认 Prompt 文案；`extract_objective` / `extract_subjective` 是工程管线和 task type 拆分，后续可以在对应 task profile 中替换成真正更短、更专注的客观/主观 Prompt。
+
+## 4. 构建提取提示词
+
+默认 split 管线仍复用同一套提取 Prompt 上下文构建能力；legacy 路径使用 `buildTaskPrompt(settings, "extract", ...)`，split 阶段使用对应 task type 进入 LLM 调用。上下文分层包括：
 
 1. 当前对话（结构化 + transcript）
 2. 图谱状态上下文（`buildTaskGraphStats()`，topK 12、diffusionTopK 48、多意图开、最大文本 1200）
@@ -56,11 +69,11 @@
 
 LLM JSON 调用，maxRetries 2。
 
-## 4. 规范化 LLM 操作
+## 5. 规范化 LLM 操作
 
 从多种可能的容器键里提取操作数组，规范化每个操作的 `action` / `type` / `nodeId` / `ref` / `links` / `clusters` / `scope` / `storyTime` / `fields`，以及 `cognitionUpdates` / `regionUpdates` / `batchStoryTime`。
 
-## 5. 写入图谱
+## 6. 写入图谱
 
 遍历规范化操作：
 
@@ -95,7 +108,7 @@ update 操作触发时序处理：
 
 > 当前默认后处理优先走**分层总结**（hierarchical summary），而非 `generateSynopsis()`。分层总结见 [`consolidation-and-compression.md`](consolidation-and-compression.md)。
 
-## 6. 后处理
+## 7. 后处理
 
 `handleExtractionSuccessController()`（`maintenance/extraction-success-controller.js`）在提取成功后依次处理：整合去重 → 分层总结 → 反思 → 睡眠遗忘 → 压缩 → 向量同步。这些见 [`consolidation-and-compression.md`](consolidation-and-compression.md)。
 
@@ -107,6 +120,7 @@ update 操作触发时序处理：
 | `extractEvery` | 1 | 每 N 条助手消息提取 |
 | `extractContextTurns` | 2 | 上下文轮数 |
 | `extractAutoDelayLatestAssistant` | false | lag-one 延迟提取 |
+| `extractPipelineVersion` | "split-v1" | 默认客观 + 主观/POV 双阶段提取；旧自定义 Prompt 自动回退 legacy |
 | `extractPromptStructuredMode` | "both" | 提示词模式 |
 | `enableSmartTrigger` | false | 智能触发 |
 | 排除标签 | think,analysis,reasoning | 提取时过滤 |

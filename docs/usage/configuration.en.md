@@ -72,6 +72,7 @@ In direct mode, the browser requests the embedding service directly:
 | 每 N 条回复提取 | `1` | Trigger extraction every N assistant replies |
 | 提取上下文轮数 | `2` | Number of conversation rounds to look back during extraction |
 | 自动延后最新助手 | `false` | Allows the latest reply to stabilize before extraction |
+| Extraction pipeline version | `split-v1` | Default two-stage extraction: objective facts, then subjective/POV. Old custom extraction prompts automatically fall back to the legacy single-call path. |
 | Assistant 排除标签 | `think,analysis,reasoning` | Excludes reasoning tags by default |
 | 提取消息上限 | `0` | `0` means unlimited |
 | 提取 Prompt 结构模式 | `both` | Provides both transcript and structured messages |
@@ -133,6 +134,9 @@ Task preset types:
 
 - **`extract`**
   - Memory extraction.
+
+- **`extract_objective` / `extract_subjective`**
+  - Objective and subjective/POV stages for the default `split-v1` extraction pipeline. This version only splits task type and commit boundaries; it does not rewrite prompt text here. Old custom `extract` prompts/profiles automatically fall back to the legacy single-call path.
 
 - **`recall`**
   - Recall reranking.
