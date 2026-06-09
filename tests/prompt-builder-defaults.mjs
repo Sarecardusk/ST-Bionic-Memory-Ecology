@@ -137,7 +137,7 @@ assert.deepEqual(
   recallPayload.promptMessages
     .filter((message) => message.role === "assistant")
     .map((message) => message.blockName),
-  ["身份确认", "信息确认"],
+  ["身份确认", "信息确认", "规则确认"],
 );
 assert.deepEqual(
   recallPayload.promptMessages
