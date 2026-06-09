@@ -72,6 +72,7 @@ Embedding 是智能召回的核心。
 | 每 N 条回复提取 | `1` | 每几条助手回复触发一次提取 |
 | 提取上下文轮数 | `2` | 提取时向前看的对话轮数 |
 | 自动延后最新助手 | `false` | 可让最新回复稳定后再提取 |
+| 提取管线版本 | `split-v1` | 默认分成客观事实阶段 + 主观/POV 阶段；旧自定义提取 Prompt 会自动回退单请求 legacy |
 | Assistant 排除标签 | `think,analysis,reasoning` | 默认排除推理标签 |
 | 提取消息上限 | `0` | `0` 表示不限 |
 | 提取 Prompt 结构模式 | `both` | 同时提供 transcript 和 structured messages |
@@ -133,6 +134,9 @@ Embedding 是智能召回的核心。
 
 - **`extract`**
   - 记忆提取。
+
+- **`extract_objective` / `extract_subjective`**
+  - 默认 `split-v1` 提取管线的客观阶段与主观/POV 阶段。当前版本只做 task type 与提交边界拆分，不在这里改写 Prompt 文案；旧自定义 `extract` Prompt/Profile 会自动回退到 legacy 单请求路径。
 
 - **`recall`**
   - 召回精排。
