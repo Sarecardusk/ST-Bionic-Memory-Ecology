@@ -91,40 +91,81 @@ function buildPersistedRecallReuseResult(record = {}) {
   };
 }
 
-function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
-  const generationType = String(recallInput?.generationType || "normal").trim() || "normal";
+export function normalizeRecallGenerationType(value = "normal") {
+  return String(value || "normal").trim() || "normal";
+}
 
-  let targetUserMessageIndex = Number.isFinite(recallInput?.targetUserMessageIndex)
-    ? Math.floor(Number(recallInput.targetUserMessageIndex))
-    : null;
+export function normalizeRecallTargetUserMessageIndex(value) {
+  return Number.isFinite(value) ? Math.floor(Number(value)) : null;
+}
 
-  const readPersistedRecallFromUserMessage = runtime.readPersistedRecallFromUserMessage;
-  if (typeof readPersistedRecallFromUserMessage !== "function") return null;
+export function normalizeRecallTextForRuntime(runtime, value = "") {
+  return typeof runtime?.normalizeRecallInputText === "function"
+    ? runtime.normalizeRecallInputText(value)
+    : String(value ?? "")
+        .replace(/\r\n/g, "\n")
+        .trim();
+}
 
-  const normalizeText = (value = "") =>
-    typeof runtime.normalizeRecallInputText === "function"
-      ? runtime.normalizeRecallInputText(value)
-      : String(value ?? "")
-          .replace(/\r\n/g, "\n")
-          .trim();
-  const currentRecallInputText = normalizeText(recallInput?.userMessage || "");
-  const recallSource = String(recallInput?.source || "").trim();
-  const activeInputSources = new Set([
+export function isActiveRecallInputSource(source = "") {
+  return new Set([
     "send-intent",
     "generation-started-send-intent",
     "generation-started-textarea",
     "host-generation-lifecycle",
     "textarea-live",
     "planner-handoff",
-  ]);
-  const isActiveInputSource = activeInputSources.has(recallSource);
-  const noNewUserGenerationTypes = new Set([
-    "swipe",
-    "regenerate",
-    "continue",
-    "history",
-  ]);
-  const isNoNewUserGeneration = noNewUserGenerationTypes.has(generationType);
+  ]).has(String(source || "").trim());
+}
+
+export function isNoNewUserGenerationType(generationType = "normal") {
+  return new Set(["swipe", "regenerate", "continue", "history"]).has(
+    normalizeRecallGenerationType(generationType),
+  );
+}
+
+export function isTrustedUserFloorRecallSource(source = "") {
+  return new Set([
+    "chat-last-user",
+    "chat-latest-user",
+    "chat-tail-user",
+    "message-sent",
+    "persisted-user-floor",
+  ]).has(String(source || "").trim());
+}
+
+export function buildPersistedReuseRecallInput(recallInput = {}, record = {}, runtime) {
+  const boundUserFloorText = normalizeRecallTextForRuntime(
+    runtime,
+    record.boundUserFloorText || recallInput.boundUserFloorText || "",
+  );
+  return {
+    ...recallInput,
+    source: "persisted-user-floor",
+    sourceLabel: "复用用户楼层召回",
+    reason: "persisted-user-floor-reuse",
+    authoritativeInputUsed: Boolean(
+      record.authoritativeInputUsed || recallInput.authoritativeInputUsed,
+    ),
+    boundUserFloorText,
+  };
+}
+
+function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
+  const generationType = normalizeRecallGenerationType(recallInput?.generationType);
+
+  let targetUserMessageIndex = normalizeRecallTargetUserMessageIndex(
+    recallInput?.targetUserMessageIndex,
+  );
+
+  const readPersistedRecallFromUserMessage = runtime.readPersistedRecallFromUserMessage;
+  if (typeof readPersistedRecallFromUserMessage !== "function") return null;
+
+  const normalizeText = (value = "") => normalizeRecallTextForRuntime(runtime, value);
+  const currentRecallInputText = normalizeText(recallInput?.userMessage || "");
+  const recallSource = String(recallInput?.source || "").trim();
+  const isActiveInputSource = isActiveRecallInputSource(recallSource);
+  const isNoNewUserGeneration = isNoNewUserGenerationType(generationType);
   if (isActiveInputSource && !isNoNewUserGeneration) {
     return null;
   }
@@ -213,18 +254,11 @@ function resolveReusablePersistedRecallRecord(chat, recallInput, runtime) {
       !isActiveInputSource &&
       String(record?.injectionText || "").trim(),
   );
-  const userFloorSources = new Set([
-    "chat-last-user",
-    "chat-latest-user",
-    "chat-tail-user",
-    "message-sent",
-    "persisted-user-floor",
-  ]);
   const canTrustUserFloorRecord = Boolean(
     (!isActiveInputSource || isNoNewUserGeneration) &&
       !boundUserFloorText &&
       !recordRecallInputMismatch &&
-      (generationType !== "normal" || userFloorSources.has(recallSource)),
+      (generationType !== "normal" || isTrustedUserFloorRecallSource(recallSource)),
   );
 
   if (
@@ -618,31 +652,11 @@ export async function runRecallController(runtime, options = {}) {
     runtime,
   );
   if (earlyPersistedReuse) {
-    const normalizedBoundUserFloorText =
-      typeof runtime.normalizeRecallInputText === "function"
-        ? runtime.normalizeRecallInputText(
-            earlyPersistedReuse.record.boundUserFloorText ||
-              recallInput.boundUserFloorText ||
-              "",
-          )
-        : String(
-            earlyPersistedReuse.record.boundUserFloorText ||
-              recallInput.boundUserFloorText ||
-              "",
-          )
-            .replace(/\r\n/g, "\n")
-            .trim();
-    const effectiveRecallInput = {
-      ...recallInput,
-      source: "persisted-user-floor",
-      sourceLabel: "复用用户楼层召回",
-      reason: "persisted-user-floor-reuse",
-      authoritativeInputUsed: Boolean(
-        earlyPersistedReuse.record.authoritativeInputUsed ||
-          recallInput.authoritativeInputUsed,
-      ),
-      boundUserFloorText: normalizedBoundUserFloorText,
-    };
+    const effectiveRecallInput = buildPersistedReuseRecallInput(
+      recallInput,
+      earlyPersistedReuse.record,
+      runtime,
+    );
     const reusedResult = buildPersistedRecallReuseResult(earlyPersistedReuse.record);
     const applied = runtime.applyRecallInjection(
       settings,
