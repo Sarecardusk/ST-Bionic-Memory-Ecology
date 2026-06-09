@@ -100,16 +100,17 @@ const restoredActive = getActiveTaskProfile(
 );
 assert.equal(restoredActive.id, "default");
 assert.equal(getLegacyPromptFieldForTask("extract"), "extractPrompt");
+assert.equal(getTaskTypeMeta("extract").label, "旧提取");
 
 assert.ok(getTaskTypes().includes("extract_objective"));
 assert.ok(getTaskTypes().includes("extract_subjective"));
 assert.equal(
   getTaskTypeOptions().some((option) => option.id === "extract_objective"),
-  false,
+  true,
 );
 assert.equal(
   getTaskTypeOptions().some((option) => option.id === "extract_subjective"),
-  false,
+  true,
 );
 assert.deepEqual(
   {
@@ -121,13 +122,13 @@ assert.deepEqual(
       id: "extract_objective",
       label: "客观提取",
       description: "从当前对话批次中抽取客观层结构化记忆。",
-      hidden: true,
+      hidden: false,
     },
     subjective: {
       id: "extract_subjective",
       label: "主观提取",
       description: "从客观提取草稿与视角上下文中抽取主观记忆。",
-      hidden: true,
+      hidden: false,
     },
   },
 );
