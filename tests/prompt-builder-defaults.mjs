@@ -85,7 +85,7 @@ assert.deepEqual(
   extractPayload.promptMessages
     .filter((message) => message.role === "assistant")
     .map((message) => message.blockName),
-  ["身份确认", "信息确认"],
+  ["身份确认", "信息确认", "规则确认"],
 );
 const extractFormatBlock = extractPayload.promptMessages.find(
   (message) => message.blockName === "输出格式",
@@ -97,7 +97,8 @@ assert.doesNotMatch(String(extractFormatBlock?.content || ""), /cognitionUpdates
 assert.match(String(extractFormatBlock?.content || ""), /regionUpdates/);
 assert.match(String(extractFormatBlock?.content || ""), /batchStoryTime/);
 assert.match(String(extractFormatBlock?.content || ""), /storyTime/);
-assert.match(String(extractRulesBlock?.content || ""), /禁止输出/);
+assert.match(String(extractRulesBlock?.content || ""), /HARD GATE/);
+assert.match(String(extractRulesBlock?.content || ""), /常见错误/);
 assert.match(String(extractRulesBlock?.content || ""), /batchStoryTime/);
 assert.deepEqual(
   extractPayload.promptMessages
@@ -372,7 +373,8 @@ assert.doesNotMatch(String(objFormatBlock?.content || ""), /\\\"region\\\"/);
 assert.doesNotMatch(String(objFormatBlock?.content || ""), /\\n\s*\{\\\"region/);
 assert.doesNotMatch(String(objFormatBlock?.content || ""), /pov_memory/);
 assert.doesNotMatch(String(objFormatBlock?.content || ""), /cognitionUpdates/);
-assert.match(String(objRulesBlock?.content || ""), /禁止输出/);
+assert.match(String(objRulesBlock?.content || ""), /HARD GATE/);
+assert.match(String(objRulesBlock?.content || ""), /常见错误/);
 assert.doesNotMatch(String(objRulesBlock?.content || ""), /POV 记忆字段/);
 
 // Verify subjective template: no objective types in format block
