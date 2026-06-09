@@ -254,18 +254,20 @@ async function captureTaskTypesForExtract(settings, options = {}) {
   const subjectivePayload = capturedPayloads.find(
     (payload) => payload.taskType === "extract_subjective",
   );
-  const objectiveRefMapBlock = subjectivePayload?.promptMessages?.find(
-    (message) => message.sourceKey === "objectiveRefMap",
+  assert.doesNotMatch(
+    subjectivePayloadText,
+    /objectiveRefMap/,
+    "subjective extraction prompt should NOT receive objective draft/ref context (decoupled)",
+  );
+  assert.doesNotMatch(
+    subjectivePayloadText,
+    /objectiveExtractionDraft/,
+    "subjective extraction prompt should NOT receive raw objective draft",
   );
   assert.match(
     subjectivePayloadText,
-    /evt-clock/,
-    "subjective extraction prompt should receive objective draft/ref context",
-  );
-  assert.match(
-    String(objectiveRefMapBlock?.content || ""),
-    /evt-clock/,
-    "subjective extraction prompt should render objectiveRefMap with objective refs",
+    /activeCharacterOwner/,
+    "subjective extraction prompt should receive independently built ownerContext",
   );
 }
 

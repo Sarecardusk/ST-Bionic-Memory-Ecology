@@ -299,10 +299,7 @@ const splitContextSourceKeys = splitContextPayload.promptMessages
   .map((message) => message.sourceKey)
   .filter(Boolean);
 for (const sourceKey of [
-  "objectiveExtractionDraft",
-  "objectiveRefMap",
   "ownerContext",
-  "batchStoryTime",
   "relevantPovMemories",
   "cognitionStateDigest",
 ]) {
@@ -311,14 +308,16 @@ for (const sourceKey of [
     `subjective prompt should include ${sourceKey}`,
   );
 }
-assert.match(
-  String(
-    splitContextPayload.promptMessages.find(
-      (message) => message.sourceKey === "objectiveExtractionDraft",
-    )?.content || "",
-  ),
-  /"ref": "evt1"/,
-);
+for (const removedKey of [
+  "objectiveExtractionDraft",
+  "objectiveRefMap",
+  "batchStoryTime",
+]) {
+  assert.ok(
+    !splitContextSourceKeys.includes(removedKey),
+    `subjective prompt should NOT include ${removedKey}`,
+  );
+}
 assert.match(
   String(
     splitContextPayload.promptMessages.find(
@@ -326,14 +325,6 @@ assert.match(
     )?.content || "",
   ),
   /"ownerName": "艾琳"/,
-);
-assert.match(
-  String(
-    splitContextPayload.promptMessages.find(
-      (message) => message.sourceKey === "batchStoryTime",
-    )?.content || "",
-  ),
-  /"第二天清晨"/,
 );
 assert.match(
   String(
@@ -393,6 +384,8 @@ assert.match(String(subFormatBlock?.content || ""), /pov_memory/);
 assert.match(String(subFormatBlock?.content || ""), /cognitionUpdates/);
 assert.doesNotMatch(String(subFormatBlock?.content || ""), /\"type\": \"event\"/);
 assert.doesNotMatch(String(subFormatBlock?.content || ""), /\\\"type\\\"/);
-assert.match(String(subRulesBlock?.content || ""), /POV 记忆字段/);
+assert.match(String(subRulesBlock?.content || ""), /POV HARD GATE/);
+assert.match(String(subRulesBlock?.content || ""), /反锚定/);
+assert.match(String(subRulesBlock?.content || ""), /常见错误/);
 
 console.log("prompt-builder-defaults tests passed");

@@ -1155,29 +1155,7 @@ function mergeSplitExtractionResults(objectiveResult = {}, subjectiveResult = {}
   };
 }
 
-function buildObjectiveExtractionRefMap(objectiveResult = {}) {
-  const refMap = {};
-  const operations = Array.isArray(objectiveResult?.operations)
-    ? objectiveResult.operations
-    : [];
-  for (const operation of operations) {
-    const ref = String(operation?.ref || operation?.id || "").trim();
-    if (!ref) continue;
-    refMap[ref] = {
-      ref,
-      action: String(operation?.action || "").trim(),
-      type: String(operation?.type || "").trim(),
-      nodeId: String(operation?.nodeId || operation?.targetId || "").trim(),
-      title: String(
-        operation?.fields?.title ||
-          operation?.fields?.name ||
-          operation?.fields?.summary ||
-          "",
-      ).trim(),
-    };
-  }
-  return refMap;
-}
+
 
 /**
  * 对未处理的对话楼层执行记忆提取
@@ -1484,11 +1462,7 @@ export async function extractMemories({
   if (objectiveValidationFailure) return objectiveValidationFailure;
 
   const filteredObjectiveResult = filterObjectiveExtractionResult(objectiveDraft.normalizedResult);
-  const objectiveRefMap = buildObjectiveExtractionRefMap(filteredObjectiveResult);
   const subjectiveLlmResult = await buildAndCallStageForSplit("extract_subjective", {
-    objectiveExtractionDraft: filteredObjectiveResult,
-    objectiveRefMap,
-    batchStoryTime: filteredObjectiveResult?.batchStoryTime || null,
     ownerContext: {
       activeCharacterOwner: scopeRuntime.activeCharacterOwner || "",
       activeUserOwner: scopeRuntime.activeUserOwner || "",
