@@ -28,10 +28,14 @@
 
 召回输入按优先级解析（`resolveRecallInputController`）：override → 待发送意图（send intent）→ 聊天尾部用户楼层 → 已发送用户 → 最新用户楼层。
 
+控制器里的来源/类型判定保持为小型纯 helper：active input source、no-new-user generation type、可信 user-floor source、持久复用输入构造分别独立测试。它们只做字符串规范化和布尔判定，不调用 `retrieve()`、不写消息、也不触碰生成事务。
+
 **持久召回复用有两条路径：**
 
 1. **no-new-user 主路径**（`reapplyPersistedRecallBlock`）：reroll / swipe / regenerate / continue 由宿主 `type` 判定为 no-new-user 后，`GENERATION_AFTER_COMMANDS` 不计算召回；`GENERATE_BEFORE_COMBINE_PROMPTS` 直接读取父 user 楼层的 `message.extra.bme_recall`，校验绑定文本未过期后确定性重放注入块。命中后不会进入 transaction / `runRecall` / 新检索。
 2. **compute fallback 内部复用**（`resolveReusablePersistedRecallRecord`）：当主路径没有可用记录（例如无记录或陈旧）而落回 `runRecallController()` 时，如果当前输入匹配某条已持久化的用户楼层召回记录，可在控制器内复用已存注入内容，跳过新检索，返回 `llm.status="persisted"`。
+
+内部复用命中后，控制器只重写本次 effective recall input 的来源为 `persisted-user-floor`，并保留原 delivery mode / hook / source candidates 等上下文字段；真正注入、generation count bump、metadata save 仍由原路径执行。
 
 fresh `normal` 发送仍走正常输入选择与召回计算路径；no-new-user 的父楼层绑定来自宿主生成上下文，而不是根据 textarea / send-intent 等输入源猜测（见 [`../architecture/control-plane.md`](../architecture/control-plane.md) 的 reroll 不变量）。
 

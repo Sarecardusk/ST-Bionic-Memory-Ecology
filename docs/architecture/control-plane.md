@@ -79,7 +79,8 @@
 
 - `vector/vector-gate.js` — 向量准备/修复前置门禁，决定 skip / repair / blocked / sync。
 - `runtime/generation-context.js` — 记录宿主本轮生成的 `type`（`normal` / `swipe` / `regenerate` / `continue` 等），并解析本轮应绑定的父 user 楼层。
-- `runtime/reroll-recall-input.js` — 基于代际上下文构造召回输入；不再用一次性 marker 猜测 reroll。
+- `runtime/reroll-recall-input.js` — 基于代际上下文构造召回输入，并保存 planner recall handoff / plot record handoff；不再用一次性 marker 猜测 reroll。
+- `retrieval/recall-controller.js` — 召回控制器；来源/类型/持久复用输入构造是纯 helper，检索执行和注入副作用仍留在控制器热路径里。
 
 **reroll 不变量：**
 
@@ -95,6 +96,8 @@ no-new-user 的稳定路径分两段：
 2. `GENERATE_BEFORE_COMBINE_PROMPTS` 先调用 `reapplyPersistedRecallBlock`，从父 user 楼层的 `message.extra.bme_recall` 确定性重放召回块；命中后立即返回，不进入 transaction / `runRecall`。若没有记录或记录已陈旧，再落回既有 transaction + compute 兼容路径。
 
 旧的召回事务机制仍保留为 fresh normal 和 fallback compute 的基础设施；它不再是 reroll 已存召回注入的唯一门闸。
+
+ENA Planner 另有一条 plot record handoff：它只负责把 planner 产出的剧情推进记录绑定到新 user 楼层的 `message.extra.st_bme_plot`，不参与召回决策。这样剧情历史持久化不依赖 planner recall 是否成功。
 
 ## 副本一致性模型
 

@@ -9,7 +9,7 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 | 控制平面 | `identity-resolver` / `persistence-reducer` | 身份解析、持久化状态机不变量 |
 | 数据格式 | `graph-snapshot-schema` / `graph-snapshot-upgrade` / `snapshot-forward-compat` | 快照契约、宽容解析、向前兼容往返 |
 | 持久化 | `graph-persistence` / `indexeddb-*` | 图谱持久化、IndexedDB 快照/增量/hydrate |
-| 检索/召回 | `p0-regressions` 内相关、`trivial-user-input` | 召回、reroll 复用、注入 |
+| 检索/召回 | `p0-regressions` 内相关、`recall-controller-helpers`、`recall-reroll-reuse`、`trivial-user-input` | 召回来源判定、reroll 复用、注入 |
 | 向量 | `vector-gate` / `vector-connection-probe` / `vector-sync-coalescer` | 向量门禁、连接探测、后台同步合并 |
 | Native | `native-layout-parity` / `native-rollout-matrix` | native/JS 一致性、灰度门控 |
 | 防线 | `index-slicing-ratchet` / `runtime-deps-completeness` / `i18n-user-visible-ratchet` | 见下 |
@@ -53,6 +53,7 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 ## 重要测试文件
 
 - **`tests/p0-regressions.mjs`** — 主回归集合，覆盖提取、召回、恢复、UI 关键路径。
+- **`tests/recall-controller-helpers.mjs`** — 召回控制器的纯来源/类型/持久复用输入 helper。
 - **`tests/runtime-history.mjs`** — 消息 hash、历史 dirty、恢复状态。
 - **`tests/message-render-limit.mjs`** — 聊天区渲染限制和渲染切片历史保护。
 - **`tests/graph-persistence.mjs`** — 图谱持久化基础行为。
