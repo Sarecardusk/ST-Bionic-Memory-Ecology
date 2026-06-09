@@ -160,7 +160,7 @@ try {
     systemPrompt: "system",
     userPrompt: "user",
     maxRetries: 0,
-    taskType: "extract",
+    taskType: "extract_objective",
     requestSource: "test:luker-route",
   });
 
@@ -190,7 +190,7 @@ try {
     systemPrompt: "system",
     userPrompt: "user",
     maxRetries: 0,
-    taskType: "extract",
+    taskType: "extract_objective",
     requestSource: "test:luker-global-stale",
   });
 
@@ -210,7 +210,7 @@ try {
   capturedFetchBody = null;
   sendOpenAIRequestCalls = 0;
   const taskProfiles = createDefaultTaskProfiles();
-  taskProfiles.extract.profiles[0].generation.llm_preset = "luker-profile-alpha";
+  taskProfiles.extract_objective.profiles[0].generation.llm_preset = "luker-profile-alpha";
   extensionsApi.extension_settings.st_bme = {
     llmApiUrl: "https://stale-generic-config.invalid/v1",
     llmApiKey: "sk-stale-generic",
@@ -246,7 +246,7 @@ try {
     systemPrompt: "system",
     userPrompt: "user",
     maxRetries: 0,
-    taskType: "extract",
+    taskType: "extract_objective",
     requestSource: "test:luker-profile-route",
   });
 

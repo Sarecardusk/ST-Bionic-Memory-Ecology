@@ -7777,12 +7777,12 @@ async function testLlmOutputRegexCleansResponseBeforeJsonParse() {
   delete globalThis.__stBmeRuntimeDebugState;
 
   const taskProfiles = createDefaultTaskProfiles();
-  taskProfiles.extract.profiles[0].regex = {
-    ...taskProfiles.extract.profiles[0].regex,
+  taskProfiles.extract_objective.profiles[0].regex = {
+    ...taskProfiles.extract_objective.profiles[0].regex,
     enabled: true,
     inheritStRegex: false,
     stages: {
-      ...taskProfiles.extract.profiles[0].regex.stages,
+      ...taskProfiles.extract_objective.profiles[0].regex.stages,
       "output.rawResponse": true,
       "output.beforeParse": true,
     },
@@ -7854,13 +7854,13 @@ async function testLlmOutputRegexCleansResponseBeforeJsonParse() {
       systemPrompt: "system",
       userPrompt: "user",
       maxRetries: 0,
-      taskType: "extract",
+      taskType: "extract_objective",
       requestSource: "test:output-regex",
     });
     assert.deepEqual(result, { ok: true });
 
     const snapshot =
-      globalThis.__stBmeRuntimeDebugState?.taskLlmRequests?.extract;
+      globalThis.__stBmeRuntimeDebugState?.taskLlmRequests?.extract_objective;
     assert.ok(snapshot);
     assert.equal(snapshot.responseCleaning?.applied, true);
     assert.equal(snapshot.responseCleaning?.changed, true);

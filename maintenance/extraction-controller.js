@@ -850,7 +850,6 @@ export async function executeExtractionBatchController(
     lastProcessedSeq: lastProcessed,
     schema: runtime.getSchema(),
     embeddingConfig: runtime.getEmbeddingConfig(),
-    extractPrompt: undefined,
     settings,
     signal,
     onStreamProgress: ({ previewText, receivedChars }) => {

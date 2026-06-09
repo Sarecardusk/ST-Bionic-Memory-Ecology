@@ -3,6 +3,7 @@ import {
   cloneTaskProfile,
   createBuiltinPromptBlock,
   createCustomPromptBlock,
+  createDefaultTaskProfile,
   createDefaultTaskProfiles,
   createLocalRegexRule,
   exportTaskProfile,
@@ -18,22 +19,22 @@ import {
 } from "../prompting/prompt-profiles.js";
 
 const taskProfiles = createDefaultTaskProfiles();
-const baseProfile = taskProfiles.extract.profiles[0];
+const baseProfile = taskProfiles.extract_objective.profiles[0];
 assert.equal(baseProfile.generation.llm_preset, "");
 
 const clonedProfile = cloneTaskProfile(baseProfile, {
-  taskType: "extract",
+  taskType: "extract_objective",
   name: "激进提取",
 });
 clonedProfile.generation.llm_preset = "Recall-API";
 clonedProfile.blocks = [
   ...clonedProfile.blocks,
-  createBuiltinPromptBlock("extract", "userMessage", {
+  createBuiltinPromptBlock("extract_objective", "userMessage", {
     name: "用户消息块",
     injectionMode: "prepend",
     order: 1,
   }),
-  createCustomPromptBlock("extract", {
+  createCustomPromptBlock("extract_objective", {
     name: "补充说明",
     content: "请关注 {{userMessage}}",
     role: "user",
@@ -41,20 +42,20 @@ clonedProfile.blocks = [
   }),
 ];
 clonedProfile.regex.localRules = [
-  createLocalRegexRule("extract", {
+  createLocalRegexRule("extract_objective", {
     script_name: "裁边",
     find_regex: "/^foo/g",
     replace_string: "bar",
   }),
 ];
 
-const updatedProfiles = upsertTaskProfile(taskProfiles, "extract", clonedProfile, {
+const updatedProfiles = upsertTaskProfile(taskProfiles, "extract_objective", clonedProfile, {
   setActive: true,
 });
 
 const activeProfile = getActiveTaskProfile(
   { taskProfiles: updatedProfiles },
-  "extract",
+  "extract_objective",
 );
 assert.equal(activeProfile.name, "激进提取");
 assert.equal(activeProfile.blocks.length, 18);
@@ -75,16 +76,16 @@ assert.equal(activeProfile.generation.llm_preset, "Recall-API");
 
 const exported = exportTaskProfile(
   updatedProfiles,
-  "extract",
+  "extract_objective",
   clonedProfile.id,
 );
 assert.equal(exported.format, "st-bme-task-profile");
-assert.equal(exported.taskType, "extract");
+assert.equal(exported.taskType, "extract_objective");
 assert.equal(exported.profile.name, "激进提取");
 assert.equal(exported.profile.generation.llm_preset, "Recall-API");
 
 const imported = importTaskProfile(updatedProfiles, JSON.stringify(exported));
-assert.equal(imported.taskType, "extract");
+assert.equal(imported.taskType, "extract_objective");
 assert.notEqual(imported.profile.id, clonedProfile.id);
 assert.equal(imported.profile.generation.llm_preset, "Recall-API");
 assert.ok(
@@ -93,14 +94,29 @@ assert.ok(
   ),
 );
 
-const restoredProfiles = restoreDefaultTaskProfile(imported.taskProfiles, "extract");
+const restoredProfiles = restoreDefaultTaskProfile(imported.taskProfiles, "extract_objective");
 const restoredActive = getActiveTaskProfile(
   { taskProfiles: restoredProfiles },
-  "extract",
+  "extract_objective",
 );
 assert.equal(restoredActive.id, "default");
-assert.equal(getLegacyPromptFieldForTask("extract"), "extractPrompt");
-assert.equal(getTaskTypeMeta("extract").label, "旧提取");
+assert.equal(getLegacyPromptFieldForTask("extract"), "");
+assert.equal(getTaskTypeMeta("extract").label, "extract");
+assert.equal(createDefaultTaskProfile("extract"), null);
+assert.equal(getActiveTaskProfile({ taskProfiles }, "extract"), null);
+assert.throws(
+  () => importTaskProfile(taskProfiles, JSON.stringify({
+    format: "st-bme-task-profile",
+    taskType: "extract",
+    profile: { id: "legacy-extract", taskType: "extract", blocks: [] },
+  })),
+  /Unsupported task type: extract/,
+);
+assert.equal(
+  getTaskTypeOptions().some((option) => option.id === "extract"),
+  false,
+);
+assert.equal(getTaskTypes().includes("extract"), false);
 
 assert.ok(getTaskTypes().includes("extract_objective"));
 assert.ok(getTaskTypes().includes("extract_subjective"));

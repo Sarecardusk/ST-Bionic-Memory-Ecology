@@ -14,7 +14,8 @@ import {
 } from "../prompting/prompt-profiles.js";
 
 const legacySettings = {
-  extractPrompt: "旧提取提示",
+  extractObjectivePrompt: "旧客观提取提示",
+  extractSubjectivePrompt: "旧主观提取提示",
   recallPrompt: "旧召回提示",
   compressPrompt: "",
   synopsisPrompt: "",
@@ -25,7 +26,7 @@ const legacySettings = {
 const migrated = migrateLegacyTaskProfiles(legacySettings);
 assert.equal(migrated.taskProfilesVersion, 3);
 assert.ok(migrated.taskProfiles);
-assert.ok(migrated.taskProfiles.extract);
+assert.ok(migrated.taskProfiles.extract_objective);
 assert.ok(migrated.taskProfiles.recall);
 assert.ok(migrated.taskProfiles.planner);
 
@@ -34,9 +35,9 @@ const extractProfile = getActiveTaskProfile(
     ...legacySettings,
     taskProfiles: migrated.taskProfiles,
   },
-  "extract",
+  "extract_objective",
 );
-assert.equal(extractProfile.taskType, "extract");
+assert.equal(extractProfile.taskType, "extract_objective");
 assert.equal(extractProfile.id, "default");
 assert.ok(Array.isArray(extractProfile.blocks));
 assert.equal(extractProfile.blocks.length, 16);
@@ -105,15 +106,17 @@ assert.deepEqual(
 );
 assert.equal(
   extractProfile.metadata.legacyPromptField,
-  "extractPrompt",
+  "extractObjectivePrompt",
 );
 assert.equal(
   extractProfile.metadata.legacyPromptSnapshot,
-  "旧提取提示",
+  "旧客观提取提示",
 );
 
 const defaults = createDefaultTaskProfiles();
-assert.ok(defaults.extract.profiles.length > 0);
+assert.equal(defaults.extract, undefined);
+assert.ok(defaults.extract_objective.profiles.length > 0);
+assert.ok(defaults.extract_subjective.profiles.length > 0);
 assert.ok(defaults.recall.profiles.length > 0);
 assert.ok(defaults.compress.profiles.length > 0);
 assert.ok(defaults.synopsis.profiles.length > 0);
@@ -406,7 +409,7 @@ const upgradedLegacyDefault = getActiveTaskProfile(
         profiles: [
           {
             id: "default",
-            taskType: "extract",
+            taskType: "extract_objective",
             builtin: true,
             blocks: [
               {
@@ -471,14 +474,18 @@ const upgradedLegacyDefault = getActiveTaskProfile(
       },
     },
   },
-  "extract",
+  "extract_objective",
 );
 assert.equal(upgradedLegacyDefault.blocks.length, 16);
 assert.equal(upgradedLegacyDefault.blocks[0].name, "抬头");
 assert.match(upgradedLegacyDefault.blocks[0].content, /虚拟的世界/);
 assert.equal(upgradedLegacyDefault.blocks[0].role, "system");
 assert.equal(upgradedLegacyDefault.blocks[0].injectionMode, "relative");
-assert.equal(upgradedLegacyDefault.blocks[1].content, "保留我自己的角色定义");
+assert.match(
+  upgradedLegacyDefault.blocks[1].content,
+  /客观事实提取师/,
+  "removed legacy extract profile should be replaced by the current objective extraction default",
+);
 const upgradedIdentityAck = upgradedLegacyDefault.blocks.find(
   (block) => block.id === "default-identity-ack",
 );
@@ -497,18 +504,18 @@ assert.ok(
 assert.equal(upgradedInfoAck.role, "assistant");
 assert.equal(upgradedLegacyDefault.blocks[14].id, "default-format");
 assert.equal(upgradedLegacyDefault.blocks[15].id, "default-rules");
-assert.equal(upgradedLegacyDefault.blocks[14].content, "保留我自己的输出格式");
-assert.equal(upgradedLegacyDefault.blocks[15].content, "保留我自己的行为规则");
+assert.match(upgradedLegacyDefault.blocks[14].content, /batchStoryTime/);
+assert.match(upgradedLegacyDefault.blocks[15].content, /禁止输出/);
 assert.equal(upgradedLegacyDefault.blocks[14].role, "user");
 assert.equal(upgradedLegacyDefault.blocks[15].role, "user");
 
 const currentDefaults = createDefaultTaskProfiles();
-const currentDefaultExtract = currentDefaults.extract.profiles[0];
+const currentDefaultExtract = currentDefaults.extract_objective.profiles[0];
 
 const staleBuiltinDefaults = ensureTaskProfiles({
   taskProfilesVersion: 3,
   taskProfiles: {
-    extract: {
+    extract_objective: {
       activeProfileId: "default",
       profiles: [
         {
@@ -528,7 +535,7 @@ const staleBuiltinDefaults = ensureTaskProfiles({
         },
         {
           id: "extract-custom-1",
-          taskType: "extract",
+          taskType: "extract_objective",
           builtin: false,
           name: "我的自定义预设",
           promptMode: "block-based",
@@ -561,10 +568,10 @@ const staleBuiltinDefaults = ensureTaskProfiles({
     },
   },
 });
-const refreshedDefaultExtract = staleBuiltinDefaults.extract.profiles.find(
+const refreshedDefaultExtract = staleBuiltinDefaults.extract_objective.profiles.find(
   (profile) => profile.id === "default",
 );
-const preservedCustomExtract = staleBuiltinDefaults.extract.profiles.find(
+const preservedCustomExtract = staleBuiltinDefaults.extract_objective.profiles.find(
   (profile) => profile.id === "extract-custom-1",
 );
 
@@ -586,7 +593,7 @@ assert.equal(
 assert.match(
   refreshedDefaultExtract.blocks.find((block) => block.id === "default-format")
     ?.content || "",
-  /cognitionUpdates/,
+  /regionUpdates/,
 );
 assert.ok(preservedCustomExtract);
 assert.equal(
@@ -597,7 +604,7 @@ assert.equal(
 const sameStampBuiltinDefault = ensureTaskProfiles({
   taskProfilesVersion: 3,
   taskProfiles: {
-    extract: {
+    extract_objective: {
       activeProfileId: "default",
       profiles: [
         {
@@ -615,7 +622,7 @@ const sameStampBuiltinDefault = ensureTaskProfiles({
     },
   },
 });
-const sameStampDefaultExtract = sameStampBuiltinDefault.extract.profiles.find(
+const sameStampDefaultExtract = sameStampBuiltinDefault.extract_objective.profiles.find(
   (profile) => profile.id === "default",
 );
 assert.equal(
@@ -627,7 +634,7 @@ assert.equal(
 const sameTimestampButChangedTemplateDefaults = ensureTaskProfiles({
   taskProfilesVersion: 3,
   taskProfiles: {
-    extract: {
+    extract_objective: {
       activeProfileId: "default",
       profiles: [
         {
@@ -647,7 +654,7 @@ const sameTimestampButChangedTemplateDefaults = ensureTaskProfiles({
   },
 });
 const fingerprintRefreshedDefault =
-  sameTimestampButChangedTemplateDefaults.extract.profiles.find(
+  sameTimestampButChangedTemplateDefaults.extract_objective.profiles.find(
     (profile) => profile.id === "default",
   );
 assert.equal(
@@ -692,11 +699,11 @@ const legacyRegexSettings = {
   taskProfilesVersion: 3,
   taskProfiles: createDefaultTaskProfiles(),
 };
-legacyRegexSettings.taskProfiles.extract.activeProfileId = "default";
-legacyRegexSettings.taskProfiles.extract.profiles.push(
-  normalizeTaskProfile("extract", {
+legacyRegexSettings.taskProfiles.extract_objective.activeProfileId = "default";
+legacyRegexSettings.taskProfiles.extract_objective.profiles.push(
+  normalizeTaskProfile("extract_objective", {
     id: "extract-legacy-regex",
-    taskType: "extract",
+    taskType: "extract_objective",
     name: "旧正则副本",
     builtin: false,
     regex: {
@@ -729,7 +736,7 @@ assert.deepEqual(
   ],
 );
 assert.deepEqual(
-  migratedLegacyRegex.settings.taskProfiles.extract.profiles.find(
+  migratedLegacyRegex.settings.taskProfiles.extract_objective.profiles.find(
     (profile) => profile.id === "extract-legacy-regex",
   )?.regex?.localRules || [],
   [],
@@ -761,10 +768,10 @@ const existingGlobalRegexSettings = {
   },
   taskProfiles: createDefaultTaskProfiles(),
 };
-existingGlobalRegexSettings.taskProfiles.extract.profiles.push(
-  normalizeTaskProfile("extract", {
+existingGlobalRegexSettings.taskProfiles.extract_objective.profiles.push(
+  normalizeTaskProfile("extract_objective", {
     id: "extract-legacy-extra",
-    taskType: "extract",
+    taskType: "extract_objective",
     name: "旧规则补充",
     builtin: false,
     regex: {
@@ -807,7 +814,7 @@ const importedLegacyProfileMigration = migrateLegacyProfileRegexToGlobal(
     localRules: [],
   },
   {
-    taskType: "extract",
+    taskType: "extract_objective",
     regex: {
       enabled: false,
       inheritStRegex: false,

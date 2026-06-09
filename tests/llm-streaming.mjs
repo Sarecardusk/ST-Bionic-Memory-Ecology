@@ -85,8 +85,8 @@ if (originalSendOpenAIRequest === undefined) {
 
 function buildStreamingSettings(generation = {}, overrides = {}) {
   const taskProfiles = createDefaultTaskProfiles();
-  taskProfiles.extract.profiles[0].generation = {
-    ...taskProfiles.extract.profiles[0].generation,
+  taskProfiles.extract_objective.profiles[0].generation = {
+    ...taskProfiles.extract_objective.profiles[0].generation,
     ...generation,
   };
   return {
@@ -122,7 +122,7 @@ function createSseResponse(events = [], status = 200) {
   );
 }
 
-function getSnapshot(taskKey = "extract") {
+function getSnapshot(taskKey = "extract_objective") {
   return globalThis.__stBmeRuntimeDebugState?.taskLlmRequests?.[taskKey] || null;
 }
 
@@ -163,14 +163,14 @@ async function testDedicatedStreamingSuccess() {
         systemPrompt: "system",
         userPrompt: "user",
         maxRetries: 0,
-        taskType: "extract",
+        taskType: "extract_objective",
         requestSource: "test:stream-success",
       });
 
       assert.deepEqual(result, { ok: true });
       assert.equal(fetchCount, 1);
 
-      const snapshot = getSnapshot("extract");
+      const snapshot = getSnapshot("extract_objective");
       assert.ok(snapshot);
       assert.equal(snapshot.streamRequested ?? true, true);
       assert.equal(snapshot.streamActive ?? false, false);
@@ -236,14 +236,14 @@ async function testDedicatedStreamingFallsBackToNonStream() {
         systemPrompt: "system",
         userPrompt: "user",
         maxRetries: 0,
-        taskType: "extract",
+        taskType: "extract_objective",
         requestSource: "test:stream-fallback",
       });
 
       assert.deepEqual(result, { ok: true });
       assert.equal(fetchCount, 2);
 
-      const snapshot = getSnapshot("extract");
+      const snapshot = getSnapshot("extract_objective");
       assert.ok(snapshot);
       assert.equal(snapshot.streamRequested ?? true, true);
       assert.equal(snapshot.streamCompleted ?? false, false);
@@ -312,7 +312,7 @@ async function testDedicatedStreamingAbortDoesNotLeaveActiveState() {
         systemPrompt: "system",
         userPrompt: "user",
         maxRetries: 0,
-        taskType: "extract",
+        taskType: "extract_objective",
         requestSource: "test:stream-abort",
         signal: controller.signal,
       });
@@ -325,7 +325,7 @@ async function testDedicatedStreamingAbortDoesNotLeaveActiveState() {
         (error) => error?.name === "AbortError",
       );
 
-      const snapshot = getSnapshot("extract");
+      const snapshot = getSnapshot("extract_objective");
       assert.ok(snapshot);
       assert.equal(snapshot.streamRequested ?? true, true);
       assert.equal(snapshot.streamActive ?? false, false);
@@ -397,14 +397,14 @@ async function testJsonRetryKeepsProfileCompletionTokens() {
           systemPrompt: "system",
           userPrompt: "user",
           maxRetries: 1,
-          taskType: "extract",
+          taskType: "extract_objective",
           requestSource: "test:json-retry-keeps-profile-tokens",
         });
 
         assert.deepEqual(result, { ok: true });
         assert.equal(fetchCount, 2);
 
-        const snapshot = getSnapshot("extract");
+        const snapshot = getSnapshot("extract_objective");
         assert.ok(snapshot);
         assert.equal(snapshot.requestBody?.maxTokens ?? 7777, 7777);
         assert.equal(
@@ -456,7 +456,7 @@ async function testAnthropicRouteUsesReverseProxyAndDisablesStreaming() {
           systemPrompt: "system",
           userPrompt: "user",
           maxRetries: 0,
-          taskType: "extract",
+          taskType: "extract_objective",
           requestSource: "test:anthropic-route",
         });
 
@@ -467,7 +467,7 @@ async function testAnthropicRouteUsesReverseProxyAndDisablesStreaming() {
         assert.equal(requestBody?.stream, false);
         assert.ok(requestBody?.json_schema);
 
-        const snapshot = getSnapshot("extract");
+        const snapshot = getSnapshot("extract_objective");
         assert.ok(snapshot);
         assert.equal(
           snapshot.route || snapshot.effectiveRoute || "dedicated-anthropic-claude",

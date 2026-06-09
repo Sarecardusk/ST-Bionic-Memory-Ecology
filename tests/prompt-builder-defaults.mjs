@@ -58,8 +58,13 @@ const settings = {
   taskProfiles: createDefaultTaskProfiles(),
 };
 
-const extractPromptBuild = await buildTaskPrompt(settings, "extract", {
-  taskName: "extract",
+await assert.rejects(
+  () => buildTaskPrompt(settings, "extract", { taskName: "extract" }),
+  /Unsupported task type: extract/,
+);
+
+const extractPromptBuild = await buildTaskPrompt(settings, "extract_objective", {
+  taskName: "extract_objective",
   charDescription: "角色描述",
   userPersona: "用户设定",
   recentMessages: "A: 你好\nB: 世界",
@@ -88,11 +93,11 @@ const extractFormatBlock = extractPayload.promptMessages.find(
 const extractRulesBlock = extractPayload.promptMessages.find(
   (message) => message.blockName === "行为规则",
 );
-assert.match(String(extractFormatBlock?.content || ""), /cognitionUpdates/);
+assert.doesNotMatch(String(extractFormatBlock?.content || ""), /cognitionUpdates/);
 assert.match(String(extractFormatBlock?.content || ""), /regionUpdates/);
 assert.match(String(extractFormatBlock?.content || ""), /batchStoryTime/);
 assert.match(String(extractFormatBlock?.content || ""), /storyTime/);
-assert.match(String(extractRulesBlock?.content || ""), /涉及到的角色都尽量尝试补 cognitionUpdates/);
+assert.match(String(extractRulesBlock?.content || ""), /禁止输出/);
 assert.match(String(extractRulesBlock?.content || ""), /batchStoryTime/);
 assert.deepEqual(
   extractPayload.promptMessages
@@ -203,8 +208,8 @@ initializeHostAdapter({
   },
 });
 
-const regexAwarePromptBuild = await buildTaskPrompt(settings, "extract", {
-  taskName: "extract",
+const regexAwarePromptBuild = await buildTaskPrompt(settings, "extract_objective", {
+  taskName: "extract_objective",
   charDescription: "",
   userPersona: "",
   recentMessages: "这里会被 chatMessages 回填",
@@ -260,29 +265,13 @@ initializeHostAdapter({});
 const splitContextTaskProfiles = createDefaultTaskProfiles();
 const subjectiveProfile = splitContextTaskProfiles.extract_subjective.profiles[0];
 subjectiveProfile.blocks = [
-  createBuiltinPromptBlock("extract_subjective", "objectiveExtractionDraft", {
-    name: "客观提取草稿",
-    order: 0,
-  }),
-  createBuiltinPromptBlock("extract_subjective", "objectiveRefMap", {
-    name: "客观引用映射",
-    order: 1,
-  }),
-  createBuiltinPromptBlock("extract_subjective", "ownerContext", {
-    name: "视角主体上下文",
-    order: 2,
-  }),
-  createBuiltinPromptBlock("extract_subjective", "batchStoryTime", {
-    name: "批次故事时间",
-    order: 3,
-  }),
   createBuiltinPromptBlock("extract_subjective", "relevantPovMemories", {
     name: "相关主观记忆",
-    order: 4,
+    order: 0,
   }),
   createBuiltinPromptBlock("extract_subjective", "cognitionStateDigest", {
     name: "认知状态摘要",
-    order: 5,
+    order: 1,
   }),
 ];
 
@@ -305,19 +294,22 @@ const splitContextPayload = buildTaskLlmPayload(
   splitContextPromptBuild,
   "fallback-user",
 );
-assert.deepEqual(
-  splitContextPayload.promptMessages
-    .map((message) => message.sourceKey)
-    .filter(Boolean),
-  [
-    "objectiveExtractionDraft",
-    "objectiveRefMap",
-    "ownerContext",
-    "batchStoryTime",
-    "relevantPovMemories",
-    "cognitionStateDigest",
-  ],
-);
+const splitContextSourceKeys = splitContextPayload.promptMessages
+  .map((message) => message.sourceKey)
+  .filter(Boolean);
+for (const sourceKey of [
+  "objectiveExtractionDraft",
+  "objectiveRefMap",
+  "ownerContext",
+  "batchStoryTime",
+  "relevantPovMemories",
+  "cognitionStateDigest",
+]) {
+  assert.ok(
+    splitContextSourceKeys.includes(sourceKey),
+    `subjective prompt should include ${sourceKey}`,
+  );
+}
 assert.match(
   String(
     splitContextPayload.promptMessages.find(

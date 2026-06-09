@@ -93,13 +93,13 @@ function createTavernRule(id, findRegex, replaceString, overrides = {}) {
 function buildSettings(regex = {}) {
   return {
     taskProfiles: {
-      extract: {
+      extract_objective: {
         activeProfileId: "default",
         profiles: [
           {
             id: "default",
             name: "Regex Test",
-            taskType: "extract",
+            taskType: "extract_objective",
             builtin: false,
             blocks: [],
             regex: {
@@ -220,7 +220,7 @@ try {
 
   const defaultProfiles = createDefaultTaskProfiles();
   const defaultExtractStages =
-    defaultProfiles.extract?.profiles?.[0]?.regex?.stages || {};
+    defaultProfiles.extract_objective?.profiles?.[0]?.regex?.stages || {};
   assert.equal(
     isTaskRegexStageEnabled(defaultExtractStages, "input.finalPrompt"),
     false,
@@ -251,7 +251,7 @@ try {
   );
 
   const normalizedLegacyOnlyProfile = normalizeTaskProfile(
-    "extract",
+    "extract_objective",
     {
       id: "legacy-only-profile",
       name: "legacy only",
@@ -287,7 +287,7 @@ try {
   const coreBridgeDebug = { entries: [] };
   const coreBridgeOutput = applyHostRegexReuse(
     buildSettings(),
-    "extract",
+    "extract_objective",
     "Alpha Beta",
     {
       sourceType: "user_input",
@@ -308,7 +308,7 @@ try {
   ]);
   assert.equal(coreBridgeDebug.entries[0].executionMode, "host-real");
   assert.equal(
-    inspectTaskRegexReuse(buildSettings(), "extract").host.bridgeTier,
+    inspectTaskRegexReuse(buildSettings(), "extract_objective").host.bridgeTier,
     "core-real",
   );
   setCoreRegexedStringHandler(null);
@@ -375,7 +375,7 @@ try {
   const fullBridgeDebug = { entries: [] };
   const fullBridgeOutput = applyHostRegexReuse(
     fullBridgeSettings,
-    "extract",
+    "extract_objective",
     "Alpha Beta",
     {
       sourceType: "user_input",
@@ -407,13 +407,13 @@ try {
     ["__host_formatter__"],
   );
   assert.equal(
-    inspectTaskRegexReuse(fullBridgeSettings, "extract").host.bridgeTier,
+    inspectTaskRegexReuse(fullBridgeSettings, "extract_objective").host.bridgeTier,
     "helper-bridge",
   );
   assert.equal(
     applyTaskRegex(
       fullBridgeSettings,
-      "extract",
+      "extract_objective",
       "input.finalPrompt",
       "Beta",
       { entries: [] },
@@ -460,7 +460,7 @@ try {
   const fallbackDebug = { entries: [] };
   const fallbackOutput = applyHostRegexReuse(
     buildSettings(),
-    "extract",
+    "extract_objective",
     "Gamma",
     {
       sourceType: "world_info",
@@ -493,7 +493,7 @@ try {
         character: false,
       },
     }),
-    "extract",
+    "extract_objective",
     "Gamma",
     {
       sourceType: "world_info",
@@ -512,7 +512,7 @@ try {
         character: false,
       },
     }),
-    "extract",
+    "extract_objective",
     "Gamma",
     {
       sourceType: "world_info",
@@ -549,7 +549,7 @@ try {
     ],
   });
   initializeFallbackHostAdapter();
-  const fallbackInspect = inspectTaskRegexReuse(buildSettings(), "extract");
+  const fallbackInspect = inspectTaskRegexReuse(buildSettings(), "extract_objective");
   assert.equal(fallbackInspect.activeRuleCount, 3);
   assert.deepEqual(
     fallbackInspect.activeRules.map((rule) => rule.id),
@@ -601,7 +601,7 @@ try {
 
   const disallowedOutput = applyHostRegexReuse(
     buildSettings(),
-    "extract",
+    "extract_objective",
     "Gamma",
     {
       sourceType: "world_info",
@@ -611,7 +611,7 @@ try {
   );
   assert.equal(disallowedOutput.text, "G2");
 
-  const disallowedInspect = inspectTaskRegexReuse(buildSettings(), "extract");
+  const disallowedInspect = inspectTaskRegexReuse(buildSettings(), "extract_objective");
   assert.equal(disallowedInspect.activeRuleCount, 1);
   assert.equal(
     disallowedInspect.sources.find((source) => source.type === "preset")
@@ -663,7 +663,7 @@ try {
 
   const userReuseResult = applyHostRegexReuse(
     tavernSemanticsSettings,
-    "extract",
+    "extract_objective",
     "Alpha",
     {
       sourceType: "user_input",
@@ -676,7 +676,7 @@ try {
   assert.equal(userReuseResult.skippedDisplayOnlyRuleCount >= 1, true);
   const aiReuseResult = applyHostRegexReuse(
     tavernSemanticsSettings,
-    "extract",
+    "extract_objective",
     "Answer Lore",
     {
       sourceType: "ai_output",
@@ -686,7 +686,7 @@ try {
   );
   assert.equal(aiReuseResult.text, "AI Lore");
   assert.equal(aiReuseResult.executionMode, "host-fallback");
-  const markdownInspect = inspectTaskRegexReuse(tavernSemanticsSettings, "extract");
+  const markdownInspect = inspectTaskRegexReuse(tavernSemanticsSettings, "extract_objective");
   const markdownRule = markdownInspect.activeRules.find(
     (rule) => rule.id === "markdown-only",
   );
@@ -717,7 +717,7 @@ try {
   const markdownFinalDebug = { entries: [] };
   const markdownFallbackResult = applyHostRegexReuse(
     markdownOnlyFinalPromptSettings,
-    "extract",
+    "extract_objective",
     "Decor",
     {
       sourceType: "user_input",
@@ -750,7 +750,7 @@ try {
   initializeFallbackHostAdapter();
   const beautifyFinalInspect = inspectTaskRegexReuse(
     beautifyFinalPromptSettings,
-    "extract",
+    "extract_objective",
   );
   const beautifyFinalRule = beautifyFinalInspect.activeRules.find(
     (rule) => rule.id === "beautify-final-strip",
@@ -760,7 +760,7 @@ try {
   const beautifyFinalDebug = { entries: [] };
   const beautifyFallbackResult = applyHostRegexReuse(
     beautifyFinalPromptSettings,
-    "extract",
+    "extract_objective",
     "Decor",
     {
       sourceType: "user_input",
@@ -785,7 +785,7 @@ try {
   });
   const beautifyStageOffInspect = inspectTaskRegexReuse(
     beautifyFinalPromptStageOffSettings,
-    "extract",
+    "extract_objective",
   );
   const beautifyStageOffRule = beautifyStageOffInspect.activeRules.find(
     (rule) => rule.id === "beautify-final-strip",
@@ -835,7 +835,7 @@ try {
   const destinationDebug = { entries: [] };
   const destinationReuseResult = applyHostRegexReuse(
     destinationBeautifySettings,
-    "extract",
+    "extract_objective",
     "DecorPlain",
     {
       sourceType: "user_input",
@@ -848,7 +848,7 @@ try {
   assert.deepEqual(destinationDebug.entries[0].appliedRules, []);
   const destinationInspect = inspectTaskRegexReuse(
     destinationBeautifySettings,
-    "extract",
+    "extract_objective",
   );
   const destinationBeautifyRule = destinationInspect.activeRules.find(
     (rule) => rule.id === "destination-display-only-beautify",
@@ -892,7 +892,7 @@ try {
   initializeFallbackHostAdapter();
   const mixedReuseResult = applyHostRegexReuse(
     tavernSemanticsSettings,
-    "extract",
+    "extract_objective",
     "User Reply Lore",
     {
       sourceType: "ai_output",
@@ -922,7 +922,7 @@ try {
   const outputGuardDebug = { entries: [] };
   const outputGuardResult = applyTaskRegex(
     outputGuardSettings,
-    "extract",
+    "extract_objective",
     "output.rawResponse",
     "JSON 美化",
     outputGuardDebug,
@@ -952,7 +952,7 @@ try {
       taskProfiles: createDefaultTaskProfiles(),
       globalTaskRegex: createDefaultGlobalTaskRegex(),
     },
-    "extract",
+    "extract_objective",
     "input.recentMessages",
     [
       "前缀",
@@ -1008,7 +1008,7 @@ try {
         localRules: [],
       },
     },
-    "extract",
+    "extract_objective",
     "input.recentMessages",
     "<choice>保留</choice><thinking>保留</thinking>",
     explicitEmptyGlobalDebug,
