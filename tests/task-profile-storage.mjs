@@ -141,13 +141,13 @@ assert.equal(
   taskProfiles.extract_subjective.profiles[0].metadata.legacyPromptField,
   "extractSubjectivePrompt",
 );
-assert.equal(
-  taskProfiles.extract_objective.profiles[0].blocks.find((block) => block.id === "default-role")?.content,
-  baseProfile.blocks.find((block) => block.id === "default-role")?.content,
+assert.ok(
+  taskProfiles.extract_objective.profiles[0].blocks.find((block) => block.id === "default-role")?.content?.includes("客观事实提取师"),
+  "extract_objective role block should identify as objective-only extractor",
 );
-assert.equal(
-  taskProfiles.extract_subjective.profiles[0].blocks.find((block) => block.id === "default-rules")?.content,
-  baseProfile.blocks.find((block) => block.id === "default-rules")?.content,
+assert.ok(
+  taskProfiles.extract_subjective.profiles[0].blocks.find((block) => block.id === "default-rules")?.content?.includes("POV 记忆字段"),
+  "extract_subjective rules block should contain POV memory rules",
 );
 assert.deepEqual(
   getBuiltinBlockDefinitions("extract_subjective")

@@ -1498,9 +1498,66 @@ export async function extractMemories({
     return stageResult;
   };
 
+  const buildAndCallStageForSplit = async (stageTaskType) => {
+    const stagePromptBuild = await buildTaskPrompt(settings, stageTaskType, {
+      taskName: "extract",
+      schema: schemaDescription,
+      schemaDescription,
+      recentMessages: promptRecentMessages,
+      chatMessages: structuredMessages,
+      dialogueText,
+      graphStats: graphOverview,
+      graphOverview,
+      currentRange,
+      activeSummaries,
+      storyTimeContext,
+      taskInputDebug: extractionInput?.debug || null,
+      __skipWorldInfo: extractWorldbookMode === "none",
+      ...getSTContextForPrompt(),
+    });
+
+    const stageRegexInput = { entries: [] };
+    const stageSystemPrompt = applyTaskRegex(
+      settings,
+      stageTaskType,
+      "finalPrompt",
+      stagePromptBuild.systemPrompt ||
+        extractPrompt ||
+        buildDefaultExtractPrompt(schema),
+      stageRegexInput,
+      "system",
+    );
+    const stagePromptPayload = resolveTaskPromptPayload(stagePromptBuild, userPrompt);
+    const stageLlmSystemPrompt = resolveTaskLlmSystemPrompt(stagePromptPayload, stageSystemPrompt);
+
+    const stageResult = await callLLMForJSON({
+      systemPrompt: stageLlmSystemPrompt,
+      userPrompt: stagePromptPayload.userPrompt,
+      maxRetries: 2,
+      signal,
+      taskType: stageTaskType,
+      debugContext: createExtractTaskLlmDebugContext(
+        stagePromptBuild,
+        stageRegexInput,
+        extractionInput?.debug || null,
+      ),
+      promptMessages: stagePromptPayload.promptMessages,
+      additionalMessages: Array.isArray(stagePromptPayload.additionalMessages)
+        ? [
+            ...stagePromptPayload.additionalMessages,
+            { role: "system", content: extractionAugmentPrompt },
+          ]
+        : [{ role: "system", content: extractionAugmentPrompt }],
+      onStreamProgress,
+      returnFailureDetails: true,
+    });
+    throwIfAborted(signal);
+    return stageResult;
+  };
+
   let draft = null;
   if (shouldUseSplitExtractionPipeline(settings)) {
-    const objectiveLlmResult = await callExtractionStage("extract_objective");
+    const objectiveLlmResult = await buildAndCallStageForSplit("extract_objective");
     const objectiveDraft = resolveExtractionDraft({
       llmResult: objectiveLlmResult,
       schema,
@@ -1513,7 +1570,7 @@ export async function extractMemories({
     });
     if (objectiveValidationFailure) return objectiveValidationFailure;
 
-    const subjectiveLlmResult = await callExtractionStage("extract_subjective");
+    const subjectiveLlmResult = await buildAndCallStageForSplit("extract_subjective");
     const subjectiveDraft = resolveExtractionDraft({
       llmResult: subjectiveLlmResult,
       schema,

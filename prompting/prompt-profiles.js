@@ -1057,9 +1057,7 @@ function getDefaultTaskProfileTemplate(taskType) {
   if (String(taskType || "") === "planner") {
     return buildPlannerDefaultTaskProfileTemplate();
   }
-  const templateKey = ["extract_objective", "extract_subjective"].includes(String(taskType || ""))
-    ? "extract"
-    : taskType;
+  const templateKey = String(taskType || "");
   const template = DEFAULT_TASK_PROFILE_TEMPLATES?.[templateKey];
   if (!template || typeof template !== "object") {
     return null;
