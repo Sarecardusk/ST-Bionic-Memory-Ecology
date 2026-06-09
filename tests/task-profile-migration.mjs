@@ -40,7 +40,7 @@ const extractProfile = getActiveTaskProfile(
 assert.equal(extractProfile.taskType, "extract_objective");
 assert.equal(extractProfile.id, "default");
 assert.ok(Array.isArray(extractProfile.blocks));
-assert.equal(extractProfile.blocks.length, 16);
+assert.equal(extractProfile.blocks.length, 17);
 assert.deepEqual(
   extractProfile.blocks.map((block) => block.name),
   [
@@ -60,6 +60,7 @@ assert.deepEqual(
     "信息确认",
     "输出格式",
     "行为规则",
+    "规则确认",
   ],
 );
 assert.deepEqual(
@@ -78,6 +79,7 @@ assert.deepEqual(
     "builtin",
     "builtin",
     "builtin",
+    "custom",
     "custom",
     "custom",
     "custom",
@@ -102,6 +104,7 @@ assert.deepEqual(
     "assistant",
     "user",
     "user",
+    "assistant",
   ],
 );
 assert.equal(
@@ -139,6 +142,7 @@ assert.deepEqual(
     "default-info-ack",
     "default-format",
     "default-rules",
+    "default-rules-ack",
   ],
 );
 assert.deepEqual(
@@ -476,7 +480,7 @@ const upgradedLegacyDefault = getActiveTaskProfile(
   },
   "extract_objective",
 );
-assert.equal(upgradedLegacyDefault.blocks.length, 16);
+assert.equal(upgradedLegacyDefault.blocks.length, 17);
 assert.equal(upgradedLegacyDefault.blocks[0].name, "抬头");
 assert.match(upgradedLegacyDefault.blocks[0].content, /虚拟的世界/);
 assert.equal(upgradedLegacyDefault.blocks[0].role, "system");
@@ -505,7 +509,7 @@ assert.equal(upgradedInfoAck.role, "assistant");
 assert.equal(upgradedLegacyDefault.blocks[14].id, "default-format");
 assert.equal(upgradedLegacyDefault.blocks[15].id, "default-rules");
 assert.match(upgradedLegacyDefault.blocks[14].content, /batchStoryTime/);
-assert.match(upgradedLegacyDefault.blocks[15].content, /禁止输出/);
+assert.match(upgradedLegacyDefault.blocks[15].content, /HARD GATE/);
 assert.equal(upgradedLegacyDefault.blocks[14].role, "user");
 assert.equal(upgradedLegacyDefault.blocks[15].role, "user");
 

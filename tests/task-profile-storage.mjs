@@ -58,7 +58,7 @@ const activeProfile = getActiveTaskProfile(
   "extract_objective",
 );
 assert.equal(activeProfile.name, "激进提取");
-assert.equal(activeProfile.blocks.length, 18);
+assert.equal(activeProfile.blocks.length, 19);
 const builtinBlock = activeProfile.blocks.find(
   (block) => block.type === "builtin" && block.sourceKey === "userMessage",
 );
@@ -163,27 +163,21 @@ assert.ok(
   "extract_objective role block should identify as objective-only extractor",
 );
 assert.ok(
-  taskProfiles.extract_subjective.profiles[0].blocks.find((block) => block.id === "default-rules")?.content?.includes("POV 记忆字段"),
-  "extract_subjective rules block should contain POV memory rules",
+  taskProfiles.extract_subjective.profiles[0].blocks.find((block) => block.id === "default-rules")?.content?.includes("POV HARD GATE"),
+  "extract_subjective rules block should contain POV HARD GATE",
 );
 assert.deepEqual(
   getBuiltinBlockDefinitions("extract_subjective")
     .map((definition) => definition.sourceKey)
     .filter((sourceKey) =>
       [
-        "objectiveExtractionDraft",
-        "objectiveRefMap",
         "ownerContext",
-        "batchStoryTime",
         "relevantPovMemories",
         "cognitionStateDigest",
       ].includes(sourceKey),
     ),
   [
-    "objectiveExtractionDraft",
-    "objectiveRefMap",
     "ownerContext",
-    "batchStoryTime",
     "relevantPovMemories",
     "cognitionStateDigest",
   ],

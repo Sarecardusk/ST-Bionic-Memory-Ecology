@@ -131,7 +131,9 @@ function recallRecord(overrides = {}) {
   assert.equal(result.applied, true);
   assert.equal(result.source, "persisted");
   assert.equal(result.injectionText, "[recall] stable memory");
-  assert.equal(promptData.finalMesSend[0].extensionPrompts[0], "[recall] stable memory\n");
+  assert.match(promptData.finalMesSend[0].extensionPrompts[0], /\[BEGIN ST-BME MEMORY CONTEXT\]/);
+  assert.match(promptData.finalMesSend[0].extensionPrompts[0], /\[recall\] stable memory/);
+  assert.match(promptData.finalMesSend[0].extensionPrompts[0], /\[END ST-BME MEMORY CONTEXT\]/);
   assert.deepEqual(calls.applied, [], "rewrite path should not use module injection");
   assert.equal(calls.rewritesCleared, 1);
   assert.equal(chat[0].extra.bme_recall.generationCount, 1);
