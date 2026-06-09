@@ -34,25 +34,28 @@ function isTavernHelperPromptViewerSyntheticGeneration(runtime) {
 }
 
 export function registerBeforeCombinePromptsController(runtime, listener) {
-  const makeFirst = runtime.getEventMakeFirst();
+  const eventName = runtime.eventTypes.GENERATE_BEFORE_COMBINE_PROMPTS;
+  const eventSourceMakeFirst = runtime.eventSource?.makeFirst;
+  const makeFirst =
+    typeof eventSourceMakeFirst === "function"
+      ? eventSourceMakeFirst.bind(runtime.eventSource)
+      : runtime.getEventMakeFirst?.();
   if (typeof makeFirst === "function") {
-    return makeFirst(
-      runtime.eventTypes.GENERATE_BEFORE_COMBINE_PROMPTS,
-      listener,
-    );
+    return makeFirst(eventName, listener);
   }
 
   runtime.console.warn("[ST-BME] eventMakeFirst 不可用，回退到普通事件注册");
-  runtime.eventSource.on(
-    runtime.eventTypes.GENERATE_BEFORE_COMBINE_PROMPTS,
-    listener,
-  );
+  runtime.eventSource.on(eventName, listener);
   return null;
 }
 
 export function registerGenerationAfterCommandsController(runtime, listener) {
-  const makeFirst = runtime.getEventMakeFirst();
   const eventName = runtime.eventTypes.GENERATION_AFTER_COMMANDS;
+  const eventSourceMakeFirst = runtime.eventSource?.makeFirst;
+  const makeFirst =
+    typeof eventSourceMakeFirst === "function"
+      ? eventSourceMakeFirst.bind(runtime.eventSource)
+      : runtime.getEventMakeFirst?.();
   if (typeof makeFirst === "function") {
     const cleanup = makeFirst(eventName, listener);
     return cleanup;
