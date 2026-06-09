@@ -267,6 +267,16 @@ assert.equal(isAuthorityVectorConfig(config), true);
   const applyCall = triviumClient.calls.find(([name]) => name === "bmeVectorApply")?.[1];
   assert.equal(applyCall.items.length, 2);
   assert.equal(applyCall.links.length, 1);
+  assert.deepEqual(applyCall.links[0].src, {
+    externalId: "node-a",
+    namespace: "st-bme::chat-authority-vector",
+  });
+  assert.deepEqual(applyCall.links[0].dst, {
+    externalId: "node-b",
+    namespace: "st-bme::chat-authority-vector",
+  });
+  assert.equal(applyCall.links[0].label, "related");
+  assert.equal(applyCall.links[0].weight, 0.75);
   assert.equal(applyCall.observedDim, 2);
   assert.equal(String(applyCall.vectorSpaceId || "").startsWith("vs_"), true);
   assert.equal(applyCall.items.every((item) => item.payload?.vectorSpaceId === applyCall.vectorSpaceId), true);

@@ -158,6 +158,7 @@ await runAuthorityE2eStep("trivium", async () => {
       headerProvider,
     });
     assert.equal(linkResult.linked, graph.edges.length);
+    assert.ok(linkResult.linked >= 1, "Authority Trivium link sync should create at least one edge");
 
     const searchResults = await searchAuthorityTriviumNodes(graph, "Authority E2E Alpha", config, {
       namespace,
@@ -169,6 +170,10 @@ await runAuthorityE2eStep("trivium", async () => {
       headerProvider,
     });
     assert.ok(Array.isArray(searchResults));
+    assert.ok(
+      searchResults.every((result) => typeof result?.nodeId === "string" && result.nodeId.trim()),
+      "Authority Trivium search results should expose external node ids",
+    );
 
     const filteredIds = await filterAuthorityTriviumNodes(config, {
       namespace,
@@ -191,6 +196,10 @@ await runAuthorityE2eStep("trivium", async () => {
       headerProvider,
     });
     assert.ok(Array.isArray(neighborIds));
+    assert.ok(
+      neighborIds.includes(graph.nodes[1].id),
+      "Authority Trivium neighbors should resolve links through external ids",
+    );
 
     return {
       upserted: upsertResult.upserted,
