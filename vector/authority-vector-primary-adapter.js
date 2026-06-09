@@ -140,6 +140,15 @@ function normalizeNodeResultId(item = null) {
   );
 }
 
+function normalizeSearchResultNamespace(item = null) {
+  return normalizeRecordId(
+    item?.namespace ||
+      item?.collectionId ||
+      readNestedValue(item, ["payload", "namespace"]) ||
+      readNestedValue(item, ["payload", "collectionId"]),
+  );
+}
+
 function readResultRows(payload = null) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== "object") return [];
@@ -211,12 +220,17 @@ function getNodeFieldText(node = {}, keys = []) {
   return "";
 }
 
-function normalizeSearchResults(payload = null) {
+function normalizeSearchResults(payload = null, { namespace = "" } = {}) {
   const rows = readResultRows(payload);
+  const expectedNamespace = normalizeRecordId(namespace);
   return rows
     .map((item, index) => {
       const nodeId = normalizeNodeResultId(item);
       if (!nodeId) return null;
+      const resultNamespace = normalizeSearchResultNamespace(item);
+      if (expectedNamespace && resultNamespace && resultNamespace !== expectedNamespace) {
+        return null;
+      }
       const rawScore = Number(item?.score ?? item?.similarity ?? item?.rankScore);
       const distance = Number(item?.distance);
       const score = Number.isFinite(rawScore)
@@ -224,7 +238,11 @@ function normalizeSearchResults(payload = null) {
         : Number.isFinite(distance)
           ? 1 / (1 + Math.max(0, distance))
           : Math.max(0.01, 1 - index / Math.max(1, rows.length));
-      return { nodeId, score };
+      return {
+        nodeId,
+        score,
+        ...(resultNamespace ? { namespace: resultNamespace } : {}),
+      };
     })
     .filter(Boolean);
 }
@@ -597,8 +615,12 @@ export class AuthorityTriviumHttpClient {
       throw new Error("Authority Trivium v0.6 search requires vector");
     }
     const queryText = String(payload.queryText || payload.text || payload.searchText || payload.query || "");
+    const namespace = getNamespace(payload);
     const body = {
       ...this.buildOpenOptions(payload),
+      ...(namespace ? { namespace } : {}),
+      ...(payload.collectionId ? { collectionId: String(payload.collectionId) } : {}),
+      ...(payload.chatId ? { chatId: String(payload.chatId) } : {}),
       vector,
       topK: Number(payload.topK || payload.limit || 0) || undefined,
       expandDepth: Number(payload.expandDepth || payload.depth || 0) || undefined,
@@ -1045,7 +1067,7 @@ export async function searchAuthorityTriviumNodes(graph, text, config = {}, opti
     topK: Math.max(1, Math.floor(Number(options.topK) || 1)),
     candidateIds: toArray(options.candidateIds).map(normalizeRecordId).filter(Boolean),
   });
-  return normalizeSearchResults(payload);
+  return normalizeSearchResults(payload, { namespace: options.namespace });
 }
 
 export async function testAuthorityTriviumConnection(config = {}, options = {}) {
