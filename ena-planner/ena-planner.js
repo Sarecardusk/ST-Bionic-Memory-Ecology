@@ -1145,7 +1145,11 @@ function getChatVariables() {
 }
 
 function buildEjsContext() {
-    const vars = getChatVariables();
+    return createEnaPlannerEjsContext(getChatVariables());
+}
+
+export function createEnaPlannerEjsContext(varsInput = {}) {
+    const vars = varsInput && typeof varsInput === 'object' ? { ...varsInput } : {};
 
     // getvar: read a chat variable (supports dot-path for nested objects)
     function getvar(name) {
@@ -1195,7 +1199,7 @@ function shouldSkipSyncEjsPreRender(template) {
     return false;
 }
 
-function renderEjsTemplate(template, ctx, templateLabel = '') {
+export function renderEjsTemplate(template, ctx, templateLabel = '') {
     const labelSuffix = templateLabel ? ` (${templateLabel})` : '';
 
     if (shouldSkipSyncEjsPreRender(template)) {
@@ -1205,7 +1209,15 @@ function renderEjsTemplate(template, ctx, templateLabel = '') {
     // Try window.ejs first (ST loads this library)
     if (window.ejs?.render) {
         try {
-            return window.ejs.render(template, ctx, { async: false });
+            const renderCtx = ctx && typeof ctx === 'object' ? { ...ctx } : ctx;
+            if (renderCtx && typeof renderCtx === 'object') {
+                delete renderCtx.__append;
+                delete renderCtx.print;
+            }
+            return window.ejs.render(template, renderCtx, {
+                async: false,
+                outputFunctionName: 'print',
+            });
         } catch (e) {
             console.warn(`[EnaPlanner] EJS render failed${labelSuffix}, template returned as-is:`, e?.message);
             return template;
@@ -2017,4 +2029,3 @@ export function cleanupEnaPlanner() {
     delete window.stBmeEnaPlanner;
     _bmeRuntime = null;
 }
-

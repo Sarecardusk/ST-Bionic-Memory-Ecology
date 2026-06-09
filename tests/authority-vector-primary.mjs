@@ -33,6 +33,7 @@ const {
   isAuthorityVectorConfig,
   normalizeAuthorityVectorConfig,
   queryAuthorityTriviumNeighbors,
+  searchAuthorityTriviumNodes,
   applyAuthorityBmeVectorManifest,
 } = await import("../vector/authority-vector-primary-adapter.js");
 const {
@@ -125,6 +126,7 @@ function createMockTriviumClient({
       }
       return {
         results: [
+          { nodeId: "node-a", namespace: "other-chat", score: 0.95 },
           { nodeId: "node-b", score: 0.91 },
           { nodeId: "node-outside", score: 0.88 },
         ],
@@ -168,6 +170,10 @@ function createMockTriviumClient({
           payload: { details: { category: "vector-dimension-mismatch" } },
           path: "/bme/vector-apply",
         });
+      }
+      const itemWithTopLevelId = payload.items?.find((item) => item?.id !== undefined);
+      if (itemWithTopLevelId) {
+        throw new Error("bmeVectorApply items must not send top-level Trivium id");
       }
       return {
         ok: true,
@@ -261,11 +267,26 @@ assert.equal(isAuthorityVectorConfig(config), true);
   const applyCall = triviumClient.calls.find(([name]) => name === "bmeVectorApply")?.[1];
   assert.equal(applyCall.items.length, 2);
   assert.equal(applyCall.links.length, 1);
+  assert.deepEqual(applyCall.links[0].src, {
+    externalId: "node-a",
+    namespace: "st-bme::chat-authority-vector",
+  });
+  assert.deepEqual(applyCall.links[0].dst, {
+    externalId: "node-b",
+    namespace: "st-bme::chat-authority-vector",
+  });
+  assert.equal(applyCall.links[0].label, "related");
+  assert.equal(applyCall.links[0].weight, 0.75);
   assert.equal(applyCall.observedDim, 2);
   assert.equal(String(applyCall.vectorSpaceId || "").startsWith("vs_"), true);
   assert.equal(applyCall.items.every((item) => item.payload?.vectorSpaceId === applyCall.vectorSpaceId), true);
   assert.equal(applyCall.items.every((item) => item.payload?.observedDim === 2), true);
   assert.equal(applyCall.items.every((item) => Array.isArray(item.vector) && item.vector.length > 0), true);
+  assert.equal(applyCall.items[0].id, undefined);
+  assert.equal(applyCall.items[0].externalId, "node-a");
+  assert.equal(applyCall.items[0].nodeId, "node-a");
+  assert.equal(applyCall.items[0].payload.nodeId, "node-a");
+  assert.equal(applyCall.items[0].payload.externalId, "node-a");
   assert.equal(result.timings.authorityDiagnostics.upsert.operation, "bmeVectorApply");
 }
 
@@ -369,6 +390,7 @@ assert.equal(isAuthorityVectorConfig(config), true);
   assert.deepEqual(results, [{ nodeId: "node-b", score: 0.91 }]);
   const searchCall = triviumClient.calls.find(([name]) => name === "search");
   assert.deepEqual(searchCall?.[1]?.candidateIds.sort(), ["node-a", "node-b"]);
+  assert.equal(searchCall?.[1]?.namespace, "st-bme::chat-authority-vector");
   assert.equal(Array.isArray(searchCall?.[1]?.queryVector), true);
   assert.ok(searchCall?.[1]?.queryVector.length > 0);
   assert.equal(graph.vectorIndexState.lastSearchTimings.mode, "authority");
@@ -434,6 +456,50 @@ assert.equal(isAuthorityVectorConfig(config), true);
   } finally {
     globalThis.__stBmeTestOverrides = previousOverrides;
   }
+}
+
+{
+  const { graph } = createAuthorityVectorGraph();
+  const fetchCalls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    fetchCalls.push({ url: String(url), body });
+    if (String(url).endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ sessionToken: "test-session" }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          { externalId: "node-a", namespace: "other-chat", score: 0.99 },
+          { externalId: "node-b", namespace: "st-bme::chat-authority-vector", score: 0.93 },
+          { externalId: "node-c", score: 0.72 },
+        ],
+      }),
+    };
+  };
+
+  const results = await searchAuthorityTriviumNodes(graph, "archive door", config, {
+    namespace: "st-bme::chat-authority-vector",
+    collectionId: "st-bme::chat-authority-vector",
+    chatId: "chat-authority-vector",
+    queryVector: [1, 0, 0],
+    topK: 5,
+    fetchImpl,
+  });
+  const searchCall = fetchCalls.find((call) => call.url.endsWith("/trivium/search-hybrid"));
+  assert.equal(searchCall?.body?.namespace, "st-bme::chat-authority-vector");
+  assert.equal(searchCall?.body?.collectionId, "st-bme::chat-authority-vector");
+  assert.equal(searchCall?.body?.chatId, "chat-authority-vector");
+  assert.deepEqual(
+    results.map((entry) => entry.nodeId),
+    ["node-b", "node-c"],
+  );
 }
 
 {
