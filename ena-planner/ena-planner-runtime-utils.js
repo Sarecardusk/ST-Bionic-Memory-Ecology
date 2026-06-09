@@ -47,15 +47,22 @@ export function applyPlannerResultAndSend({
         plannerState.lastInjectedText = merged;
     }
 
+    const plotRecordPayload = plannerPlotRecord && typeof plannerPlotRecord === 'object'
+        ? {
+            ...plannerPlotRecord,
+            rawUserInput: raw,
+            plannerAugmentedMessage: merged,
+        }
+        : null;
+
+    let plotHandoffPrepared = false;
+    if (runtime?.preparePlannerPlotRecordHandoff && plotRecordPayload) {
+        runtime.preparePlannerPlotRecordHandoff(plotRecordPayload);
+        plotHandoffPrepared = true;
+    }
+
     let handoffPrepared = false;
     if (runtime?.preparePlannerRecallHandoff && plannerRecall?.result) {
-        const plotRecordPayload = plannerPlotRecord && typeof plannerPlotRecord === 'object'
-            ? {
-                ...plannerPlotRecord,
-                rawUserInput: raw,
-                plannerAugmentedMessage: merged,
-            }
-            : null;
         runtime.preparePlannerRecallHandoff({
             rawUserInput: raw,
             plannerAugmentedMessage: merged,
@@ -69,5 +76,27 @@ export function applyPlannerResultAndSend({
         plannerState.bypassNextSend = true;
     }
     button.click();
-    return { applied: true, merged, handoffPrepared };
+    return { applied: true, merged, handoffPrepared, plotHandoffPrepared };
+}
+
+export function shouldInterceptPlannerSend({
+    enabled = false,
+    isPlanning = false,
+    hasTextarea = false,
+    textareaValue = '',
+    isTrivial = false,
+    bypassNextSend = false,
+    skipIfPlotPresent = false,
+} = {}) {
+    if (!enabled) return { shouldIntercept: false, reason: 'disabled' };
+    if (isPlanning) return { shouldIntercept: false, reason: 'planning' };
+    if (!hasTextarea) return { shouldIntercept: false, reason: 'missing-textarea' };
+    const text = String(textareaValue ?? '').trim();
+    if (!text) return { shouldIntercept: false, reason: 'empty-input' };
+    if (isTrivial) return { shouldIntercept: false, reason: 'trivial' };
+    if (bypassNextSend) return { shouldIntercept: false, reason: 'bypass' };
+    if (skipIfPlotPresent && /<plot\b/i.test(text)) {
+        return { shouldIntercept: false, reason: 'plot-present' };
+    }
+    return { shouldIntercept: true, reason: 'ok' };
 }

@@ -14747,6 +14747,16 @@ function preparePlannerRecallHandoff({
   });
 }
 
+function preparePlannerPlotRecordHandoff(plannerPlotRecord = null) {
+  if (!plannerPlotRecord || typeof plannerPlotRecord !== "object") {
+    return null;
+  }
+  return rerollRecallInput.preparePlannerPlotRecordHandoff({
+    ...plannerPlotRecord,
+    chatId: getCurrentChatId(),
+  });
+}
+
 function persistPlannerPlotRecordToUserMessage(newUserMessageIndex) {
   const context = getContext();
   const chat = context?.chat;
@@ -14757,16 +14767,19 @@ function persistPlannerPlotRecordToUserMessage(newUserMessageIndex) {
   ) {
     return false;
   }
-  const handoff = peekPlannerRecallHandoff(context?.chatId || getCurrentChatId());
-  const plannerPlotRecord = handoff?.plannerPlotRecord;
+  const chatId = context?.chatId || getCurrentChatId();
+  const plotHandoff = rerollRecallInput.peekPlannerPlotRecordHandoff?.(chatId);
+  const handoff = peekPlannerRecallHandoff(chatId);
+  const plannerPlotRecord = plotHandoff || handoff?.plannerPlotRecord;
   if (!plannerPlotRecord || typeof plannerPlotRecord !== "object") {
     return false;
   }
   const wrote = writeStructuredPlotRecordToMessage(chat[newUserMessageIndex], {
     ...plannerPlotRecord,
-    recallHandoffId: handoff.id || plannerPlotRecord.recallHandoffId || "",
+    recallHandoffId: handoff?.id || plannerPlotRecord.recallHandoffId || "",
   });
   if (wrote) {
+    rerollRecallInput.consumePlannerPlotRecordHandoff?.(chatId);
     triggerChatMetadataSave(context, { immediate: false });
   }
   return wrote;
@@ -17918,6 +17931,7 @@ async function onCompactLukerSidecar() {
       getExtensionPath: () => `scripts/extensions/third-party/${MODULE_NAME}`,
       getPlannerRecallTimeoutMs,
       isTrivialUserInput,
+      preparePlannerPlotRecordHandoff,
       preparePlannerRecallHandoff,
       runPlannerRecallForEna,
     });

@@ -3,6 +3,7 @@ import { getRequestHeaders, saveSettingsDebounced, substituteParamsExtended } fr
 import { EnaPlannerStorage, migrateFromLWBIfNeeded } from './ena-planner-storage.js';
 import {
     applyPlannerResultAndSend,
+    shouldInterceptPlannerSend,
 } from './ena-planner-runtime-utils.js';
 import { readPlannerPlotHistory } from './planner-plot-history.js';
 import { DEFAULT_PROMPT_BLOCKS, BUILTIN_TEMPLATES } from './ena-planner-presets.js';
@@ -1880,15 +1881,17 @@ function isTrivialPlannerInput(text) {
 
 function shouldInterceptNow() {
     const s = ensureSettings();
-    if (!s.enabled || state.isPlanning) return false;
     const ta = getSendTextarea();
-    if (!ta) return false;
-    const txt = String(ta.value ?? '').trim();
-    if (!txt) return false;
-    if (isTrivialPlannerInput(txt)) return false;
-    if (state.bypassNextSend) return false;
-    if (s.skipIfPlotPresent && /<plot\b/i.test(txt)) return false;
-    return true;
+    const txt = String(ta?.value ?? '').trim();
+    return shouldInterceptPlannerSend({
+        enabled: Boolean(s.enabled),
+        isPlanning: Boolean(state.isPlanning),
+        hasTextarea: Boolean(ta),
+        textareaValue: txt,
+        isTrivial: Boolean(txt && isTrivialPlannerInput(txt)),
+        bypassNextSend: Boolean(state.bypassNextSend),
+        skipIfPlotPresent: Boolean(s.skipIfPlotPresent),
+    }).shouldIntercept;
 }
 
 async function doInterceptAndPlanThenSend() {

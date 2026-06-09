@@ -80,21 +80,43 @@ export function collectStructuredPlotRecords(chat, count = 2) {
 }
 
 export function readPlannerPlotHistory(chat, { count = 2 } = {}) {
+    const want = Math.max(0, Number(count) || 0);
+    if (!want) {
+        return { source: 'empty', records: [], plots: [], block: '' };
+    }
     const structuredRecords = collectStructuredPlotRecords(chat, count);
+    const seen = new Set();
+    const plots = [];
+    let usedLegacy = false;
     if (structuredRecords.length > 0) {
-        const plots = structuredRecords.map((record) => record.plotText || record.plotBlocks.join('\n')).filter(Boolean);
-        return {
-            source: 'structured',
-            records: structuredRecords,
-            plots,
-            block: formatPlotsBlock(plots),
-        };
+        for (const record of structuredRecords) {
+            const recordBlocks = record.plotBlocks.length > 0
+                ? record.plotBlocks
+                : extractLastNPlots([{ mes: record.plotText || '' }], want);
+            const plot = recordBlocks.join('\n').trim();
+            if (!plot || seen.has(plot)) continue;
+            plots.push(plot);
+            seen.add(plot);
+            if (plots.length >= want) break;
+        }
     }
 
-    const plots = extractLastNPlots(chat, count);
+    if (plots.length < want) {
+        for (const legacyPlot of extractLastNPlots(chat, want)) {
+            if (!legacyPlot || seen.has(legacyPlot)) continue;
+            plots.push(legacyPlot);
+            seen.add(legacyPlot);
+            usedLegacy = true;
+            if (plots.length >= want) break;
+        }
+    }
+
+    const source = structuredRecords.length > 0
+        ? (usedLegacy ? 'structured+legacy' : 'structured')
+        : (plots.length > 0 ? 'legacy' : 'empty');
     return {
-        source: plots.length > 0 ? 'legacy' : 'empty',
-        records: [],
+        source,
+        records: structuredRecords,
         plots,
         block: formatPlotsBlock(plots),
     };
