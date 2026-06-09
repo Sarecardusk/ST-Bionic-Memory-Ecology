@@ -28,18 +28,16 @@ const TASK_TYPES = [
 
 const TASK_TYPE_META = {
   extract: {
-    label: "提取",
-    description: "从当前对话批次中抽取结构化记忆。",
+    label: "旧提取",
+    description: "旧版单请求提取入口；用于旧自定义预设回退。",
   },
   extract_objective: {
     label: "客观提取",
     description: "从当前对话批次中抽取客观层结构化记忆。",
-    hidden: true,
   },
   extract_subjective: {
     label: "主观提取",
     description: "从客观提取草稿与视角上下文中抽取主观记忆。",
-    hidden: true,
   },
   recall: {
     label: "召回",
