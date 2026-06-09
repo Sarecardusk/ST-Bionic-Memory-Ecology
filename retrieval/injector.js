@@ -48,7 +48,7 @@ export function formatInjection(retrievalResult, schema) {
       schema,
       appended,
       showStoryTime,
-      "这些是用户/玩家侧主观记忆，不等于角色已知事实；只能作为关系、承诺、情绪和长期互动背景参考。",
+      "这些是用户/玩家侧主观记忆，不等于角色已知事实；角色不能直接知道这些内容，除非当前剧情中被告知或亲眼见到。只能作为关系、承诺、情绪和长期互动背景参考。",
     );
     appendScopeSection(
       parts,
@@ -57,6 +57,7 @@ export function formatInjection(retrievalResult, schema) {
       schema,
       appended,
       showStoryTime,
+      "以下是当前地区或当前场景相关的客观事实，优先用于保持地点、事件和状态连续。",
     );
     appendScopeSection(
       parts,
@@ -65,6 +66,7 @@ export function formatInjection(retrievalResult, schema) {
       schema,
       appended,
       showStoryTime,
+      "以下是全局客观背景；只在当前回复需要时使用，不要挤占当前场景细节。",
     );
 
     if (parts.length > 0) {
@@ -143,6 +145,7 @@ function appendSummarySections(parts, summaryEntries = []) {
     parts.push("");
   }
   parts.push("[Summary - Active Frontier]");
+  parts.push("压缩历史摘要，仅作背景边界；若与当前用户输入冲突，以当前用户输入和更具体的召回节点为准。");
   for (const entry of entries) {
     const level = Math.max(0, Number(entry?.level || 0));
     const range = Array.isArray(entry?.messageRange) ? entry.messageRange : ["?", "?"];
@@ -191,6 +194,7 @@ function appendCharacterPovSections(
         schema,
         appended,
         showStoryTime,
+        `以下是 ${resolveSceneOwnerLabel(ownerKey, nodes, sceneOwnerCandidates)} 的主观记忆/信念/态度，可能包含误解；只代表该角色的视角，不等于客观事实，也不代表其他角色知道。`,
       );
     }
     return;
@@ -203,6 +207,7 @@ function appendCharacterPovSections(
     schema,
     appended,
     showStoryTime,
+    "以下是角色主观记忆/信念/态度，可能包含误解；只代表对应角色的视角，不等于客观事实。",
   );
 }
 
