@@ -109,6 +109,7 @@ assert.equal(defaultSettings.loadNativeHydrateThresholdRecords, 30000);
 assert.equal(defaultSettings.nativeRolloutVersion, 2);
 assert.equal(defaultSettings.nativeEngineFailOpen, true);
 assert.equal(defaultSettings.graphNativeForceDisable, false);
+assert.equal(defaultSettings.extractPipelineVersion, "legacy-single");
 assert.equal(defaultSettings.taskProfilesVersion, 3);
 assert.equal(defaultSettings.extractObjectivePrompt, "");
 assert.equal(defaultSettings.extractSubjectivePrompt, "");

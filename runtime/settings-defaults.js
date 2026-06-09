@@ -37,6 +37,7 @@ export const defaultSettings = {
   extractIncludeStoryTime: true,
   extractIncludeSummaries: true,
   extractActionMode: "pending",
+  extractPipelineVersion: "legacy-single",
 
   // 召回设置
   recallEnabled: true,
