@@ -261,6 +261,7 @@ function buildAuthorityNodePayload(node = {}, entry = {}, { chatId = "", modelSc
   return {
     chatId,
     nodeId: normalizeRecordId(node?.id || entry?.nodeId),
+    externalId: normalizeRecordId(node?.id || entry?.nodeId),
     type: String(node?.type || ""),
     archived: Boolean(node?.archived),
     seqStart: Number(seqRange[0] ?? node?.seq ?? 0) || 0,
@@ -295,7 +296,6 @@ function buildAuthorityVectorItems(graph, entries = [], options = {}) {
       if (!node) return null;
       const payload = buildAuthorityNodePayload(node, entry, options);
       return {
-        id: nodeId,
         externalId: nodeId,
         nodeId,
         text: String(entry?.text || ""),

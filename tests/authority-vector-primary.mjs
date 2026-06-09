@@ -169,6 +169,10 @@ function createMockTriviumClient({
           path: "/bme/vector-apply",
         });
       }
+      const itemWithTopLevelId = payload.items?.find((item) => item?.id !== undefined);
+      if (itemWithTopLevelId) {
+        throw new Error("bmeVectorApply items must not send top-level Trivium id");
+      }
       return {
         ok: true,
         database: payload.database || "st_bme_vectors",
@@ -266,6 +270,11 @@ assert.equal(isAuthorityVectorConfig(config), true);
   assert.equal(applyCall.items.every((item) => item.payload?.vectorSpaceId === applyCall.vectorSpaceId), true);
   assert.equal(applyCall.items.every((item) => item.payload?.observedDim === 2), true);
   assert.equal(applyCall.items.every((item) => Array.isArray(item.vector) && item.vector.length > 0), true);
+  assert.equal(applyCall.items[0].id, undefined);
+  assert.equal(applyCall.items[0].externalId, "node-a");
+  assert.equal(applyCall.items[0].nodeId, "node-a");
+  assert.equal(applyCall.items[0].payload.nodeId, "node-a");
+  assert.equal(applyCall.items[0].payload.externalId, "node-a");
   assert.equal(result.timings.authorityDiagnostics.upsert.operation, "bmeVectorApply");
 }
 
