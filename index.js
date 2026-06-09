@@ -111,6 +111,7 @@ import {
   registerGenerationAfterCommandsController,
   scheduleSendIntentHookRetryController,
 } from "./host/event-binding.js";
+import { writeStructuredPlotRecordToMessage } from "./ena-planner/planner-plot-history.js";
 import {
   BME_HOST_PROFILE_LUKER,
   getBmeHostAdapter,
@@ -14734,14 +14735,54 @@ function preparePlannerRecallHandoff({
   rawUserInput = "",
   plannerAugmentedMessage = "",
   plannerRecall = null,
+  plannerPlotRecord = null,
   chatId = getCurrentChatId(),
 } = {}) {
   return rerollRecallInput.preparePlannerRecallHandoff({
     rawUserInput,
     plannerAugmentedMessage,
     plannerRecall,
+    plannerPlotRecord,
     chatId,
   });
+}
+
+function preparePlannerPlotRecordHandoff(plannerPlotRecord = null) {
+  if (!plannerPlotRecord || typeof plannerPlotRecord !== "object") {
+    return null;
+  }
+  return rerollRecallInput.preparePlannerPlotRecordHandoff({
+    ...plannerPlotRecord,
+    chatId: getCurrentChatId(),
+  });
+}
+
+function persistPlannerPlotRecordToUserMessage(newUserMessageIndex) {
+  const context = getContext();
+  const chat = context?.chat;
+  if (
+    !Array.isArray(chat) ||
+    !Number.isFinite(newUserMessageIndex) ||
+    !chat[newUserMessageIndex]?.is_user
+  ) {
+    return false;
+  }
+  const chatId = context?.chatId || getCurrentChatId();
+  const plotHandoff = rerollRecallInput.peekPlannerPlotRecordHandoff?.(chatId);
+  const handoff = peekPlannerRecallHandoff(chatId);
+  const plannerPlotRecord = plotHandoff || handoff?.plannerPlotRecord;
+  if (!plannerPlotRecord || typeof plannerPlotRecord !== "object") {
+    return false;
+  }
+  const wrote = writeStructuredPlotRecordToMessage(chat[newUserMessageIndex], {
+    ...plannerPlotRecord,
+    recallHandoffId: handoff?.id || plannerPlotRecord.recallHandoffId || "",
+  });
+  if (wrote) {
+    rerollRecallInput.consumePlannerPlotRecordHandoff?.(chatId);
+    triggerChatMetadataSave(context, { immediate: false });
+  }
+  return wrote;
 }
 
 function buildPreGenerationRecallKey(type, options = {}) {
@@ -16051,6 +16092,7 @@ function onMessageSent(messageId) {
       getContext,
       isTrivialUserInput,
       markCurrentGenerationTrivialSkip,
+      persistPlannerPlotRecordToUserMessage,
       recordRecallSentUserMessage,
       rebindRecallRecordToNewUserMessage,
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
@@ -17889,6 +17931,7 @@ async function onCompactLukerSidecar() {
       getExtensionPath: () => `scripts/extensions/third-party/${MODULE_NAME}`,
       getPlannerRecallTimeoutMs,
       isTrivialUserInput,
+      preparePlannerPlotRecordHandoff,
       preparePlannerRecallHandoff,
       runPlannerRecallForEna,
     });
