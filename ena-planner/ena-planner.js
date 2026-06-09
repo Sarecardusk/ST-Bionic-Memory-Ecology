@@ -1,6 +1,11 @@
 import { extension_settings } from '../../../../extensions.js';
 import { getRequestHeaders, saveSettingsDebounced, substituteParamsExtended } from '../../../../../script.js';
 import { EnaPlannerStorage, migrateFromLWBIfNeeded } from './ena-planner-storage.js';
+import {
+    applyPlannerResultAndSend,
+    extractLastNPlots,
+    formatPlotsBlock,
+} from './ena-planner-runtime-utils.js';
 import { DEFAULT_PROMPT_BLOCKS, BUILTIN_TEMPLATES } from './ena-planner-presets.js';
 import {
     createBuiltinPromptBlock,
@@ -794,38 +799,6 @@ function collectRecentChatSnippet(chat, maxMessages) {
  * Plot extraction
  * --------------------------
  */
-function extractLastNPlots(chat, n) {
-    if (!Array.isArray(chat) || chat.length === 0) return [];
-    const want = Math.max(0, Number(n) || 0);
-    if (!want) return [];
-
-    const plots = [];
-    const plotRe = /<plot\b[^>]*>[\s\S]*?<\/plot>/gi;
-
-    for (let i = chat.length - 1; i >= 0; i--) {
-        const text = chat[i]?.mes ?? '';
-        if (!text) continue;
-        const matches = [...text.matchAll(plotRe)];
-        for (let j = matches.length - 1; j >= 0; j--) {
-            plots.push(matches[j][0]);
-            if (plots.length >= want) return plots;
-        }
-    }
-    return plots;
-}
-
-function formatPlotsBlock(plotList) {
-    if (!Array.isArray(plotList) || plotList.length === 0) return '';
-    // plotList is [newest, ..., oldest] from extractLastNPlots
-    // Reverse to chronological: oldest first, newest last
-    const chrono = [...plotList].reverse();
-    const lines = [];
-    chrono.forEach((p, idx) => {
-        lines.push(`【plot -${chrono.length - idx}】\n${p}`);
-    });
-    return `<previous_plots>\n${lines.join('\n\n')}\n</previous_plots>`;
-}
-
 /**
  * -------------------------
  * Worldbook — read via ST API (like idle-watcher)
@@ -1941,22 +1914,18 @@ async function doInterceptAndPlanThenSend() {
                 ta.value = `${raw}\n\n${preview}`.trim();
             }
         });
-        const merged = `${raw}\n\n${filtered}`.trim();
-        ta.value = merged;
-        state.lastInjectedText = merged;
-
-        // Ordering requirement: register the one-shot planner recall handoff
-        // synchronously before btn.click(), with no await/timer hop in between.
-        if (_bmeRuntime?.preparePlannerRecallHandoff && plannerRecall?.result) {
-            _bmeRuntime.preparePlannerRecallHandoff({
-                rawUserInput: raw,
-                plannerAugmentedMessage: merged,
-                plannerRecall,
-            });
-        }
-
-        state.bypassNextSend = true;
-        btn.click();
+        // Ordering requirement: write the merged textarea, register the
+        // one-shot planner recall handoff synchronously, then click send with
+        // no await/timer hop in between.
+        applyPlannerResultAndSend({
+            textarea: ta,
+            button: btn,
+            rawUserInput: raw,
+            filtered,
+            plannerRecall,
+            runtime: _bmeRuntime,
+            plannerState: state,
+        });
     } catch (err) {
         ta.value = raw;
         state.lastInjectedText = '';
