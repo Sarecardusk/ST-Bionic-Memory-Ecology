@@ -34,6 +34,7 @@ export function applyPlannerResultAndSend({
     rawUserInput = '',
     filtered = '',
     plannerRecall = null,
+    plannerPlotRecord = null,
     runtime = null,
     plannerState = null,
 } = {}) {
@@ -48,10 +49,18 @@ export function applyPlannerResultAndSend({
 
     let handoffPrepared = false;
     if (runtime?.preparePlannerRecallHandoff && plannerRecall?.result) {
+        const plotRecordPayload = plannerPlotRecord && typeof plannerPlotRecord === 'object'
+            ? {
+                ...plannerPlotRecord,
+                rawUserInput: raw,
+                plannerAugmentedMessage: merged,
+            }
+            : null;
         runtime.preparePlannerRecallHandoff({
             rawUserInput: raw,
             plannerAugmentedMessage: merged,
             plannerRecall,
+            plannerPlotRecord: plotRecordPayload,
         });
         handoffPrepared = true;
     }

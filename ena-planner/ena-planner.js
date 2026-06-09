@@ -3,9 +3,8 @@ import { getRequestHeaders, saveSettingsDebounced, substituteParamsExtended } fr
 import { EnaPlannerStorage, migrateFromLWBIfNeeded } from './ena-planner-storage.js';
 import {
     applyPlannerResultAndSend,
-    extractLastNPlots,
-    formatPlotsBlock,
 } from './ena-planner-runtime-utils.js';
+import { readPlannerPlotHistory } from './planner-plot-history.js';
 import { DEFAULT_PROMPT_BLOCKS, BUILTIN_TEMPLATES } from './ena-planner-presets.js';
 import {
     createBuiltinPromptBlock,
@@ -1743,7 +1742,7 @@ async function buildPlannerMessages(rawUserInput) {
     // a little continuity even when memory recall returns empty.
     const recentChatRaw = collectRecentChatSnippet(chat, 2);
 
-    const plotsRaw = formatPlotsBlock(extractLastNPlots(chat, s.plotCount));
+    const plotsRaw = readPlannerPlotHistory(chat, { count: s.plotCount }).block;
 
     // Build scanText for worldbook keyword activation
     const scanText = [charBlockRaw, recentChatRaw, plotsRaw, rawUserInput].join('\n\n');
@@ -1923,6 +1922,10 @@ async function doInterceptAndPlanThenSend() {
             rawUserInput: raw,
             filtered,
             plannerRecall,
+            plannerPlotRecord: {
+                rawUserInput: raw,
+                plotText: filtered,
+            },
             runtime: _bmeRuntime,
             plannerState: state,
         });

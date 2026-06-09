@@ -309,6 +309,7 @@ export function createRerollRecallInput(deps = {}) {
     rawUserInput = "",
     plannerAugmentedMessage = "",
     plannerRecall = null,
+    plannerPlotRecord = null,
     chatId = getCurrentChatId(),
   } = {}) {
     const normalizedChatId = normalizeChatIdCandidate(chatId);
@@ -340,6 +341,10 @@ export function createRerollRecallInput(deps = {}) {
         ? plannerRecall.recentMessages.map((item) => String(item || ""))
         : [],
       injectionText,
+      plannerPlotRecord:
+        plannerPlotRecord && typeof plannerPlotRecord === "object"
+          ? { ...plannerPlotRecord }
+          : null,
       source: "planner-handoff",
       sourceLabel: "Planner handoff",
       createdAt,

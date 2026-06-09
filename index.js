@@ -111,6 +111,7 @@ import {
   registerGenerationAfterCommandsController,
   scheduleSendIntentHookRetryController,
 } from "./host/event-binding.js";
+import { writeStructuredPlotRecordToMessage } from "./ena-planner/planner-plot-history.js";
 import {
   BME_HOST_PROFILE_LUKER,
   getBmeHostAdapter,
@@ -14734,14 +14735,41 @@ function preparePlannerRecallHandoff({
   rawUserInput = "",
   plannerAugmentedMessage = "",
   plannerRecall = null,
+  plannerPlotRecord = null,
   chatId = getCurrentChatId(),
 } = {}) {
   return rerollRecallInput.preparePlannerRecallHandoff({
     rawUserInput,
     plannerAugmentedMessage,
     plannerRecall,
+    plannerPlotRecord,
     chatId,
   });
+}
+
+function persistPlannerPlotRecordToUserMessage(newUserMessageIndex) {
+  const context = getContext();
+  const chat = context?.chat;
+  if (
+    !Array.isArray(chat) ||
+    !Number.isFinite(newUserMessageIndex) ||
+    !chat[newUserMessageIndex]?.is_user
+  ) {
+    return false;
+  }
+  const handoff = peekPlannerRecallHandoff(context?.chatId || getCurrentChatId());
+  const plannerPlotRecord = handoff?.plannerPlotRecord;
+  if (!plannerPlotRecord || typeof plannerPlotRecord !== "object") {
+    return false;
+  }
+  const wrote = writeStructuredPlotRecordToMessage(chat[newUserMessageIndex], {
+    ...plannerPlotRecord,
+    recallHandoffId: handoff.id || plannerPlotRecord.recallHandoffId || "",
+  });
+  if (wrote) {
+    triggerChatMetadataSave(context, { immediate: false });
+  }
+  return wrote;
 }
 
 function buildPreGenerationRecallKey(type, options = {}) {
@@ -16051,6 +16079,7 @@ function onMessageSent(messageId) {
       getContext,
       isTrivialUserInput,
       markCurrentGenerationTrivialSkip,
+      persistPlannerPlotRecordToUserMessage,
       recordRecallSentUserMessage,
       rebindRecallRecordToNewUserMessage,
       refreshPersistedRecallMessageUi: schedulePersistedRecallMessageUiRefresh,
