@@ -2035,6 +2035,48 @@ function shouldRefreshBuiltinDefaultProfile(taskType, profile = {}) {
   return false;
 }
 
+export function isExtractProfileSplitSafe(settings = {}) {
+  if (String(settings?.extractPrompt || "").trim()) {
+    return false;
+  }
+
+  const rawTaskProfiles = settings?.taskProfiles?.extract;
+  if (!rawTaskProfiles) return true;
+
+  const profiles = Array.isArray(rawTaskProfiles?.profiles) ? rawTaskProfiles.profiles : [];
+  const activeProfileId = String(rawTaskProfiles?.activeProfileId || DEFAULT_PROFILE_ID);
+  const rawActiveProfile = profiles.find((profile) => String(profile?.id || "") === activeProfileId);
+  if (!rawActiveProfile) return false;
+  if (String(rawActiveProfile?.id || "") !== DEFAULT_PROFILE_ID) return false;
+  if (rawActiveProfile?.builtin !== true) return false;
+  if (rawActiveProfile?.metadata?.migratedFromLegacy === true) return false;
+
+  const canonicalDefault = createDefaultTaskProfile("extract");
+  if (shouldRefreshBuiltinDefaultProfile("extract", rawActiveProfile)) return false;
+  if (
+    JSON.stringify(buildPromptBlockComparisonPayload(rawActiveProfile?.blocks || [])) !==
+    JSON.stringify(buildPromptBlockComparisonPayload(canonicalDefault.blocks || []))
+  ) {
+    return false;
+  }
+  if (JSON.stringify(rawActiveProfile?.generation || {}) !== JSON.stringify(canonicalDefault.generation || {})) {
+    return false;
+  }
+  if (JSON.stringify(rawActiveProfile?.input || {}) !== JSON.stringify(canonicalDefault.input || {})) {
+    return false;
+  }
+  if (JSON.stringify(rawActiveProfile?.regex || {}) !== JSON.stringify(canonicalDefault.regex || {})) {
+    return false;
+  }
+  if (String(rawActiveProfile?.promptMode || "") !== String(canonicalDefault.promptMode || "")) {
+    return false;
+  }
+  if ((rawActiveProfile?.enabled !== false) !== (canonicalDefault.enabled !== false)) {
+    return false;
+  }
+  return true;
+}
+
 function createFallbackDefaultTaskProfile(taskType) {
   const legacyPromptField = LEGACY_PROMPT_FIELD_MAP[taskType];
   const templateStamp = getDefaultTaskProfileTemplateStamp(taskType);

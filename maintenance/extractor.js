@@ -41,6 +41,7 @@ import {
   buildTaskLlmPayload,
   buildTaskPrompt,
 } from "../prompting/prompt-builder.js";
+import { isExtractProfileSplitSafe } from "../prompting/prompt-profiles.js";
 import { RELATION_TYPES } from "../graph/schema.js";
 import { applyTaskRegex } from "../prompting/task-regex.js";
 import { getSTContextForPrompt, getSTContextSnapshot } from "../host/st-context.js";
@@ -1110,7 +1111,11 @@ async function applyExtractionPostCommit({
 }
 
 function resolveExtractPipelineVersion(settings = {}) {
-  return String(settings?.extractPipelineVersion || "legacy-single").trim().toLowerCase();
+  const requested = String(settings?.extractPipelineVersion || "split-v1").trim().toLowerCase();
+  if (requested === "split-v1" && !isExtractProfileSplitSafe(settings)) {
+    return "legacy-single";
+  }
+  return requested;
 }
 
 function shouldUseSplitExtractionPipeline(settings = {}) {

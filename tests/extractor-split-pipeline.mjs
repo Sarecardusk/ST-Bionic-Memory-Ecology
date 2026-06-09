@@ -65,6 +65,7 @@ installResolveHooks([
 const { createEmptyGraph, createNode, addNode } = await import("../graph/graph.js");
 const { DEFAULT_NODE_SCHEMA } = await import("../graph/schema.js");
 const { extractMemories } = await import("../maintenance/extractor.js");
+const { defaultSettings } = await import("../runtime/settings-defaults.js");
 
 function setTestOverrides(overrides = {}) {
   globalThis.__stBmeTestOverrides = overrides;
@@ -190,6 +191,106 @@ function characterKnowledgeEntries(graph) {
   );
 }
 
+async function captureTaskTypesForExtract(settings, options = {}) {
+  const graph = createGraphWithCharacter();
+  const capturedTaskTypes = [];
+  const restore = setTestOverrides({
+    llm: {
+      async callLLMForJSON(payload = {}) {
+        capturedTaskTypes.push(payload.taskType);
+        if (payload.taskType === "extract_objective") return objectivePayload();
+        if (payload.taskType === "extract_subjective") return subjectivePayload();
+        if (payload.taskType === "extract") return { operations: [], cognitionUpdates: [], regionUpdates: {} };
+        return { operations: [], cognitionUpdates: [], regionUpdates: {} };
+      },
+    },
+  });
+
+  try {
+    const params = {
+      graph,
+      ...baseExtractParams,
+    };
+    if (options.includeSettings !== false) {
+      params.settings = settings;
+    }
+    const result = await extractMemories(params);
+    return { graph, result, capturedTaskTypes };
+  } finally {
+    restore();
+  }
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function createCustomizedLegacyExtractProfileSettings() {
+  const taskProfiles = cloneJson(defaultSettings.taskProfiles);
+  const baseProfile = taskProfiles.extract.profiles[0];
+  const customProfile = {
+    ...baseProfile,
+    id: "custom-legacy-extract-profile",
+    name: "Custom legacy extract profile",
+    builtin: false,
+    blocks: (Array.isArray(baseProfile.blocks) ? baseProfile.blocks : []).map((block, index) =>
+      index === 0
+        ? { ...block, content: `${String(block.content || "")}\nCUSTOM_LEGACY_EXTRACT_SENTINEL` }
+        : { ...block },
+    ),
+  };
+  taskProfiles.extract = {
+    activeProfileId: customProfile.id,
+    profiles: [baseProfile, customProfile],
+  };
+  return {
+    ...defaultSettings,
+    extractPipelineVersion: "split-v1",
+    taskProfiles,
+  };
+}
+
+function createDefaultExtractProfileSettings(mutator) {
+  const taskProfiles = cloneJson(defaultSettings.taskProfiles);
+  const extractProfiles = taskProfiles.extract.profiles || [];
+  const defaultProfile = extractProfiles.find((profile) => profile.id === "default") || extractProfiles[0];
+  mutator?.(defaultProfile, taskProfiles.extract);
+  return {
+    ...defaultSettings,
+    extractPipelineVersion: "split-v1",
+    taskProfiles,
+  };
+}
+
+// Phase 4 default switch: omitting settings should use the split pipeline by default.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(undefined, {
+    includeSettings: false,
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    capturedTaskTypes,
+    ["extract_objective", "extract_subjective"],
+    "extractMemories without explicit settings should default to split objective+subjective extraction",
+  );
+}
+
+// Phase 4 default switch: the default settings object should request split-v1.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
+    ...defaultSettings,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(defaultSettings.extractPipelineVersion, "split-v1");
+  assert.deepEqual(
+    capturedTaskTypes,
+    ["extract_objective", "extract_subjective"],
+    "defaultSettings should call split objective+subjective extraction",
+  );
+}
+
 // split-v1 calls objective then subjective, merges both stage outputs, and commits once.
 {
   const graph = createGraphWithCharacter();
@@ -282,35 +383,92 @@ function characterKnowledgeEntries(graph) {
   }
 }
 
-// Legacy/default extraction keeps the single extract taskType path.
+// Legacy guard: a non-empty legacy extractPrompt should force the single extract taskType path.
 {
-  const graph = createGraphWithCharacter();
-  const capturedTaskTypes = [];
-  const restore = setTestOverrides({
-    llm: {
-      async callLLMForJSON(payload = {}) {
-        capturedTaskTypes.push(payload.taskType);
-        return { operations: [], cognitionUpdates: [], regionUpdates: {} };
-      },
-    },
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
+    ...defaultSettings,
+    extractPipelineVersion: "split-v1",
+    extractPrompt: "CUSTOM LEGACY EXTRACT PROMPT",
   });
 
-  try {
-    const result = await extractMemories({
-      graph,
-      ...baseExtractParams,
-      settings: {},
-    });
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    capturedTaskTypes,
+    ["extract"],
+    "non-empty extractPrompt should guard back to legacy taskType extract",
+  );
+}
 
-    assert.equal(result.success, true);
-    assert.deepEqual(
-      capturedTaskTypes,
-      ["extract"],
-      "default extraction should keep calling only legacy taskType extract",
-    );
-  } finally {
-    restore();
-  }
+// Legacy guard: an active customized legacy extract task profile should force the single extract path.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
+    createCustomizedLegacyExtractProfileSettings(),
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    capturedTaskTypes,
+    ["extract"],
+    "customized active taskProfiles.extract profile should guard back to legacy taskType extract",
+  );
+}
+
+// Legacy guard: an explicit legacy override should always keep the single extract path.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
+    ...defaultSettings,
+    extractPipelineVersion: "legacy-single",
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(capturedTaskTypes, ["extract"]);
+}
+
+// Legacy guard: migrated legacy default-looking profiles are conservative legacy.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
+    createDefaultExtractProfileSettings((profile) => {
+      profile.metadata = {
+        ...(profile.metadata || {}),
+        migratedFromLegacy: true,
+      };
+    }),
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(capturedTaskTypes, ["extract"]);
+}
+
+// Legacy guard: stale default profile metadata is conservative legacy.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
+    createDefaultExtractProfileSettings((profile) => {
+      profile.metadata = {
+        ...(profile.metadata || {}),
+        defaultTemplateFingerprint: "stale-fingerprint",
+      };
+    }),
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(capturedTaskTypes, ["extract"]);
+}
+
+// Legacy guard: modified default profile content is conservative legacy even if id/builtin remain default.
+{
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
+    createDefaultExtractProfileSettings((profile) => {
+      profile.blocks = (profile.blocks || []).map((block, index) =>
+        index === 0
+          ? { ...block, content: `${String(block.content || "")}
+CUSTOM_DEFAULT_PROFILE_SENTINEL` }
+          : { ...block },
+      );
+    }),
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(capturedTaskTypes, ["extract"]);
 }
 
 console.log("extractor-split-pipeline tests passed");
