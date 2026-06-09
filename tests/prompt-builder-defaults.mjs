@@ -47,6 +47,7 @@ installResolveHooks([
 
 const { buildTaskLlmPayload, buildTaskPrompt } = await import("../prompting/prompt-builder.js");
 const {
+  createBuiltinPromptBlock,
   createDefaultGlobalTaskRegex,
   createDefaultTaskProfiles,
 } = await import("../prompting/prompt-profiles.js");
@@ -255,5 +256,99 @@ assert.equal(
 );
 
 initializeHostAdapter({});
+
+const splitContextTaskProfiles = createDefaultTaskProfiles();
+const subjectiveProfile = splitContextTaskProfiles.extract_subjective.profiles[0];
+subjectiveProfile.blocks = [
+  createBuiltinPromptBlock("extract_subjective", "objectiveExtractionDraft", {
+    name: "客观提取草稿",
+    order: 0,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "objectiveRefMap", {
+    name: "客观引用映射",
+    order: 1,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "ownerContext", {
+    name: "视角主体上下文",
+    order: 2,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "batchStoryTime", {
+    name: "批次故事时间",
+    order: 3,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "relevantPovMemories", {
+    name: "相关主观记忆",
+    order: 4,
+  }),
+  createBuiltinPromptBlock("extract_subjective", "cognitionStateDigest", {
+    name: "认知状态摘要",
+    order: 5,
+  }),
+];
+
+const splitContextPromptBuild = await buildTaskPrompt(
+  {
+    taskProfilesVersion: 3,
+    taskProfiles: splitContextTaskProfiles,
+  },
+  "extract_subjective",
+  {
+    objectiveExtractionDraft: { operations: [{ ref: "evt1", type: "event" }] },
+    objectiveRefMap: { evt1: "node-evt1" },
+    ownerContext: { ownerType: "character", ownerName: "艾琳" },
+    batchStoryTime: { label: "第二天清晨", confidence: "high" },
+    relevantPovMemories: ["旧 POV 记忆"],
+    cognitionStateDigest: "艾琳知道 evt1",
+  },
+);
+const splitContextPayload = buildTaskLlmPayload(
+  splitContextPromptBuild,
+  "fallback-user",
+);
+assert.deepEqual(
+  splitContextPayload.promptMessages
+    .map((message) => message.sourceKey)
+    .filter(Boolean),
+  [
+    "objectiveExtractionDraft",
+    "objectiveRefMap",
+    "ownerContext",
+    "batchStoryTime",
+    "relevantPovMemories",
+    "cognitionStateDigest",
+  ],
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "objectiveExtractionDraft",
+    )?.content || "",
+  ),
+  /"ref": "evt1"/,
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "ownerContext",
+    )?.content || "",
+  ),
+  /"ownerName": "艾琳"/,
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "batchStoryTime",
+    )?.content || "",
+  ),
+  /"第二天清晨"/,
+);
+assert.match(
+  String(
+    splitContextPayload.promptMessages.find(
+      (message) => message.sourceKey === "relevantPovMemories",
+    )?.content || "",
+  ),
+  /旧 POV 记忆/,
+);
 
 console.log("prompt-builder-defaults tests passed");

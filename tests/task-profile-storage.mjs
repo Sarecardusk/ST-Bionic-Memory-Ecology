@@ -7,7 +7,11 @@ import {
   createLocalRegexRule,
   exportTaskProfile,
   getActiveTaskProfile,
+  getBuiltinBlockDefinitions,
   getLegacyPromptFieldForTask,
+  getTaskTypeMeta,
+  getTaskTypeOptions,
+  getTaskTypes,
   importTaskProfile,
   restoreDefaultTaskProfile,
   upsertTaskProfile,
@@ -96,5 +100,76 @@ const restoredActive = getActiveTaskProfile(
 );
 assert.equal(restoredActive.id, "default");
 assert.equal(getLegacyPromptFieldForTask("extract"), "extractPrompt");
+
+assert.ok(getTaskTypes().includes("extract_objective"));
+assert.ok(getTaskTypes().includes("extract_subjective"));
+assert.equal(
+  getTaskTypeOptions().some((option) => option.id === "extract_objective"),
+  false,
+);
+assert.equal(
+  getTaskTypeOptions().some((option) => option.id === "extract_subjective"),
+  false,
+);
+assert.deepEqual(
+  {
+    objective: getTaskTypeMeta("extract_objective"),
+    subjective: getTaskTypeMeta("extract_subjective"),
+  },
+  {
+    objective: {
+      id: "extract_objective",
+      label: "客观提取",
+      description: "从当前对话批次中抽取客观层结构化记忆。",
+      hidden: true,
+    },
+    subjective: {
+      id: "extract_subjective",
+      label: "主观提取",
+      description: "从客观提取草稿与视角上下文中抽取主观记忆。",
+      hidden: true,
+    },
+  },
+);
+assert.ok(taskProfiles.extract_objective?.profiles?.length > 0);
+assert.ok(taskProfiles.extract_subjective?.profiles?.length > 0);
+assert.equal(
+  taskProfiles.extract_objective.profiles[0].metadata.legacyPromptField,
+  "extractObjectivePrompt",
+);
+assert.equal(
+  taskProfiles.extract_subjective.profiles[0].metadata.legacyPromptField,
+  "extractSubjectivePrompt",
+);
+assert.equal(
+  taskProfiles.extract_objective.profiles[0].blocks.find((block) => block.id === "default-role")?.content,
+  baseProfile.blocks.find((block) => block.id === "default-role")?.content,
+);
+assert.equal(
+  taskProfiles.extract_subjective.profiles[0].blocks.find((block) => block.id === "default-rules")?.content,
+  baseProfile.blocks.find((block) => block.id === "default-rules")?.content,
+);
+assert.deepEqual(
+  getBuiltinBlockDefinitions("extract_subjective")
+    .map((definition) => definition.sourceKey)
+    .filter((sourceKey) =>
+      [
+        "objectiveExtractionDraft",
+        "objectiveRefMap",
+        "ownerContext",
+        "batchStoryTime",
+        "relevantPovMemories",
+        "cognitionStateDigest",
+      ].includes(sourceKey),
+    ),
+  [
+    "objectiveExtractionDraft",
+    "objectiveRefMap",
+    "ownerContext",
+    "batchStoryTime",
+    "relevantPovMemories",
+    "cognitionStateDigest",
+  ],
+);
 
 console.log("task-profile-storage tests passed");

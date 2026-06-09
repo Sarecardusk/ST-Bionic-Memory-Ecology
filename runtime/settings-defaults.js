@@ -159,6 +159,8 @@ export const defaultSettings = {
 
   // 自定义提示词
   extractPrompt: "",
+  extractObjectivePrompt: "",
+  extractSubjectivePrompt: "",
   recallPrompt: "",
   consolidationPrompt: "",
   compressPrompt: "",
