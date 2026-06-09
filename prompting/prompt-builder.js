@@ -1673,6 +1673,9 @@ function extractWorldInfoChatMessages(context = {}) {
 export async function buildTaskPrompt(settings = {}, taskType, context = {}) {
   const isCustomFilter = isCustomWorldInfoFilterEnabled(settings);
   const profile = getActiveTaskProfile(settings, taskType);
+  if (!profile) {
+    throw new Error(`Unsupported task type: ${String(taskType || "").trim() || "(empty)"}`);
+  }
   const legacyPrompt = getLegacyPromptForTask(settings, taskType);
   const promptRegexInput = { entries: [] };
   const mvuPromptDebug = createEmptyMvuPromptDebug();

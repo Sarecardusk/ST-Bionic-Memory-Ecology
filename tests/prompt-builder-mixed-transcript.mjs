@@ -55,7 +55,7 @@ const settings = {
   taskProfilesVersion: 3,
   taskProfiles: createDefaultTaskProfiles(),
 };
-const extractProfile = settings.taskProfiles.extract.profiles[0];
+const extractProfile = settings.taskProfiles.extract_objective.profiles[0];
 extractProfile.regex = {
   ...(extractProfile.regex || {}),
   enabled: true,
@@ -105,8 +105,8 @@ extractProfile.regex = {
   ],
 };
 
-const promptBuild = await buildTaskPrompt(settings, "extract", {
-  taskName: "extract",
+const promptBuild = await buildTaskPrompt(settings, "extract_objective", {
+  taskName: "extract_objective",
   charDescription: "",
   userPersona: "",
   recentMessages: "这里会被 chatMessages 回填",

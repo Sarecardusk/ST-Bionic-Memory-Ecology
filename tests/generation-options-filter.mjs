@@ -4,8 +4,8 @@ import { createDefaultTaskProfiles } from "../prompting/prompt-profiles.js";
 
 function buildSettingsWithExtractGeneration(generation) {
   const taskProfiles = createDefaultTaskProfiles();
-  taskProfiles.extract.profiles[0].generation = {
-    ...taskProfiles.extract.profiles[0].generation,
+  taskProfiles.extract_objective.profiles[0].generation = {
+    ...taskProfiles.extract_objective.profiles[0].generation,
     ...generation,
   };
   return {
@@ -28,7 +28,7 @@ const openAiLikeSettings = buildSettingsWithExtractGeneration({
 
 const openAiLike = resolveTaskGenerationOptions(
   openAiLikeSettings,
-  "extract",
+  "extract_objective",
   { max_completion_tokens: 256 },
   { mode: "dedicated-openai-compatible" },
 );
@@ -50,7 +50,7 @@ assert.ok(
 
 const conservative = resolveTaskGenerationOptions(
   openAiLikeSettings,
-  "extract",
+  "extract_objective",
   { max_completion_tokens: 256 },
   { mode: "sillytavern-current-model" },
 );
@@ -74,7 +74,7 @@ const fallbackSettings = buildSettingsWithExtractGeneration({
 });
 const fallback = resolveTaskGenerationOptions(
   fallbackSettings,
-  "extract",
+  "extract_objective",
   { max_completion_tokens: 300 },
   { mode: "conservative" },
 );

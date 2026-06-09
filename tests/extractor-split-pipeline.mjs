@@ -194,13 +194,14 @@ function characterKnowledgeEntries(graph) {
 async function captureTaskTypesForExtract(settings, options = {}) {
   const graph = createGraphWithCharacter();
   const capturedTaskTypes = [];
+  const capturedPayloads = [];
   const restore = setTestOverrides({
     llm: {
       async callLLMForJSON(payload = {}) {
         capturedTaskTypes.push(payload.taskType);
+        capturedPayloads.push(payload);
         if (payload.taskType === "extract_objective") return objectivePayload();
         if (payload.taskType === "extract_subjective") return subjectivePayload();
-        if (payload.taskType === "extract") return { operations: [], cognitionUpdates: [], regionUpdates: {} };
         return { operations: [], cognitionUpdates: [], regionUpdates: {} };
       },
     },
@@ -215,51 +216,10 @@ async function captureTaskTypesForExtract(settings, options = {}) {
       params.settings = settings;
     }
     const result = await extractMemories(params);
-    return { graph, result, capturedTaskTypes };
+    return { graph, result, capturedTaskTypes, capturedPayloads };
   } finally {
     restore();
   }
-}
-
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function createCustomizedLegacyExtractProfileSettings() {
-  const taskProfiles = cloneJson(defaultSettings.taskProfiles);
-  const baseProfile = taskProfiles.extract.profiles[0];
-  const customProfile = {
-    ...baseProfile,
-    id: "custom-legacy-extract-profile",
-    name: "Custom legacy extract profile",
-    builtin: false,
-    blocks: (Array.isArray(baseProfile.blocks) ? baseProfile.blocks : []).map((block, index) =>
-      index === 0
-        ? { ...block, content: `${String(block.content || "")}\nCUSTOM_LEGACY_EXTRACT_SENTINEL` }
-        : { ...block },
-    ),
-  };
-  taskProfiles.extract = {
-    activeProfileId: customProfile.id,
-    profiles: [baseProfile, customProfile],
-  };
-  return {
-    ...defaultSettings,
-    extractPipelineVersion: "split-v1",
-    taskProfiles,
-  };
-}
-
-function createDefaultExtractProfileSettings(mutator) {
-  const taskProfiles = cloneJson(defaultSettings.taskProfiles);
-  const extractProfiles = taskProfiles.extract.profiles || [];
-  const defaultProfile = extractProfiles.find((profile) => profile.id === "default") || extractProfiles[0];
-  mutator?.(defaultProfile, taskProfiles.extract);
-  return {
-    ...defaultSettings,
-    extractPipelineVersion: "split-v1",
-    taskProfiles,
-  };
 }
 
 // Phase 4 default switch: omitting settings should use the split pipeline by default.
@@ -276,19 +236,68 @@ function createDefaultExtractProfileSettings(mutator) {
   );
 }
 
-// Phase 4 default switch: the default settings object should request split-v1.
+// The default settings object should always use objective+subjective split extraction.
 {
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
+  const { result, capturedTaskTypes, capturedPayloads } = await captureTaskTypesForExtract({
     ...defaultSettings,
   });
 
   assert.equal(result.success, true);
-  assert.equal(defaultSettings.extractPipelineVersion, "split-v1");
   assert.deepEqual(
     capturedTaskTypes,
     ["extract_objective", "extract_subjective"],
     "defaultSettings should call split objective+subjective extraction",
   );
+  const subjectivePayloadText = JSON.stringify(
+    capturedPayloads.find((payload) => payload.taskType === "extract_subjective") || {},
+  );
+  const subjectivePayload = capturedPayloads.find(
+    (payload) => payload.taskType === "extract_subjective",
+  );
+  const objectiveRefMapBlock = subjectivePayload?.promptMessages?.find(
+    (message) => message.sourceKey === "objectiveRefMap",
+  );
+  assert.match(
+    subjectivePayloadText,
+    /evt-clock/,
+    "subjective extraction prompt should receive objective draft/ref context",
+  );
+  assert.match(
+    String(objectiveRefMapBlock?.content || ""),
+    /evt-clock/,
+    "subjective extraction prompt should render objectiveRefMap with objective refs",
+  );
+}
+
+// Removed legacy knobs are ignored and must not revive the old single extract task.
+for (const legacyPatch of [
+  { extractPrompt: "CUSTOM LEGACY EXTRACT PROMPT" },
+  { extractPipelineVersion: "legacy-single" },
+  {
+    taskProfiles: {
+      ...defaultSettings.taskProfiles,
+      extract: {
+        activeProfileId: "legacy-custom",
+        profiles: [
+          {
+            id: "legacy-custom",
+            taskType: "extract",
+            builtin: false,
+            blocks: [],
+          },
+        ],
+      },
+    },
+  },
+]) {
+  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
+    ...defaultSettings,
+    ...legacyPatch,
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(capturedTaskTypes, ["extract_objective", "extract_subjective"]);
+  assert.equal(capturedTaskTypes.includes("extract"), false);
 }
 
 // split-v1 calls objective then subjective, merges both stage outputs, and commits once.
@@ -310,7 +319,7 @@ function createDefaultExtractProfileSettings(mutator) {
     const result = await extractMemories({
       graph,
       ...baseExtractParams,
-      settings: { extractPipelineVersion: "split-v1" },
+      settings: defaultSettings,
     });
 
     assert.deepEqual(
@@ -366,7 +375,7 @@ function createDefaultExtractProfileSettings(mutator) {
     const result = await extractMemories({
       graph,
       ...baseExtractParams,
-      settings: { extractPipelineVersion: "split-v1" },
+      settings: defaultSettings,
     });
 
     assert.deepEqual(
@@ -381,94 +390,6 @@ function createDefaultExtractProfileSettings(mutator) {
   } finally {
     restore();
   }
-}
-
-// Legacy guard: a non-empty legacy extractPrompt should force the single extract taskType path.
-{
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
-    ...defaultSettings,
-    extractPipelineVersion: "split-v1",
-    extractPrompt: "CUSTOM LEGACY EXTRACT PROMPT",
-  });
-
-  assert.equal(result.success, true);
-  assert.deepEqual(
-    capturedTaskTypes,
-    ["extract"],
-    "non-empty extractPrompt should guard back to legacy taskType extract",
-  );
-}
-
-// Legacy guard: an active customized legacy extract task profile should force the single extract path.
-{
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
-    createCustomizedLegacyExtractProfileSettings(),
-  );
-
-  assert.equal(result.success, true);
-  assert.deepEqual(
-    capturedTaskTypes,
-    ["extract"],
-    "customized active taskProfiles.extract profile should guard back to legacy taskType extract",
-  );
-}
-
-// Legacy guard: an explicit legacy override should always keep the single extract path.
-{
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract({
-    ...defaultSettings,
-    extractPipelineVersion: "legacy-single",
-  });
-
-  assert.equal(result.success, true);
-  assert.deepEqual(capturedTaskTypes, ["extract"]);
-}
-
-// Legacy guard: migrated legacy default-looking profiles are conservative legacy.
-{
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
-    createDefaultExtractProfileSettings((profile) => {
-      profile.metadata = {
-        ...(profile.metadata || {}),
-        migratedFromLegacy: true,
-      };
-    }),
-  );
-
-  assert.equal(result.success, true);
-  assert.deepEqual(capturedTaskTypes, ["extract"]);
-}
-
-// Legacy guard: stale default profile metadata is conservative legacy.
-{
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
-    createDefaultExtractProfileSettings((profile) => {
-      profile.metadata = {
-        ...(profile.metadata || {}),
-        defaultTemplateFingerprint: "stale-fingerprint",
-      };
-    }),
-  );
-
-  assert.equal(result.success, true);
-  assert.deepEqual(capturedTaskTypes, ["extract"]);
-}
-
-// Legacy guard: modified default profile content is conservative legacy even if id/builtin remain default.
-{
-  const { result, capturedTaskTypes } = await captureTaskTypesForExtract(
-    createDefaultExtractProfileSettings((profile) => {
-      profile.blocks = (profile.blocks || []).map((block, index) =>
-        index === 0
-          ? { ...block, content: `${String(block.content || "")}
-CUSTOM_DEFAULT_PROFILE_SENTINEL` }
-          : { ...block },
-      );
-    }),
-  );
-
-  assert.equal(result.success, true);
-  assert.deepEqual(capturedTaskTypes, ["extract"]);
 }
 
 console.log("extractor-split-pipeline tests passed");

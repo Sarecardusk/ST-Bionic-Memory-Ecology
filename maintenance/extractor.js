@@ -41,7 +41,6 @@ import {
   buildTaskLlmPayload,
   buildTaskPrompt,
 } from "../prompting/prompt-builder.js";
-import { isExtractProfileSplitSafe } from "../prompting/prompt-profiles.js";
 import { RELATION_TYPES } from "../graph/schema.js";
 import { applyTaskRegex } from "../prompting/task-regex.js";
 import { getSTContextForPrompt, getSTContextSnapshot } from "../host/st-context.js";
@@ -1110,18 +1109,6 @@ async function applyExtractionPostCommit({
   };
 }
 
-function resolveExtractPipelineVersion(settings = {}) {
-  const requested = String(settings?.extractPipelineVersion || "split-v1").trim().toLowerCase();
-  if (requested === "split-v1" && !isExtractProfileSplitSafe(settings)) {
-    return "legacy-single";
-  }
-  return requested;
-}
-
-function shouldUseSplitExtractionPipeline(settings = {}) {
-  return resolveExtractPipelineVersion(settings) === "split-v1";
-}
-
 function cloneNormalizedExtractionResult(result = {}) {
   return {
     ...result,
@@ -1168,6 +1155,30 @@ function mergeSplitExtractionResults(objectiveResult = {}, subjectiveResult = {}
   };
 }
 
+function buildObjectiveExtractionRefMap(objectiveResult = {}) {
+  const refMap = {};
+  const operations = Array.isArray(objectiveResult?.operations)
+    ? objectiveResult.operations
+    : [];
+  for (const operation of operations) {
+    const ref = String(operation?.ref || operation?.id || "").trim();
+    if (!ref) continue;
+    refMap[ref] = {
+      ref,
+      action: String(operation?.action || "").trim(),
+      type: String(operation?.type || "").trim(),
+      nodeId: String(operation?.nodeId || operation?.targetId || "").trim(),
+      title: String(
+        operation?.fields?.title ||
+          operation?.fields?.name ||
+          operation?.fields?.summary ||
+          "",
+      ).trim(),
+    };
+  }
+  return refMap;
+}
+
 /**
  * 对未处理的对话楼层执行记忆提取
  *
@@ -1179,7 +1190,6 @@ function mergeSplitExtractionResults(objectiveResult = {}, subjectiveResult = {}
  * @param {number} [params.lastProcessedSeq] - 上次处理到的 chat 索引
  * @param {object[]} params.schema - 节点类型 Schema
  * @param {object} params.embeddingConfig - Embedding API 配置
- * @param {string} [params.extractPrompt] - 自定义提取提示词
  * @param {object} [params.v2Options] - v2 增强选项
  * @returns {Promise<{success: boolean, newNodes: number, updatedNodes: number, newEdges: number, newNodeIds: string[], processedRange: [number, number]}>}
  */
@@ -1191,7 +1201,6 @@ export async function extractMemories({
   lastProcessedSeq = -1,
   schema,
   embeddingConfig,
-  extractPrompt,
   signal = undefined,
   settings = {},
   onStreamProgress = null,
@@ -1319,35 +1328,6 @@ export async function extractMemories({
   }
 
   const extractWorldbookMode = String(settings?.extractWorldbookMode || "active").trim().toLowerCase();
-  const promptBuild = await buildTaskPrompt(settings, "extract", {
-    taskName: "extract",
-    schema: schemaDescription,
-    schemaDescription,
-    recentMessages: promptRecentMessages,
-    chatMessages: structuredMessages,
-    dialogueText,
-    graphStats: graphOverview,
-    graphOverview,
-    currentRange,
-    activeSummaries,
-    storyTimeContext,
-    taskInputDebug: extractionInput?.debug || null,
-    __skipWorldInfo: extractWorldbookMode === "none",
-    ...getSTContextForPrompt(),
-  });
-
-  // 系统提示词
-  const extractRegexInput = { entries: [] };
-  const systemPrompt = applyTaskRegex(
-    settings,
-    "extract",
-    "finalPrompt",
-    promptBuild.systemPrompt ||
-      extractPrompt ||
-      buildDefaultExtractPrompt(schema),
-    extractRegexInput,
-    "system",
-  );
 
   // 用户提示词 — Phase 3 分层信息结构
   const userPromptSections = [];
@@ -1417,90 +1397,11 @@ export async function extractMemories({
 
   userPromptSections.push("请分析对话，按 JSON 格式输出操作列表。");
   const userPrompt = userPromptSections.join("\n");
-  const promptPayload = resolveTaskPromptPayload(promptBuild, userPrompt);
   const extractionAugmentPrompt = buildCognitiveExtractAugmentPrompt();
-  const promptPayloadAdditionalMessages = Array.isArray(
-    promptPayload.additionalMessages,
-  )
-    ? [
-        ...promptPayload.additionalMessages,
-        {
-          role: "system",
-          content: extractionAugmentPrompt,
-        },
-      ]
-    : [
-        {
-          role: "system",
-          content: extractionAugmentPrompt,
-        },
-      ];
-  const llmSystemPrompt = resolveTaskLlmSystemPrompt(
-    promptPayload,
-    systemPrompt,
-  );
 
-  // 诊断：追踪 promptPayload
-  {
-    const pm = Array.isArray(promptPayload.promptMessages) ? promptPayload.promptMessages : [];
-    const pmUser = pm.filter((m) => m?.role === "user");
-    const am = Array.isArray(promptPayload.additionalMessages) ? promptPayload.additionalMessages : [];
-    debugLog(
-      `[ST-BME][prompt-diag] resolveTaskPromptPayload: ` +
-        `promptMessages=${pm.length} (user=${pmUser.length}), ` +
-        `additionalMessages=${am.length}, ` +
-        `userPrompt length=${String(promptPayload.userPrompt || "").length}, ` +
-        `systemPrompt length=${String(promptPayload.systemPrompt || "").length}, ` +
-        `llmSystemPrompt length=${String(llmSystemPrompt || "").length}`,
-    );
-    if (pmUser.length > 0) {
-      for (const m of pmUser) {
-        debugLog(
-          `[ST-BME][prompt-diag]   user msg: contentLen=${String(m.content || "").length}, ` +
-            `blockName="${m.blockName || ""}", preview="${String(m.content || "").slice(0, 60)}..."`,
-        );
-      }
-    } else {
-      debugWarn(
-        `[ST-BME][prompt-diag]   NO user messages in promptMessages! Fallback userPrompt will be used.`,
-      );
-    }
-    if (extractionInput?.debug) {
-      debugLog(
-        `[ST-BME][extract-input] raw=${Number(extractionInput.debug.rawMessageCount || 0)}, ` +
-          `filtered=${Number(extractionInput.debug.filteredMessageCount || 0)}, ` +
-          `assistantChanged=${Number(extractionInput.debug.changedAssistantMessageCount || 0)}, ` +
-          `assistantDropped=${Number(extractionInput.debug.droppedAssistantMessageCount || 0)}, ` +
-          `extractRules=${Number(extractionInput.debug.assistantBoundaryConfig?.extractRuleCount || 0)}, ` +
-          `excludeRules=${Number(extractionInput.debug.assistantBoundaryConfig?.excludeRuleCount || 0)}`,
-      );
-    }
-  }
-
-  const callExtractionStage = async (taskType) => {
-    const stageResult = await callLLMForJSON({
-      systemPrompt: llmSystemPrompt,
-      userPrompt: promptPayload.userPrompt,
-      maxRetries: 2,
-      signal,
-      taskType,
-      debugContext: createExtractTaskLlmDebugContext(
-        promptBuild,
-        extractRegexInput,
-        extractionInput?.debug || null,
-      ),
-      promptMessages: promptPayload.promptMessages,
-      additionalMessages: promptPayloadAdditionalMessages,
-      onStreamProgress,
-      returnFailureDetails: true,
-    });
-    throwIfAborted(signal);
-    return stageResult;
-  };
-
-  const buildAndCallStageForSplit = async (stageTaskType) => {
+  const buildAndCallStageForSplit = async (stageTaskType, stageContext = {}) => {
     const stagePromptBuild = await buildTaskPrompt(settings, stageTaskType, {
-      taskName: "extract",
+      taskName: stageTaskType,
       schema: schemaDescription,
       schemaDescription,
       recentMessages: promptRecentMessages,
@@ -1514,6 +1415,7 @@ export async function extractMemories({
       taskInputDebug: extractionInput?.debug || null,
       __skipWorldInfo: extractWorldbookMode === "none",
       ...getSTContextForPrompt(),
+      ...stageContext,
     });
 
     const stageRegexInput = { entries: [] };
@@ -1522,13 +1424,26 @@ export async function extractMemories({
       stageTaskType,
       "finalPrompt",
       stagePromptBuild.systemPrompt ||
-        extractPrompt ||
         buildDefaultExtractPrompt(schema),
       stageRegexInput,
       "system",
     );
     const stagePromptPayload = resolveTaskPromptPayload(stagePromptBuild, userPrompt);
     const stageLlmSystemPrompt = resolveTaskLlmSystemPrompt(stagePromptPayload, stageSystemPrompt);
+
+    {
+      const pm = Array.isArray(stagePromptPayload.promptMessages) ? stagePromptPayload.promptMessages : [];
+      const pmUser = pm.filter((m) => m?.role === "user");
+      const am = Array.isArray(stagePromptPayload.additionalMessages) ? stagePromptPayload.additionalMessages : [];
+      debugLog(
+        `[ST-BME][prompt-diag] ${stageTaskType}: ` +
+          `promptMessages=${pm.length} (user=${pmUser.length}), ` +
+          `additionalMessages=${am.length}, ` +
+          `userPrompt length=${String(stagePromptPayload.userPrompt || "").length}, ` +
+          `systemPrompt length=${String(stagePromptPayload.systemPrompt || "").length}, ` +
+          `llmSystemPrompt length=${String(stageLlmSystemPrompt || "").length}`,
+      );
+    }
 
     const stageResult = await callLLMForJSON({
       systemPrompt: stageLlmSystemPrompt,
@@ -1555,63 +1470,56 @@ export async function extractMemories({
     return stageResult;
   };
 
-  let draft = null;
-  if (shouldUseSplitExtractionPipeline(settings)) {
-    const objectiveLlmResult = await buildAndCallStageForSplit("extract_objective");
-    const objectiveDraft = resolveExtractionDraft({
-      llmResult: objectiveLlmResult,
-      schema,
-      graph,
-      scopeRuntime,
-    });
-    const objectiveValidationFailure = validateExtractionDraft({
-      draft: objectiveDraft,
-      lastProcessedSeq,
-    });
-    if (objectiveValidationFailure) return objectiveValidationFailure;
+  const objectiveLlmResult = await buildAndCallStageForSplit("extract_objective");
+  const objectiveDraft = resolveExtractionDraft({
+    llmResult: objectiveLlmResult,
+    schema,
+    graph,
+    scopeRuntime,
+  });
+  const objectiveValidationFailure = validateExtractionDraft({
+    draft: objectiveDraft,
+    lastProcessedSeq,
+  });
+  if (objectiveValidationFailure) return objectiveValidationFailure;
 
-    const subjectiveLlmResult = await buildAndCallStageForSplit("extract_subjective");
-    const subjectiveDraft = resolveExtractionDraft({
-      llmResult: subjectiveLlmResult,
-      schema,
-      graph,
-      scopeRuntime,
-    });
-    const subjectiveValidationFailure = validateExtractionDraft({
-      draft: subjectiveDraft,
-      lastProcessedSeq,
-    });
-    if (subjectiveValidationFailure) return subjectiveValidationFailure;
+  const filteredObjectiveResult = filterObjectiveExtractionResult(objectiveDraft.normalizedResult);
+  const objectiveRefMap = buildObjectiveExtractionRefMap(filteredObjectiveResult);
+  const subjectiveLlmResult = await buildAndCallStageForSplit("extract_subjective", {
+    objectiveExtractionDraft: filteredObjectiveResult,
+    objectiveRefMap,
+    batchStoryTime: filteredObjectiveResult?.batchStoryTime || null,
+    ownerContext: {
+      activeCharacterOwner: scopeRuntime.activeCharacterOwner || "",
+      activeUserOwner: scopeRuntime.activeUserOwner || "",
+    },
+  });
+  const subjectiveDraft = resolveExtractionDraft({
+    llmResult: subjectiveLlmResult,
+    schema,
+    graph,
+    scopeRuntime,
+  });
+  const subjectiveValidationFailure = validateExtractionDraft({
+    draft: subjectiveDraft,
+    lastProcessedSeq,
+  });
+  if (subjectiveValidationFailure) return subjectiveValidationFailure;
 
-    draft = resolveExtractionDraft({
-      llmResult: mergeSplitExtractionResults(
-        filterObjectiveExtractionResult(objectiveDraft.normalizedResult),
-        filterSubjectiveExtractionResult(subjectiveDraft.normalizedResult),
-      ),
-      schema,
-      graph,
-      scopeRuntime,
-    });
-    const mergedValidationFailure = validateExtractionDraft({
-      draft,
-      lastProcessedSeq,
-    });
-    if (mergedValidationFailure) return mergedValidationFailure;
-  } else {
-    // 调用 LLM
-    const llmResult = await callExtractionStage("extract");
-    draft = resolveExtractionDraft({
-      llmResult,
-      schema,
-      graph,
-      scopeRuntime,
-    });
-    const validationFailure = validateExtractionDraft({
-      draft,
-      lastProcessedSeq,
-    });
-    if (validationFailure) return validationFailure;
-  }
+  const draft = resolveExtractionDraft({
+    llmResult: mergeSplitExtractionResults(
+      filteredObjectiveResult,
+      filterSubjectiveExtractionResult(subjectiveDraft.normalizedResult),
+    ),
+    schema,
+    graph,
+    scopeRuntime,
+  });
+  const mergedValidationFailure = validateExtractionDraft({
+    draft,
+    lastProcessedSeq,
+  });
+  if (mergedValidationFailure) return mergedValidationFailure;
 
   const commitResult = commitExtractionPlan({
     graph,

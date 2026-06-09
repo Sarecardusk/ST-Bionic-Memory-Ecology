@@ -37,7 +37,6 @@ export const defaultSettings = {
   extractIncludeStoryTime: true,
   extractIncludeSummaries: true,
   extractActionMode: "pending",
-  extractPipelineVersion: "split-v1",
 
   // 召回设置
   recallEnabled: true,
@@ -159,7 +158,6 @@ export const defaultSettings = {
   nodeTypeSchema: null,
 
   // 自定义提示词
-  extractPrompt: "",
   extractObjectivePrompt: "",
   extractSubjectivePrompt: "",
   recallPrompt: "",

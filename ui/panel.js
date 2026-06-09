@@ -360,7 +360,7 @@ let currentTaskSectionId = "pipeline";
 let currentSelectedMemoryNodeId = "";
 let taskMemorySearchDraft = _createTaskMemorySearchState();
 let taskMemorySearchApplied = _createTaskMemorySearchState();
-let currentTaskProfileTaskType = "extract";
+let currentTaskProfileTaskType = "extract_objective";
 let currentTaskProfileTabId = "generation";
 let currentTaskProfileBlockId = "";
 let currentTaskProfileDragBlockId = "";
@@ -8210,10 +8210,6 @@ function _refreshConfigTab() {
   );
 
   _setInputValue(
-    "bme-setting-extract-prompt",
-    settings.extractPrompt || getDefaultPromptText("extract"),
-  );
-  _setInputValue(
     "bme-setting-recall-prompt",
     settings.recallPrompt || getDefaultPromptText("recall"),
   );
@@ -8967,7 +8963,6 @@ function _bindConfigControls() {
     _patchSettings({ embeddingAutoSuffix: checked }),
   );
 
-  bindPromptText("bme-setting-extract-prompt", "extractPrompt", "extract");
   bindPromptText("bme-setting-recall-prompt", "recallPrompt", "recall");
   bindPromptText(
     "bme-setting-consolidation-prompt",
@@ -9647,7 +9642,7 @@ function _getTaskProfileWorkspaceState(settings = _getSettings?.() || {}) {
   };
 
   if (!taskTypeOptions.some((item) => item.id === currentTaskProfileTaskType)) {
-    currentTaskProfileTaskType = taskTypeOptions[0]?.id || "extract";
+    currentTaskProfileTaskType = taskTypeOptions[0]?.id || "extract_objective";
   }
 
   if (!TASK_PROFILE_TABS.some((item) => item.id === currentTaskProfileTabId)) {
@@ -9734,8 +9729,10 @@ function _getMessageTraceWorkspaceState(settings = _getSettings?.() || {}) {
     messageTrace: runtimeDebug?.messageTrace || null,
     recallLlmRequest: runtimeDebug?.taskLlmRequests?.recall || null,
     recallPromptBuild: runtimeDebug?.taskPromptBuilds?.recall || null,
-    extractLlmRequest: runtimeDebug?.taskLlmRequests?.extract || null,
-    extractPromptBuild: runtimeDebug?.taskPromptBuilds?.extract || null,
+    extractObjectiveLlmRequest: runtimeDebug?.taskLlmRequests?.extract_objective || null,
+    extractObjectivePromptBuild: runtimeDebug?.taskPromptBuilds?.extract_objective || null,
+    extractSubjectiveLlmRequest: runtimeDebug?.taskLlmRequests?.extract_subjective || null,
+    extractSubjectivePromptBuild: runtimeDebug?.taskPromptBuilds?.extract_subjective || null,
     taskTimeline: Array.isArray(runtimeDebug?.taskTimeline)
       ? runtimeDebug.taskTimeline
       : [],
@@ -9758,8 +9755,10 @@ function _renderMessageTraceWorkspace(state) {
     state.persistDelta?.updatedAt,
     state.loadDiagnostics?.updatedAt,
     state.recallLlmRequest?.updatedAt,
-    state.extractLlmRequest?.updatedAt,
-    state.extractPromptBuild?.updatedAt,
+    state.extractObjectiveLlmRequest?.updatedAt,
+    state.extractObjectivePromptBuild?.updatedAt,
+    state.extractSubjectiveLlmRequest?.updatedAt,
+    state.extractSubjectivePromptBuild?.updatedAt,
     ...(Array.isArray(state.taskTimeline)
       ? state.taskTimeline.map((entry) => entry?.updatedAt)
       : []),
@@ -9853,14 +9852,20 @@ function _renderMessageTraceRecallCard(state) {
 }
 
 function _renderMessageTraceExtractCard(state) {
-  const extractLlmRequest = state.extractLlmRequest || null;
-  const extractPromptBuild = state.extractPromptBuild || null;
-  const extractPayloadText = _buildTraceMessagePayloadText(
-    extractLlmRequest?.messages,
-    extractPromptBuild,
+  const objectiveLlmRequest = state.extractObjectiveLlmRequest || null;
+  const objectivePromptBuild = state.extractObjectivePromptBuild || null;
+  const subjectiveLlmRequest = state.extractSubjectiveLlmRequest || null;
+  const subjectivePromptBuild = state.extractSubjectivePromptBuild || null;
+  const objectivePayloadText = _buildTraceMessagePayloadText(
+    objectiveLlmRequest?.messages,
+    objectivePromptBuild,
+  );
+  const subjectivePayloadText = _buildTraceMessagePayloadText(
+    subjectiveLlmRequest?.messages,
+    subjectivePromptBuild,
   );
 
-  if (!extractLlmRequest && !extractPromptBuild) {
+  if (!objectiveLlmRequest && !objectivePromptBuild && !subjectiveLlmRequest && !subjectivePromptBuild) {
     return `
       <div class="bme-config-card-title">最后送去提取模型的内容</div>
       <div class="bme-config-help">
@@ -9875,13 +9880,23 @@ function _renderMessageTraceExtractCard(state) {
         <div class="bme-config-card-title">最后送去提取模型的内容</div>
       </div>
       <span class="bme-task-pill">${_escHtml(
-        _formatTaskProfileTime(extractLlmRequest?.updatedAt || extractPromptBuild?.updatedAt),
+        _formatTaskProfileTime(
+          subjectiveLlmRequest?.updatedAt ||
+            subjectivePromptBuild?.updatedAt ||
+            objectiveLlmRequest?.updatedAt ||
+            objectivePromptBuild?.updatedAt,
+        ),
       )}</span>
     </div>
     ${_renderMessageTraceTextBlock(
-      "发送去提取模型的内容",
-      extractPayloadText,
-      "这次没有捕获到提取请求内容。",
+      "发送去客观提取模型的内容",
+      objectivePayloadText,
+      "这次没有捕获到客观提取请求内容。",
+    )}
+    ${_renderMessageTraceTextBlock(
+      "发送去主观提取模型的内容",
+      subjectivePayloadText,
+      "这次没有捕获到主观提取请求内容。",
     )}
   `;
 }
@@ -9918,7 +9933,8 @@ function _formatDataSizeBytes(byteCount) {
 function _getMonitorTaskTypeLabel(taskType = "") {
   const normalized = String(taskType || "").trim().toLowerCase();
   const labels = {
-    extract: "提取",
+    extract_objective: "客观提取",
+    extract_subjective: "主观提取",
     recall: "召回",
     consolidation: "整合",
     compress: "压缩",
