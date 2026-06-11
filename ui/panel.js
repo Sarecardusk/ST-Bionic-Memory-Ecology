@@ -7989,6 +7989,10 @@ function _refreshConfigTab() {
     settings.extractPromptStructuredMode || "both",
   );
   _setInputValue(
+    "bme-setting-extract-split-execution-mode",
+    settings.extractSplitExecutionMode || "parallel",
+  );
+  _setInputValue(
     "bme-setting-extract-worldbook-mode",
     settings.extractWorldbookMode || "active",
   );
@@ -8531,6 +8535,15 @@ function _bindConfigControls() {
       _patchSettings({ extractPromptStructuredMode: extractStructuredModeEl.value || "both" });
     });
     extractStructuredModeEl.dataset.bmeBound = "true";
+  }
+  const extractSplitExecutionModeEl = document.getElementById(
+    "bme-setting-extract-split-execution-mode",
+  );
+  if (extractSplitExecutionModeEl && extractSplitExecutionModeEl.dataset.bmeBound !== "true") {
+    extractSplitExecutionModeEl.addEventListener("change", () => {
+      _patchSettings({ extractSplitExecutionMode: extractSplitExecutionModeEl.value || "parallel" });
+    });
+    extractSplitExecutionModeEl.dataset.bmeBound = "true";
   }
   const extractWorldbookModeEl = document.getElementById(
     "bme-setting-extract-worldbook-mode",

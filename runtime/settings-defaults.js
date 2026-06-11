@@ -33,6 +33,7 @@ export const defaultSettings = {
   extractAssistantExcludeRules: [],
   extractRecentMessageCap: 0,
   extractPromptStructuredMode: "both",
+  extractSplitExecutionMode: "parallel",
   extractWorldbookMode: "active",
   extractIncludeStoryTime: true,
   extractIncludeSummaries: true,

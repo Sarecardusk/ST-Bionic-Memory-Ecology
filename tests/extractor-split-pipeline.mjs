@@ -302,7 +302,7 @@ for (const legacyPatch of [
   assert.equal(capturedTaskTypes.includes("extract"), false);
 }
 
-// split-v1 calls objective then subjective, merges both stage outputs, and commits once.
+// split-v1 calls objective and subjective, merges both stage outputs, and commits once.
 {
   const graph = createGraphWithCharacter();
   const capturedTaskTypes = [];
@@ -327,7 +327,7 @@ for (const legacyPatch of [
     assert.deepEqual(
       capturedTaskTypes,
       ["extract_objective", "extract_subjective"],
-      "split-v1 should call the LLM once for objective extraction, then once for subjective extraction",
+      "split-v1 should call the LLM once for objective extraction and once for subjective extraction",
     );
     assert.equal(result.success, true);
     assert.equal(result.newNodes, 2, "objective event and subjective POV memory should be committed together");
@@ -389,6 +389,192 @@ for (const legacyPatch of [
     assert.equal(graph.nodes.length, initialNodeCount, "invalid subjective payload should not commit objective nodes");
     assert.equal(graph.edges.length, initialEdgeCount, "invalid subjective payload should not create edges");
     assert.equal(graph.lastProcessedSeq ?? -1, -1, "invalid split extraction should not advance extraction progress");
+  } finally {
+    restore();
+  }
+}
+
+// Parallel mode (default): objective and subjective start before either resolves.
+{
+  let objectiveStarted = false;
+  let subjectiveStarted = false;
+  let objectiveResolve;
+  const objectivePromise = new Promise((resolve) => { objectiveResolve = resolve; });
+  let subjectiveResolve;
+  const subjectivePromise = new Promise((resolve) => { subjectiveResolve = resolve; });
+
+  const startOrder = [];
+  const restore = setTestOverrides({
+    llm: {
+      async callLLMForJSON(payload = {}) {
+        if (payload.taskType === "extract_objective") {
+          objectiveStarted = true;
+          startOrder.push("objective_start");
+          await objectivePromise;
+          return objectivePayload();
+        }
+        if (payload.taskType === "extract_subjective") {
+          subjectiveStarted = true;
+          startOrder.push("subjective_start");
+          await subjectivePromise;
+          return subjectivePayload();
+        }
+        return { operations: [], cognitionUpdates: [], regionUpdates: {} };
+      },
+    },
+  });
+
+  try {
+    const graph = createGraphWithCharacter();
+    const extractPromise = extractMemories({
+      graph,
+      ...baseExtractParams,
+      settings: { ...defaultSettings, extractSplitExecutionMode: "parallel" },
+    });
+
+    // Let the event loop turn so both stages can start.
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Both should have started before we resolve either.
+    assert.ok(objectiveStarted, "parallel: objective should have started");
+    assert.ok(subjectiveStarted, "parallel: subjective should have started before objective resolved");
+    assert.ok(
+      startOrder.includes("objective_start") && startOrder.includes("subjective_start"),
+      "parallel: both stages should have started concurrently",
+    );
+
+    // Now resolve both to let extraction finish.
+    objectiveResolve();
+    subjectiveResolve();
+    const result = await extractPromise;
+    assert.equal(result.success, true, "parallel extraction should succeed after both stages complete");
+  } finally {
+    restore();
+  }
+}
+
+// Serial mode preserves the old escape behavior: invalid objective output does not start subjective.
+{
+  const graph = createGraphWithCharacter();
+  const initialNodeCount = graph.nodes.length;
+  const capturedTaskTypes = [];
+  const restore = setTestOverrides({
+    llm: {
+      async callLLMForJSON(payload = {}) {
+        capturedTaskTypes.push(payload.taskType);
+        if (payload.taskType === "extract_objective") return { thought: "missing operations" };
+        if (payload.taskType === "extract_subjective") return subjectivePayload();
+        return { operations: [], cognitionUpdates: [], regionUpdates: {} };
+      },
+    },
+  });
+
+  try {
+    const result = await extractMemories({
+      graph,
+      ...baseExtractParams,
+      settings: { ...defaultSettings, extractSplitExecutionMode: "serial" },
+    });
+
+    assert.deepEqual(
+      capturedTaskTypes,
+      ["extract_objective"],
+      "serial: invalid objective output should not start subjective extraction",
+    );
+    assert.equal(result.success, false);
+    assert.equal(graph.nodes.length, initialNodeCount, "serial objective failure should not commit nodes");
+  } finally {
+    restore();
+  }
+}
+
+// Serial mode: subjective does not start until objective resolves.
+{
+  let objectiveStarted = false;
+  let subjectiveStarted = false;
+  let objectiveResolve;
+  const objectivePromise = new Promise((resolve) => { objectiveResolve = resolve; });
+
+  const restore = setTestOverrides({
+    llm: {
+      async callLLMForJSON(payload = {}) {
+        if (payload.taskType === "extract_objective") {
+          objectiveStarted = true;
+          await objectivePromise;
+          return objectivePayload();
+        }
+        if (payload.taskType === "extract_subjective") {
+          subjectiveStarted = true;
+          return subjectivePayload();
+        }
+        return { operations: [], cognitionUpdates: [], regionUpdates: {} };
+      },
+    },
+  });
+
+  try {
+    const graph = createGraphWithCharacter();
+    const extractPromise = extractMemories({
+      graph,
+      ...baseExtractParams,
+      settings: { ...defaultSettings, extractSplitExecutionMode: "serial" },
+    });
+
+    // Let the event loop turn.
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.ok(objectiveStarted, "serial: objective should have started");
+    assert.ok(!subjectiveStarted, "serial: subjective should NOT have started while objective is pending");
+
+    // Resolve objective so subjective can proceed.
+    objectiveResolve();
+    const result = await extractPromise;
+    assert.equal(result.success, true, "serial extraction should succeed after both stages complete sequentially");
+    assert.ok(subjectiveStarted, "serial: subjective should have started after objective resolved");
+  } finally {
+    restore();
+  }
+}
+
+// Invalid subjective operation action must fail before any valid objective operation mutates the graph.
+{
+  const graph = createGraphWithCharacter();
+  const initialNodeCount = graph.nodes.length;
+  const initialEdgeCount = graph.edges.length;
+  const restore = setTestOverrides({
+    llm: {
+      async callLLMForJSON(payload = {}) {
+        if (payload.taskType === "extract_objective") return objectivePayload();
+        if (payload.taskType === "extract_subjective") {
+          return {
+            operations: [
+              {
+                action: "nonsense",
+                type: "pov_memory",
+                fields: { summary: "非法主观操作不应让客观节点先写入" },
+              },
+            ],
+            cognitionUpdates: [],
+            regionUpdates: {},
+          };
+        }
+        return { operations: [], cognitionUpdates: [], regionUpdates: {} };
+      },
+    },
+  });
+
+  try {
+    const result = await extractMemories({
+      graph,
+      ...baseExtractParams,
+      settings: { ...defaultSettings, extractSplitExecutionMode: "parallel" },
+    });
+
+    assert.equal(result.success, false);
+    assert.match(result.error, /未知操作类型/);
+    assert.equal(graph.nodes.length, initialNodeCount, "invalid merged action should not partially create objective nodes");
+    assert.equal(graph.edges.length, initialEdgeCount, "invalid merged action should not partially create edges");
+    assert.equal(graph.lastProcessedSeq ?? -1, -1, "invalid merged action should not advance extraction progress");
   } finally {
     restore();
   }

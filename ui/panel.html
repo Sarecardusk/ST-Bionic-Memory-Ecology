@@ -1837,6 +1837,21 @@
                           <div class="bme-config-help">
                             控制 LLM 在提取时看到的是纯 transcript、结构化 recentMessages，还是两者同时提供。通常保持“混合”即可。
                           </div>
+                          <div class="bme-config-row">
+                            <label for="bme-setting-extract-split-execution-mode"
+                              >客观/主观提取方式</label
+                            >
+                            <select
+                              id="bme-setting-extract-split-execution-mode"
+                              class="bme-config-input"
+                            >
+                              <option value="parallel">并发（默认，更快）</option>
+                              <option value="serial">串行（限流时使用）</option>
+                            </select>
+                          </div>
+                          <div class="bme-config-help">
+                            默认并发请求客观提取与主观 POV 提取，以降低等待时间；如果提供商限流，可切换为串行。
+                          </div>
                         </div>
                       </details>
                       <div class="bme-config-row">

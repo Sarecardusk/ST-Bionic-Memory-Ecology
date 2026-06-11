@@ -53,6 +53,13 @@ import {
 } from "../runtime/user-alias-utils.js";
 import { buildNodeVectorText, isDirectVectorConfig } from "../vector/vector-index.js";
 
+const VALID_EXTRACTION_OPERATION_ACTIONS = new Set([
+  "create",
+  "update",
+  "delete",
+  "_skip",
+]);
+
 function createAbortError(message = "操作已终止") {
   const error = new Error(message);
   error.name = "AbortError";
@@ -923,6 +930,22 @@ function validateExtractionDraft({
       processedRange: [lastProcessedSeq, lastProcessedSeq],
     };
   }
+  const invalidOperation = normalizedResult.operations.find(
+    (op) => !VALID_EXTRACTION_OPERATION_ACTIONS.has(String(op?.action || "")),
+  );
+  if (invalidOperation) {
+    const message = `[ST-BME] 未知操作类型: ${invalidOperation?.action ?? "<missing>"}`;
+    console.warn(message, invalidOperation);
+    return {
+      success: false,
+      error: message,
+      newNodes: 0,
+      updatedNodes: 0,
+      newEdges: 0,
+      newNodeIds: [],
+      processedRange: [lastProcessedSeq, lastProcessedSeq],
+    };
+  }
   return null;
 }
 
@@ -1448,26 +1471,53 @@ export async function extractMemories({
     return stageResult;
   };
 
-  const objectiveLlmResult = await buildAndCallStageForSplit("extract_objective");
-  const objectiveDraft = resolveExtractionDraft({
-    llmResult: objectiveLlmResult,
-    schema,
-    graph,
-    scopeRuntime,
-  });
-  const objectiveValidationFailure = validateExtractionDraft({
-    draft: objectiveDraft,
-    lastProcessedSeq,
-  });
-  if (objectiveValidationFailure) return objectiveValidationFailure;
-
-  const filteredObjectiveResult = filterObjectiveExtractionResult(objectiveDraft.normalizedResult);
-  const subjectiveLlmResult = await buildAndCallStageForSplit("extract_subjective", {
+  const subjectiveStageOptions = {
     ownerContext: {
       activeCharacterOwner: scopeRuntime.activeCharacterOwner || "",
       activeUserOwner: scopeRuntime.activeUserOwner || "",
     },
-  });
+  };
+  const isSerialSplit = settings.extractSplitExecutionMode === "serial";
+
+  let objectiveLlmResult;
+  let subjectiveLlmResult;
+  let filteredObjectiveResult;
+  if (isSerialSplit) {
+    objectiveLlmResult = await buildAndCallStageForSplit("extract_objective");
+    const objectiveDraft = resolveExtractionDraft({
+      llmResult: objectiveLlmResult,
+      schema,
+      graph,
+      scopeRuntime,
+    });
+    const objectiveValidationFailure = validateExtractionDraft({
+      draft: objectiveDraft,
+      lastProcessedSeq,
+    });
+    if (objectiveValidationFailure) return objectiveValidationFailure;
+    filteredObjectiveResult = filterObjectiveExtractionResult(objectiveDraft.normalizedResult);
+    subjectiveLlmResult = await buildAndCallStageForSplit(
+      "extract_subjective",
+      subjectiveStageOptions,
+    );
+  } else {
+    [objectiveLlmResult, subjectiveLlmResult] = await Promise.all([
+      buildAndCallStageForSplit("extract_objective"),
+      buildAndCallStageForSplit("extract_subjective", subjectiveStageOptions),
+    ]);
+    const objectiveDraft = resolveExtractionDraft({
+      llmResult: objectiveLlmResult,
+      schema,
+      graph,
+      scopeRuntime,
+    });
+    const objectiveValidationFailure = validateExtractionDraft({
+      draft: objectiveDraft,
+      lastProcessedSeq,
+    });
+    if (objectiveValidationFailure) return objectiveValidationFailure;
+    filteredObjectiveResult = filterObjectiveExtractionResult(objectiveDraft.normalizedResult);
+  }
   const subjectiveDraft = resolveExtractionDraft({
     llmResult: subjectiveLlmResult,
     schema,
