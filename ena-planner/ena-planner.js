@@ -5,6 +5,13 @@ import {
     applyPlannerResultAndSend,
     shouldInterceptPlannerSend,
 } from './ena-planner-runtime-utils.js';
+import {
+    collectPlannerCharacterWorldbookNames,
+    collectPlannerGlobalWorldbookNames,
+    isPlannerWorldbookEntryConstant,
+    isPlannerWorldbookEntryEnabled,
+    normalizePlannerWorldbookEntries,
+} from './ena-planner-worldbook-utils.js';
 import { readPlannerPlotHistory } from './planner-plot-history.js';
 import { DEFAULT_PROMPT_BLOCKS, BUILTIN_TEMPLATES } from './ena-planner-presets.js';
 import {
@@ -685,6 +692,22 @@ function getContextSafe() {
     try { return window.SillyTavern?.getContext?.() ?? null; } catch { return null; }
 }
 
+let stWorldInfoModulePromise = null;
+async function getStWorldInfoModuleSafe() {
+    if (!stWorldInfoModulePromise) {
+        stWorldInfoModulePromise = import('/scripts/world-info.js').catch(() => null);
+    }
+    return stWorldInfoModulePromise;
+}
+
+function getTavernHelperSafe() {
+    try {
+        return window.TavernHelper || window.SillyTavern?.TavernHelper || null;
+    } catch {
+        return null;
+    }
+}
+
 function getCurrentCharSafe() {
     try {
         // Method 1: via getContext()
@@ -811,90 +834,68 @@ function collectRecentChatSnippet(chat, maxMessages) {
 async function getCharacterWorldbooks() {
     const ctx = getContextSafe();
     const charObj = getCurrentCharSafe();
-    const worldNames = [];
-
-    // From character object (multiple paths)
-    if (charObj) {
-        const paths = [
-            charObj?.data?.extensions?.world,
-            charObj?.world,
-            charObj?.data?.character_book?.name,
-        ];
-        for (const w of paths) {
-            if (w && !worldNames.includes(w)) worldNames.push(w);
-        }
-    }
-
-    // From context
-    if (ctx) {
-        try {
-            const cid = ctx.characterId ?? ctx.this_chid;
-            const chars = ctx.characters ?? window.characters;
-            if (chars && cid != null) {
-                const c = chars[cid];
-                const paths = [
-                    c?.data?.extensions?.world,
-                    c?.world,
-                ];
-                for (const w of paths) {
-                    if (w && !worldNames.includes(w)) worldNames.push(w);
-                }
-            }
-        } catch { }
-
-        // ST context may expose chat-linked worldbooks via world_names
-        try {
-            if (ctx.worldNames && Array.isArray(ctx.worldNames)) {
-                for (const w of ctx.worldNames) {
-                    if (w && !worldNames.includes(w)) worldNames.push(w);
-                }
-            }
-        } catch { }
-    }
-
-    // Fallback: try ST's selected character world info
-    try {
-        const sw = window.selected_world_info;
-        if (typeof sw === 'string' && sw && !worldNames.includes(sw)) {
-            worldNames.push(sw);
-        }
-    } catch { }
-
-    // Fallback: try reading from chat metadata
-    try {
-        const chat = ctx?.chat ?? [];
-        if (chat.length > 0 && chat[0]?.extra?.world) {
-            const w = chat[0].extra.world;
-            if (!worldNames.includes(w)) worldNames.push(w);
-        }
-    } catch { }
+    const worldNames = await collectPlannerCharacterWorldbookNames({
+        context: ctx,
+        character: charObj,
+        tavernHelper: getTavernHelperSafe(),
+        windowLike: typeof window !== 'undefined' ? window : null,
+    });
 
     debugLog('[EnaPlanner] Character worldbook names found:', worldNames);
     return worldNames.filter(Boolean);
 }
 
 async function getGlobalWorldbooks() {
-    // Try to get the list of currently active global worldbooks
-    try {
-        // ST stores active worldbooks in world_info settings
-        const ctx = getContextSafe();
-        if (ctx?.world_info?.globalSelect) {
-            return Array.isArray(ctx.world_info.globalSelect) ? ctx.world_info.globalSelect : [];
-        }
-    } catch { }
-
-    // Fallback: try window.selected_world_info
-    try {
-        if (window.selected_world_info && Array.isArray(window.selected_world_info)) {
-            return window.selected_world_info;
-        }
-    } catch { }
-
-    return [];
+    const ctx = getContextSafe();
+    const worldInfoModule = await getStWorldInfoModuleSafe();
+    const worldNames = await collectPlannerGlobalWorldbookNames({
+        context: ctx,
+        tavernHelper: getTavernHelperSafe(),
+        worldInfoModule,
+        windowLike: typeof window !== 'undefined' ? window : null,
+    });
+    debugLog('[EnaPlanner] Global worldbook names found:', worldNames);
+    return worldNames;
 }
 
 async function getWorldbookData(worldName) {
     if (!worldName) return null;
+    const ctx = getContextSafe();
+    const helper = getTavernHelperSafe();
+
+    try {
+        if (typeof helper?.getWorldbook === 'function') {
+            return {
+                name: worldName,
+                entries: normalizePlannerWorldbookEntries(worldName, await helper.getWorldbook(worldName)),
+            };
+        }
+    } catch (e) {
+        console.warn(`[EnaPlanner] TavernHelper getWorldbook failed for "${worldName}":`, e);
+    }
+
+    try {
+        if (typeof helper?.getLorebookEntries === 'function') {
+            return {
+                name: worldName,
+                entries: normalizePlannerWorldbookEntries(worldName, await helper.getLorebookEntries(worldName)),
+            };
+        }
+    } catch (e) {
+        console.warn(`[EnaPlanner] TavernHelper getLorebookEntries failed for "${worldName}":`, e);
+    }
+
+    try {
+        if (typeof ctx?.loadWorldInfo === 'function') {
+            return {
+                name: worldName,
+                entries: normalizePlannerWorldbookEntries(worldName, await ctx.loadWorldInfo(worldName)),
+            };
+        }
+    } catch (e) {
+        console.warn(`[EnaPlanner] ST loadWorldInfo failed for "${worldName}":`, e);
+    }
+
     try {
         const response = await fetch('/api/worldinfo/get', {
             method: 'POST',
@@ -903,12 +904,7 @@ async function getWorldbookData(worldName) {
         });
         if (response.ok) {
             const data = await response.json();
-            // ST returns { entries: {...} } or { entries: [...] }
-            let entries = data?.entries;
-            if (entries && !Array.isArray(entries)) {
-                entries = Object.values(entries);
-            }
-            return { name: worldName, entries: entries || [] };
+            return { name: worldName, entries: normalizePlannerWorldbookEntries(worldName, data) };
         }
     } catch (e) {
         console.warn(`[EnaPlanner] Failed to load worldbook "${worldName}":`, e);
@@ -1001,7 +997,7 @@ async function buildWorldbookBlock(scanText) {
     }
 
     // Filter: not disabled
-    let entries = allEntries.filter(e => !e?.disable && !e?.disabled);
+    let entries = allEntries.filter(isPlannerWorldbookEntryEnabled);
 
     // Filter: exclude entries whose name contains any of the configured exclude patterns
     const nameExcludes = s.worldbookExcludeNames ?? ['mvu_update'];
@@ -1024,7 +1020,7 @@ async function buildWorldbookBlock(scanText) {
     const active = [];
     for (const e of entries) {
         // Blue light: constant entries always included
-        if (e?.constant) {
+        if (isPlannerWorldbookEntryConstant(e)) {
             active.push(e);
             continue;
         }

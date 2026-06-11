@@ -13,6 +13,123 @@ import {
   writeStructuredPlotRecordToMatchingUserMessage,
   writeStructuredPlotRecordToMessage,
 } from '../ena-planner/planner-plot-history.js';
+import {
+  collectPlannerCharacterWorldbookNames,
+  collectPlannerGlobalWorldbookNames,
+  isPlannerWorldbookEntryConstant,
+  isPlannerWorldbookEntryEnabled,
+  normalizePlannerWorldbookEntries,
+} from '../ena-planner/ena-planner-worldbook-utils.js';
+
+{
+  const names = await collectPlannerGlobalWorldbookNames({
+    context: {
+      world_info: { globalSelect: ['old-global', 'duplicate'] },
+    },
+    tavernHelper: {
+      getGlobalWorldbookNames: () => ['helper-global', 'duplicate'],
+      getLorebookSettings: async () => ({ selected_global_lorebooks: ['settings-global'] }),
+    },
+    worldInfoModule: {
+      selected_world_info: ['module-global'],
+      world_info: { globalSelect: ['saved-global'] },
+    },
+    windowLike: {
+      selected_world_info: ['window-global'],
+    },
+  });
+  assert.deepEqual(names, [
+    'helper-global',
+    'duplicate',
+    'settings-global',
+    'module-global',
+    'old-global',
+    'saved-global',
+    'window-global',
+  ]);
+}
+
+{
+  const names = await collectPlannerCharacterWorldbookNames({
+    context: {},
+    character: null,
+    tavernHelper: null,
+    windowLike: { selected_world_info: 'global-should-not-leak' },
+  });
+  assert.deepEqual(
+    names,
+    [],
+    'global selected lorebook must not bypass includeGlobalWorldbooks through character collection',
+  );
+}
+
+{
+  const names = await collectPlannerCharacterWorldbookNames({
+    context: {
+      characterId: 0,
+      characters: [{ world: 'context-char-book' }],
+      worldNames: ['chat-linked-book'],
+      chat: [{ extra: { world: 'chat-extra-book' } }],
+    },
+    character: {
+      data: {
+        extensions: { world: 'char-ext-book' },
+        character_book: { name: 'embedded-char-book' },
+      },
+      world: 'char-world-book',
+    },
+    tavernHelper: {
+      getCharWorldbookNames: () => ({
+        primary: 'helper-primary-book',
+        additional: ['helper-extra-book'],
+      }),
+      getCharLorebooks: () => ({
+        primary: 'legacy-helper-primary-book',
+        additional: ['legacy-helper-extra-book'],
+      }),
+    },
+    windowLike: {},
+  });
+  assert.deepEqual(names, [
+    'helper-primary-book',
+    'helper-extra-book',
+    'legacy-helper-primary-book',
+    'legacy-helper-extra-book',
+    'char-ext-book',
+    'char-world-book',
+    'embedded-char-book',
+    'context-char-book',
+    'chat-linked-book',
+    'chat-extra-book',
+  ]);
+}
+
+{
+  assert.deepEqual(
+    normalizePlannerWorldbookEntries('book-a', {
+      entries: {
+        3: { content: 'raw', comment: 'entry' },
+      },
+    }),
+    [{ uid: 3, content: 'raw', comment: 'entry', _worldName: 'book-a' }],
+  );
+  assert.deepEqual(
+    normalizePlannerWorldbookEntries('book-b', [
+      { uid: 4, world: 'source-book', content: 'helper' },
+    ]),
+    [{ uid: 4, world: 'source-book', content: 'helper', _worldName: 'source-book' }],
+  );
+}
+
+{
+  assert.equal(isPlannerWorldbookEntryEnabled({ constant: true, enabled: false }), false);
+  assert.equal(isPlannerWorldbookEntryEnabled({ type: 'constant', disabled: true }), false);
+  assert.equal(isPlannerWorldbookEntryEnabled({ disable: true }), false);
+  assert.equal(isPlannerWorldbookEntryEnabled({ enabled: true }), true);
+  assert.equal(isPlannerWorldbookEntryConstant({ constant: true }), true);
+  assert.equal(isPlannerWorldbookEntryConstant({ type: 'constant' }), true);
+  assert.equal(isPlannerWorldbookEntryConstant({ type: 'selective' }), false);
+}
 
 {
   const chat = [
