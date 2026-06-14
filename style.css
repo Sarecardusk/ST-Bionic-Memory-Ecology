@@ -6213,6 +6213,76 @@
   border-top: 1px solid var(--bme-border, rgba(255, 255, 255, 0.08));
 }
 
+.bme-recall-tabs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+}
+
+.bme-recall-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.7));
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+  white-space: nowrap;
+}
+
+.bme-recall-tab:hover {
+  background: var(--bme-surface-high, #2a2a2d);
+  color: var(--bme-on-surface, #e4e1e6);
+}
+
+.bme-recall-tab.active {
+  background: var(--bme-surface-container, #1f1f22);
+  border-color: var(--bme-border-active, rgba(233, 69, 96, 0.35));
+  color: var(--bme-on-surface, #e4e1e6);
+}
+
+.bme-recall-tab-recall.active {
+  border-color: rgba(233, 69, 96, 0.4);
+}
+
+.bme-recall-tab-planner.active {
+  border-color: rgba(111, 194, 255, 0.45);
+}
+
+.bme-recall-tab-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.bme-recall-tab-title {
+  font-weight: 600;
+}
+
+.bme-recall-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+  background: var(--bme-primary-dim, rgba(233, 69, 96, 0.15));
+  color: var(--bme-primary-text, #ffb2b7);
+}
+
+.bme-recall-tab-planner .bme-recall-tab-badge {
+  background: rgba(111, 194, 255, 0.16);
+  color: #9dd6ff;
+}
+
 .bme-recall-bar:hover {
   background: var(--bme-surface-high, #2a2a2d);
 }
@@ -6274,6 +6344,15 @@
 .bme-recall-card.expanded .bme-recall-body {
   max-height: 600px;
   opacity: 1;
+}
+
+.bme-recall-pane {
+  display: none;
+  flex-direction: column;
+}
+
+.bme-recall-card.expanded .bme-recall-pane {
+  display: flex;
 }
 
 .bme-recall-canvas-wrap {
@@ -6420,6 +6499,174 @@
 
 .bme-recall-injection-spacer {
   height: 6px;
+}
+
+/* --- Planner Pane --- */
+
+.bme-recall-planner-pane {
+  gap: 0;
+  padding-bottom: 8px;
+}
+
+.bme-recall-planner-section {
+  padding: 10px 14px;
+  border-top: 1px solid var(--bme-border, rgba(255, 255, 255, 0.08));
+}
+
+.bme-recall-planner-section:first-of-type {
+  border-top: none;
+}
+
+.bme-recall-planner-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--bme-primary-text, #ffb2b7);
+  margin-bottom: 8px;
+}
+
+.bme-recall-planner-plot {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bme-surface-lowest, #0e0e11);
+  color: var(--bme-on-surface, #e4e1e6);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.bme-recall-planner-block {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bme-surface-lowest, #0e0e11);
+  color: var(--bme-on-surface, #e4e1e6);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bme-recall-planner-note {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(111, 194, 255, 0.08);
+  border-left: 3px solid rgba(111, 194, 255, 0.45);
+  color: var(--bme-on-surface, #e4e1e6);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bme-recall-planner-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bme-recall-planner-task-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.bme-recall-planner-task-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--bme-surface-high, #2a2a2d);
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.75));
+}
+
+.bme-recall-planner-task-status.success,
+.bme-recall-planner-task-status.completed {
+  background: rgba(76, 175, 80, 0.18);
+  color: #8bc34a;
+}
+
+.bme-recall-planner-task-status.error,
+.bme-recall-planner-task-status.failed {
+  background: rgba(233, 69, 96, 0.18);
+  color: var(--bme-primary, #e94560);
+}
+
+.bme-recall-planner-task-name {
+  color: var(--bme-on-surface, #e4e1e6);
+}
+
+.bme-recall-planner-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.6));
+  border-top: 1px solid var(--bme-border, rgba(255, 255, 255, 0.08));
+}
+
+.bme-recall-planner-token-hint {
+  padding: 6px 14px 0;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.6));
+  text-align: right;
+}
+
+.bme-recall-planner-raw {
+  margin: 6px 14px 0;
+  border: 1px solid var(--bme-border, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bme-surface-low, #1b1b1e);
+}
+
+.bme-recall-planner-raw-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.7));
+  cursor: pointer;
+  user-select: none;
+}
+
+.bme-recall-planner-raw-content {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--bme-surface-lowest, #0e0e11);
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.75));
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.bme-recall-planner-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 120px;
+  font-size: 12px;
+  color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.6));
+  font-style: italic;
 }
 
 /* --- Recall Actions --- */
@@ -6681,6 +6928,22 @@
 @media (max-width: 768px) {
   .bme-recall-canvas-wrap {
     height: 180px;
+  }
+
+  .bme-recall-tabs {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .bme-recall-tab {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .bme-recall-planner-plot,
+  .bme-recall-planner-note,
+  .bme-recall-planner-raw-content {
+    font-size: 12px;
   }
 
   .bme-recall-user-label {

@@ -1,9 +1,19 @@
+import { readStructuredPlotRecordFromMessage } from "../ena-planner/planner-plot-history.js";
+
 export function createRecallMessageUiController(deps = {}) {
   let persistedRecallUiRefreshTimer = null;
   let persistedRecallUiRefreshObserver = null;
   let persistedRecallUiRefreshSession = 0;
   const persistedRecallUiDiagnosticTimestamps = new Map();
   const persistedRecallPersistDiagnosticTimestamps = new Map();
+  const readPlotRecordFromMessage =
+    deps.readStructuredPlotRecordFromMessage || readStructuredPlotRecordFromMessage;
+
+  function hasPlotRecordContent(plotRecord) {
+    if (!plotRecord || typeof plotRecord !== "object") return false;
+    if (String(plotRecord.plotText || "").trim()) return true;
+    return Array.isArray(plotRecord.plotBlocks) && plotRecord.plotBlocks.some((item) => String(item || "").trim());
+  }
 
   const getContextValue = () => deps.getContext?.() || null;
   const getSettingsValue = () => deps.getSettings?.() || {};
@@ -468,7 +478,10 @@ function refreshPersistedRecallMessageUi() {
     }
 
     const record = deps.readPersistedRecallFromUserMessage(chat, messageIndex);
-    if (!record?.injectionText) {
+    const plotRecord = readPlotRecordFromMessage(message);
+    const hasRecall = Boolean(record?.injectionText);
+    const hasPlot = hasPlotRecordContent(plotRecord);
+    if (!hasRecall && !hasPlot) {
       if (messageElement) {
         restoreRecallCardUserInputDisplay(messageElement);
       }
@@ -476,7 +489,7 @@ function refreshPersistedRecallMessageUi() {
       continue;
     }
 
-    summary.persistedRecordCount += 1;
+    summary.persistedRecordCount += hasRecall ? 1 : 0;
     if (!messageElement) {
       summary.waitingMessageIndices.push(messageIndex);
       debugPersistedRecallUi(
@@ -510,23 +523,29 @@ function refreshPersistedRecallMessageUi() {
         `.bme-recall-card[data-message-index="${messageIndex}"]`,
       ) || null;
 
+    const cardCallbacks = {
+      ...callbacks,
+      estimateTokens: deps.estimateTokens,
+    };
     if (currentCard) {
-      deps.updateRecallCardData(currentCard, record, {
+      deps.updateRecallCardData(currentCard, record || {}, {
+        plotRecord,
         userMessageText: message.mes || "",
         userInputDisplayMode: recallCardUserInputDisplayMode,
         graph: getCurrentGraphValue(),
         themeName,
-        callbacks,
+        callbacks: cardCallbacks,
       });
     } else {
       const card = deps.createRecallCardElement({
         messageIndex,
-        record,
+        record: record || {},
+        plotRecord,
         userMessageText: message.mes || "",
         userInputDisplayMode: recallCardUserInputDisplayMode,
         graph: getCurrentGraphValue(),
         themeName,
-        callbacks,
+        callbacks: cardCallbacks,
       });
       anchor.appendChild(card);
     }

@@ -13,6 +13,7 @@ import {
   recoverHistoryIfNeededController,
   rollbackGraphForRerollController,
 } from "../maintenance/reroll-recovery-controller.js";
+import { createStructuredPlotRecord } from "../ena-planner/planner-plot-history.js";
 import {
   handleExtractionSuccessController,
   shouldAdvanceProcessedHistory,
@@ -2264,6 +2265,268 @@ async function testRecallCardBeautifiesInjectionPreviewSections() {
     assert.equal(
       preview.querySelector(".bme-recall-injection-table")?.textContent,
       "|col1|col2|",
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+function buildPlotRecord(overrides = {}) {
+  return createStructuredPlotRecord({
+    rawUserInput: overrides.rawUserInput || "plot user input",
+    plotText: Object.prototype.hasOwnProperty.call(overrides, "plotText")
+      ? overrides.plotText
+      : "<plot>Hero enters the ruins.</plot>",
+    plotBlocks: overrides.plotBlocks,
+    plannerAugmentedMessage: Object.prototype.hasOwnProperty.call(overrides, "plannerAugmentedMessage")
+      ? overrides.plannerAugmentedMessage
+      : "plot user input\n\n<plot>Hero enters the ruins.</plot>",
+    promptProfileId: overrides.promptProfileId || "default",
+    taskResults: overrides.taskResults || [
+      { taskName: "plot-generation", status: "completed" },
+    ],
+    createdAt: overrides.createdAt || 1704067200000,
+  });
+}
+
+async function testRecallCardWithRecallAndPlotShowsBothTabs() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "recall-0",
+          selectedNodeIds: ["n1"],
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord(),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    const summary = harness.api.refreshPersistedRecallMessageUi();
+    assert.equal(summary.status, "rendered");
+    assert.equal(summary.renderedCount, 1);
+
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    const recallTab = card.querySelector(".bme-recall-tab-recall");
+    const plannerTab = card.querySelector(".bme-recall-tab-planner");
+    assert.equal(Boolean(recallTab), true, "recall tab should be present");
+    assert.equal(Boolean(plannerTab), true, "planner tab should be present");
+    assert.equal(recallTab.hidden, false);
+    assert.equal(plannerTab.hidden, false);
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardDefaultsToPlannerTabWhenPlotTextExists() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "recall-0",
+          selectedNodeIds: ["n1"],
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord(),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(card.dataset.activeTab, "planner");
+    const plannerTab = card.querySelector(".bme-recall-tab-planner");
+    assert.equal(plannerTab.classList.contains("active"), true);
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardCanSwitchToRecallTab() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "recall-0",
+          selectedNodeIds: ["n1"],
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord(),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    const recallTab = card.querySelector(".bme-recall-tab-recall");
+
+    recallTab.click();
+
+    assert.equal(card.dataset.activeTab, "recall");
+    assert.equal(recallTab.classList.contains("active"), true);
+    assert.equal(card.classList.contains("expanded"), true);
+    assert.ok(
+      card.querySelector(".bme-recall-recall-pane"),
+      "recall pane should be rendered",
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardMountsForPlotOnlyMessage() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot only input",
+      extra: {
+        st_bme_plot: buildPlotRecord(),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    const summary = harness.api.refreshPersistedRecallMessageUi();
+    assert.equal(summary.status, "rendered");
+    assert.equal(summary.renderedCount, 1);
+
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(Boolean(card), true);
+    assert.equal(card.dataset.activeTab, "planner");
+    assert.equal(card.querySelector(".bme-recall-tab-recall").hidden, true);
+    assert.equal(card.querySelector(".bme-recall-tab-planner").hidden, false);
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardPlannerPaneRendersGuidanceAndNotes() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input",
+      extra: {
+        st_bme_plot: buildPlotRecord({
+          plotText: "<plot>Hero enters the ruins under moonlight.</plot>\n<note>Focus on atmosphere, not inner monologue.</note>",
+          plannerAugmentedMessage: "plot user input\n\n<plot>Hero enters the ruins under moonlight.</plot>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    const plannerTab = card.querySelector(".bme-recall-tab-planner");
+    plannerTab.click();
+
+    const guidanceLabel = Array.from(
+      card.querySelectorAll(".bme-recall-planner-section-label"),
+    ).find((el) => el.textContent.includes("剧情指引"));
+    assert.equal(Boolean(guidanceLabel), true, "should render 剧情指引 label");
+    assert.ok(
+      card.querySelector(".bme-recall-planner-plot")?.textContent.includes("ruins"),
+      "plot text should be visible",
+    );
+
+    const notesLabel = Array.from(
+      card.querySelectorAll(".bme-recall-planner-section-label"),
+    ).find((el) => el.textContent.includes("写作注意"));
+    assert.equal(Boolean(notesLabel), true, "should render 写作注意 label");
+    assert.ok(
+      card.querySelector(".bme-recall-planner-note")?.textContent.includes("atmosphere"),
+      "planner note should be visible",
+    );
+    assert.equal(
+      card.querySelector(".bme-recall-planner-note")?.textContent.includes("plot user input"),
+      false,
+      "merged augmented message should not be shown as note",
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardMountsForPlotBlocksOnlyMessage() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot blocks only input",
+      extra: {
+        st_bme_plot: buildPlotRecord({
+          plotText: "",
+          plotBlocks: ["<plot>Blocks-only plot guidance.</plot>", "<note>Blocks-only note.</note>"],
+          plannerAugmentedMessage: "plot blocks only input\n\n<plot>Blocks-only plot guidance.</plot>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    const summary = harness.api.refreshPersistedRecallMessageUi();
+    assert.equal(summary.status, "rendered");
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(card.dataset.activeTab, "planner");
+    card.querySelector(".bme-recall-tab-planner")?.click();
+    assert.ok(
+      card.querySelector(".bme-recall-planner-plot")?.textContent.includes("Blocks-only plot guidance"),
+      "blocks-only plot should render guidance",
+    );
+    assert.ok(
+      card.querySelector(".bme-recall-planner-note")?.textContent.includes("Blocks-only note"),
+      "blocks-only note should render",
     );
   } finally {
     harness.restoreGlobals();
@@ -8629,6 +8892,12 @@ await testRecallCardDisplayModeToggleRestoresOriginalUserText();
 await testRecallCardSupportsManagedUserInputEditing();
 await testRecallCardShowsEnaSourceChipAndExpandedPreview();
 await testRecallCardBeautifiesInjectionPreviewSections();
+await testRecallCardWithRecallAndPlotShowsBothTabs();
+await testRecallCardDefaultsToPlannerTabWhenPlotTextExists();
+await testRecallCardCanSwitchToRecallTab();
+await testRecallCardMountsForPlotOnlyMessage();
+await testRecallCardPlannerPaneRendersGuidanceAndNotes();
+await testRecallCardMountsForPlotBlocksOnlyMessage();
 await testRecallSubGraphAndDataLayerEntryPoints();
 await testRerollUsesBatchBoundaryRollbackAndPersistsState();
 await testNotifyHistoryDirtyUsesStageNoticeWithoutGenericWarningToast();

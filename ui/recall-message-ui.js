@@ -75,6 +75,19 @@ function el(tag, className, textContent) {
   return element;
 }
 
+function defaultEstimateTokens(text = "") {
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length || 0;
+}
+
+function resolveEstimateTokens(callbacks = {}) {
+  return typeof callbacks.estimateTokens === "function"
+    ? callbacks.estimateTokens
+    : defaultEstimateTokens;
+}
+
 function formatTokenHint(tokenEstimate) {
   if (!Number.isFinite(tokenEstimate) || tokenEstimate <= 0) return "";
   return `~${tokenEstimate} tokens`;
@@ -173,6 +186,73 @@ function summarizeSubGraphForSignature(subGraph) {
     : [];
 
   return { nodes, edges };
+}
+
+function summarizePlotRecordForSignature(plotRecord) {
+  if (!plotRecord || typeof plotRecord !== "object") return null;
+  return {
+    inputHash: String(plotRecord.inputHash || ""),
+    plotText: String(plotRecord.plotText || ""),
+    plotBlocks: Array.isArray(plotRecord.plotBlocks)
+      ? plotRecord.plotBlocks.map((b) => String(b || ""))
+      : [],
+    rawUserInput: String(plotRecord.rawUserInput || ""),
+    plannerAugmentedMessage: String(plotRecord.plannerAugmentedMessage || ""),
+    promptProfileId: String(plotRecord.promptProfileId || ""),
+    recallHandoffId: String(plotRecord.recallHandoffId || ""),
+    taskResults: Array.isArray(plotRecord.taskResults)
+      ? plotRecord.taskResults.map((task) => ({
+          taskName: String(task?.taskName || ""),
+          status: String(task?.status || ""),
+        }))
+      : [],
+    createdAt: Number.isFinite(Number(plotRecord.createdAt)) ? Number(plotRecord.createdAt) : 0,
+  };
+}
+
+function getPlotRecordBlocks(plotRecord) {
+  if (!plotRecord || typeof plotRecord !== "object") return [];
+  const blocks = [];
+  const seen = new Set();
+  const pushBlock = (value) => {
+    const text = String(value || "").trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    blocks.push(text);
+  };
+  pushBlock(plotRecord.plotText);
+  if (Array.isArray(plotRecord.plotBlocks)) {
+    for (const item of plotRecord.plotBlocks) pushBlock(item);
+  }
+  return blocks;
+}
+
+function hasPlotRecordContent(plotRecord) {
+  return getPlotRecordBlocks(plotRecord).length > 0;
+}
+
+function extractTaggedPlannerBlocks(plotRecord) {
+  const source = getPlotRecordBlocks(plotRecord).join("\n\n").trim();
+  const buckets = {
+    plot: [],
+    note: [],
+    state: [],
+    plotLog: [],
+  };
+  if (!source) return { ...buckets, fallback: "" };
+
+  const re = /<(plot|note|state|plot-log)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  let match = null;
+  while ((match = re.exec(source))) {
+    const tag = String(match[1] || "").toLowerCase();
+    const text = String(match[2] || "").trim();
+    if (!text) continue;
+    if (tag === "plot-log") buckets.plotLog.push(text);
+    else buckets[tag]?.push(text);
+  }
+
+  const hasTaggedContent = Object.values(buckets).some((items) => items.length > 0);
+  return { ...buckets, fallback: hasTaggedContent ? "" : source };
 }
 
 function isPlannerRecallSource(record = {}) {
@@ -283,6 +363,8 @@ function buildExpandedRenderSignature({
   userMessageText,
   selectedNodeIds,
   subGraph,
+  plotRecord,
+  activeTab,
 } = {}) {
   return stableSerialize({
     updatedAt: String(record?.updatedAt || ""),
@@ -299,148 +381,155 @@ function buildExpandedRenderSignature({
     selectedNodeIds: normalizeSelectedNodeIds(selectedNodeIds),
     userMessageText: String(userMessageText || ""),
     subGraph: summarizeSubGraphForSignature(subGraph),
+    plotRecord: summarizePlotRecordForSignature(plotRecord),
+    activeTab: String(activeTab || "recall"),
   });
+}
+
+// ==================== Plot / Planner pane ====================
+
+function formatPlotDate(value) {
+  if (!value) return "";
+  if (Number.isFinite(Number(value))) {
+    try {
+      const date = new Date(Number(value));
+      if (!Number.isNaN(date.getTime())) {
+        return date.toISOString().replace(/T/, " ").replace(/\.\d+Z$/, "");
+      }
+    } catch {
+      // fall through
+    }
+  }
+  const dateStr = String(value).replace(/T/, " ").replace(/\.\d+Z$/, "");
+  return dateStr;
+}
+
+function buildPlannerMeta(plotRecord) {
+  const parts = [];
+  if (plotRecord?.promptProfileId) {
+    parts.push(t("recall.planner.profile", { profile: plotRecord.promptProfileId }));
+  }
+  const createdAt = formatPlotDate(plotRecord?.createdAt);
+  if (createdAt) parts.push(createdAt);
+  if (!parts.length) return null;
+  const wrap = el("div", "bme-recall-planner-meta");
+  for (const part of parts) {
+    wrap.appendChild(el("span", "bme-recall-planner-meta-item", part));
+  }
+  return wrap;
+}
+
+function buildPlannerRawTags(plotRecord) {
+  const details = el("details", "bme-recall-planner-raw");
+  const summary = el("summary", "bme-recall-planner-raw-summary", t("recall.planner.rawTags"));
+  details.appendChild(summary);
+
+  const chunks = [];
+  if (plotRecord?.plotText) chunks.push(String(plotRecord.plotText));
+  if (plotRecord?.plannerAugmentedMessage) chunks.push(String(plotRecord.plannerAugmentedMessage));
+  if (Array.isArray(plotRecord?.plotBlocks) && plotRecord.plotBlocks.length > 0) {
+    chunks.push(...plotRecord.plotBlocks.map((b) => String(b || "")));
+  }
+  const rawText = chunks.join("\n\n").trim() || t("common.emptyParenthetical");
+  details.appendChild(el("pre", "bme-recall-planner-raw-content", rawText));
+  return details;
+}
+
+function appendPlannerTextSection(pane, className, label, entries = []) {
+  const normalizedEntries = entries.map((item) => String(item || "").trim()).filter(Boolean);
+  if (!normalizedEntries.length) return false;
+  const section = el("div", "bme-recall-planner-section");
+  section.appendChild(el("div", "bme-recall-planner-section-label", label));
+  for (const text of normalizedEntries) {
+    section.appendChild(el("pre", className, text));
+  }
+  pane.appendChild(section);
+  return true;
+}
+
+function buildPlannerPane(plotRecord, { estimateTokens = defaultEstimateTokens } = {}) {
+  const pane = el("div", "bme-recall-pane bme-recall-planner-pane");
+
+  if (!hasPlotRecordContent(plotRecord)) {
+    pane.appendChild(el("div", "bme-recall-planner-empty", t("recall.planner.empty")));
+    return pane;
+  }
+
+  const tagged = extractTaggedPlannerBlocks(plotRecord);
+  appendPlannerTextSection(
+    pane,
+    "bme-recall-planner-plot",
+    t("recall.planner.guidance"),
+    tagged.plot.length ? tagged.plot : [tagged.fallback],
+  );
+  appendPlannerTextSection(
+    pane,
+    "bme-recall-planner-note",
+    t("recall.planner.notes"),
+    tagged.note,
+  );
+  appendPlannerTextSection(
+    pane,
+    "bme-recall-planner-block",
+    t("recall.planner.state"),
+    tagged.state,
+  );
+  appendPlannerTextSection(
+    pane,
+    "bme-recall-planner-block",
+    t("recall.planner.plotLog"),
+    tagged.plotLog,
+  );
+
+  // 任务状态
+  const taskResults = Array.isArray(plotRecord.taskResults) ? plotRecord.taskResults : [];
+  if (taskResults.length) {
+    const stateSection = el("div", "bme-recall-planner-section");
+    stateSection.appendChild(el("div", "bme-recall-planner-section-label", t("recall.planner.state")));
+    const taskList = el("ul", "bme-recall-planner-task-list");
+    for (const task of taskResults) {
+      const item = el("li", "bme-recall-planner-task-item");
+      const status = el("span", `bme-recall-planner-task-status ${String(task?.status || "").trim().replace(/\s+/g, "-") || "unknown"}`, String(task?.status || "-"));
+      const name = el("span", "bme-recall-planner-task-name", String(task?.taskName || ""));
+      item.appendChild(status);
+      item.appendChild(name);
+      taskList.appendChild(item);
+    }
+    stateSection.appendChild(taskList);
+    pane.appendChild(stateSection);
+  }
+
+  // Token hint for plot
+  const plotTokenText = getPlotRecordBlocks(plotRecord).join("\n\n");
+  const plotTokens = estimateTokens(plotTokenText);
+  if (plotTokens > 0) {
+    pane.appendChild(el("div", "bme-recall-planner-token-hint", formatTokenHint(plotTokens)));
+  }
+
+  const meta = buildPlannerMeta(plotRecord);
+  if (meta) pane.appendChild(meta);
+
+  pane.appendChild(buildPlannerRawTags(plotRecord));
+
+  return pane;
 }
 
 // ==================== 卡片 DOM 构建 ====================
 
-/**
- * 创建消息级召回卡片 DOM
- * @param {object} params
- * @param {number} params.messageIndex
- * @param {object} params.record - bme_recall record
- * @param {string} params.userMessageText
- * @param {object|null} params.graph - currentGraph
- * @param {string} params.themeName
- * @param {object} params.callbacks
- * @returns {HTMLElement}
- */
-export function createRecallCardElement({
+function buildRecallPane({
+  activeRecord,
+  activeUserMessageText,
+  activeGraph,
+  themeName,
+  activeCallbacks,
   messageIndex,
-  record,
-  userMessageText = "",
-  graph = null,
-  themeName = "crimson",
-  userInputDisplayMode = "beautify_only",
-  callbacks = {},
 }) {
-  const card = el("div", "bme-recall-card");
-  card.dataset.messageIndex = String(messageIndex);
-  card.dataset.updatedAt = String(record?.updatedAt || "");
-  card.dataset.expandedRenderSignature = "";
+  const pane = el("div", "bme-recall-pane bme-recall-recall-pane");
 
-  let activeRecord = record || {};
-  let activeUserMessageText = String(userMessageText || "");
-  let activeGraph = graph || null;
-  let activeCallbacks = callbacks || {};
-  let activeUserInputDisplayMode = normalizeUserInputDisplayMode(
-    userInputDisplayMode,
-  );
-  let expandedRenderSignature = "";
-  let isEditingUserInput = false;
-
-  // -- 用户消息区 --
-  const userLabel = el("div", "bme-recall-user-label");
-  const userLabelText = el("div", "bme-recall-user-label-text");
-  userLabelText.innerHTML = `💬 <span>${t("recall.card.userInput")}</span>`;
-  userLabel.appendChild(userLabelText);
-
-  const userLabelActions = el("div", "bme-recall-user-label-actions");
-  const editUserInputBtn = el("button", "bme-recall-user-edit-btn");
-  editUserInputBtn.type = "button";
-  editUserInputBtn.innerHTML = `<span class="bme-recall-btn-icon">✏️</span><span>${t("common.edit")}</span>`;
-  userLabelActions.appendChild(editUserInputBtn);
-  userLabel.appendChild(userLabelActions);
-  card.appendChild(userLabel);
-
-  const userText = el("div", "bme-recall-user-text", activeUserMessageText || t("common.emptyParenthetical"));
-  card.appendChild(userText);
-
-  const userEditWrap = el("div", "bme-recall-user-edit-wrap");
-  const userEditTextarea = document.createElement("textarea");
-  userEditTextarea.className = "bme-recall-user-edit-textarea";
-  userEditWrap.appendChild(userEditTextarea);
-  const userEditActions = el("div", "bme-recall-user-edit-actions");
-  const userEditSaveBtn = el("button", "bme-recall-user-edit-action primary", t("common.save"));
-  userEditSaveBtn.type = "button";
-  const userEditCancelBtn = el("button", "bme-recall-user-edit-action secondary", t("common.cancel"));
-  userEditCancelBtn.type = "button";
-  userEditActions.appendChild(userEditSaveBtn);
-  userEditActions.appendChild(userEditCancelBtn);
-  userEditWrap.appendChild(userEditActions);
-  card.appendChild(userEditWrap);
-
-  // -- 召回条 --
-  const initialNodeCount = Array.isArray(activeRecord?.selectedNodeIds)
-    ? activeRecord.selectedNodeIds.length
-    : 0;
-  const bar = el("div", "bme-recall-bar");
-
-  const barIcon = el("span", "bme-recall-bar-icon", "🧠");
-  bar.appendChild(barIcon);
-
-  const barTitle = el("span", "bme-recall-bar-title", t("recall.card.title"));
-  bar.appendChild(barTitle);
-
-  const badge = el(
-    "span",
-    "bme-recall-count-badge",
-    initialNodeCount > 0 ? t("recall.card.memoryCount", { count: initialNodeCount }) : t("recall.card.memoryReady"),
-  );
-  bar.appendChild(badge);
-
-  const tokenHint = el(
-    "span",
-    "bme-recall-token-hint",
-    formatTokenHint(activeRecord?.tokenEstimate),
-  );
-
-  bar.appendChild(tokenHint);
-
-  const arrow = el("span", "bme-recall-expand-arrow", "▶");
-  bar.appendChild(arrow);
-
-  card.appendChild(bar);
-
-  // -- 展开内容区 --
-  const body = el("div", "bme-recall-body");
-  card.appendChild(body);
-
-  // renderer 实例管理
-  let renderer = null;
-
-  function setUserInputEditMode(editing = false) {
-    isEditingUserInput = Boolean(editing);
-    card.classList.toggle("bme-recall-user-input-editing", isEditingUserInput);
-    userText.hidden = isEditingUserInput;
-    userEditWrap.hidden = !isEditingUserInput;
-    editUserInputBtn.disabled = isEditingUserInput;
-    if (!isEditingUserInput) return;
-
-    userEditTextarea.value = activeUserMessageText || "";
-    const lineCount = Math.max(3, String(activeUserMessageText || "").split(/\n/).length);
-    if (userEditTextarea.style && typeof userEditTextarea.style === "object") {
-      userEditTextarea.style.minHeight = `${Math.min(12, lineCount) * 22}px`;
-    }
-    userEditTextarea.focus?.();
-  }
-
-  function destroyRenderer() {
-    if (renderer) {
-      renderer.stopAnimation();
-      renderer.destroy();
-      renderer = null;
-    }
-  }
-
-  function buildExpandedContent(subGraph = null, nextSignature = "") {
-    body.innerHTML = "";
-
-    const resolvedSubGraph =
-      subGraph ||
-      (activeGraph
-        ? buildRecallSubGraph(activeGraph, activeRecord?.selectedNodeIds || [])
-        : { nodes: [], edges: [] });
+  if (activeRecord?.injectionText) {
+    const resolvedSubGraph = activeGraph
+      ? buildRecallSubGraph(activeGraph, activeRecord?.selectedNodeIds || [])
+      : { nodes: [], edges: [] };
 
     if (resolvedSubGraph.nodes.length === 0) {
       const emptyMsg = el(
@@ -448,16 +537,16 @@ export function createRecallCardElement({
         "bme-recall-empty",
         activeGraph ? t("recall.card.empty.nodesMissing") : t("recall.card.empty.graphNotReady"),
       );
-      body.appendChild(emptyMsg);
+      pane.appendChild(emptyMsg);
     } else {
       // Canvas 容器
       const canvasWrap = el("div", "bme-recall-canvas-wrap");
       const canvas = document.createElement("canvas");
       canvasWrap.appendChild(canvas);
-      body.appendChild(canvasWrap);
+      pane.appendChild(canvasWrap);
 
-      // 创建小画布 GraphRenderer
-      renderer = new GraphRenderer(canvas, {
+      // 创建小画布 GraphRenderer（渲染器由调用方持有并清理）
+      const renderer = new GraphRenderer(canvas, {
         theme: themeName,
         forceConfig: RECALL_CARD_FORCE_CONFIG,
         userPovAliases: _hostUserPovAliasHintsForRecallCanvas(),
@@ -475,6 +564,7 @@ export function createRecallCardElement({
       renderer.loadGraph(resolvedSubGraph, {
         userPovAliases: _hostUserPovAliasHintsForRecallCanvas(),
       });
+      pane._bmeRenderer = renderer;
     }
 
     // 元信息行
@@ -499,11 +589,11 @@ export function createRecallCardElement({
       const tag = el("span", "bme-recall-meta-tag", `✍ ${t("recall.card.meta.manualEdit")}`);
       meta.appendChild(tag);
     }
-    body.appendChild(meta);
+    pane.appendChild(meta);
 
     const injectionPreviewBlock = buildInjectionPreviewBlock(activeRecord || {});
     if (injectionPreviewBlock) {
-      body.appendChild(injectionPreviewBlock);
+      pane.appendChild(injectionPreviewBlock);
     }
 
     // 操作按钮行
@@ -540,7 +630,199 @@ export function createRecallCardElement({
     });
     actions.appendChild(recallBtn);
 
-    body.appendChild(actions);
+    pane.appendChild(actions);
+  } else {
+    pane.appendChild(el("div", "bme-recall-empty", t("recall.card.empty.graphNotReady")));
+  }
+
+  return pane;
+}
+
+/**
+ * 创建消息级召回卡片 DOM
+ * @param {object} params
+ * @param {number} params.messageIndex
+ * @param {object} params.record - bme_recall record
+ * @param {object|null} params.plotRecord - st_bme_plot record
+ * @param {string} params.userMessageText
+ * @param {object|null} params.graph - currentGraph
+ * @param {string} params.themeName
+ * @param {object} params.callbacks
+ * @returns {HTMLElement}
+ */
+export function createRecallCardElement({
+  messageIndex,
+  record,
+  plotRecord = null,
+  userMessageText = "",
+  graph = null,
+  themeName = "crimson",
+  userInputDisplayMode = "beautify_only",
+  callbacks = {},
+} = {}) {
+  const card = el("div", "bme-recall-card");
+  card.dataset.messageIndex = String(messageIndex);
+  card.dataset.updatedAt = String(record?.updatedAt || "");
+  card.dataset.expandedRenderSignature = "";
+
+  let hasRecall = Boolean(record?.injectionText);
+  let hasPlot = hasPlotRecordContent(plotRecord);
+
+  let activeRecord = record || {};
+  let activePlotRecord = plotRecord || null;
+  let activeUserMessageText = String(userMessageText || "");
+  let activeGraph = graph || null;
+  let activeCallbacks = callbacks || {};
+  let activeUserInputDisplayMode = normalizeUserInputDisplayMode(
+    userInputDisplayMode,
+  );
+  let expandedRenderSignature = "";
+  let isEditingUserInput = false;
+  const estimateTokens = (text) => resolveEstimateTokens(activeCallbacks)(text);
+
+  // Default active tab: planner if plot text exists, otherwise recall
+  let activeTab = hasPlot ? "planner" : "recall";
+
+  // -- 用户消息区 --
+  const userLabel = el("div", "bme-recall-user-label");
+  const userLabelText = el("div", "bme-recall-user-label-text");
+  userLabelText.innerHTML = `💬 <span>${t("recall.card.userInput")}</span>`;
+  userLabel.appendChild(userLabelText);
+
+  const userLabelActions = el("div", "bme-recall-user-label-actions");
+  const editUserInputBtn = el("button", "bme-recall-user-edit-btn");
+  editUserInputBtn.type = "button";
+  editUserInputBtn.innerHTML = `<span class="bme-recall-btn-icon">✏️</span><span>${t("common.edit")}</span>`;
+  userLabelActions.appendChild(editUserInputBtn);
+  userLabel.appendChild(userLabelActions);
+  card.appendChild(userLabel);
+
+  const userText = el("div", "bme-recall-user-text", activeUserMessageText || t("common.emptyParenthetical"));
+  card.appendChild(userText);
+
+  const userEditWrap = el("div", "bme-recall-user-edit-wrap");
+  const userEditTextarea = document.createElement("textarea");
+  userEditTextarea.className = "bme-recall-user-edit-textarea";
+  userEditWrap.appendChild(userEditTextarea);
+  const userEditActions = el("div", "bme-recall-user-edit-actions");
+  const userEditSaveBtn = el("button", "bme-recall-user-edit-action primary", t("common.save"));
+  userEditSaveBtn.type = "button";
+  const userEditCancelBtn = el("button", "bme-recall-user-edit-action secondary", t("common.cancel"));
+  userEditCancelBtn.type = "button";
+  userEditActions.appendChild(userEditSaveBtn);
+  userEditActions.appendChild(userEditCancelBtn);
+  userEditWrap.appendChild(userEditActions);
+  card.appendChild(userEditWrap);
+
+  // -- 横向 tabs (保留 .bme-recall-bar 用于兼容) --
+  const bar = el("div", "bme-recall-bar bme-recall-tabs");
+
+  const recallTab = el("button", "bme-recall-tab bme-recall-tab-recall");
+  recallTab.type = "button";
+  const initialNodeCount = Array.isArray(activeRecord?.selectedNodeIds)
+    ? activeRecord.selectedNodeIds.length
+    : 0;
+  const recallBadgeText = initialNodeCount > 0
+    ? t("recall.card.memoryCount", { count: initialNodeCount })
+    : t("recall.card.memoryReady");
+  const recallTabIcon = el("span", "bme-recall-tab-icon", "🧠");
+  const recallTabTitle = el("span", "bme-recall-tab-title", t("recall.tab.recall"));
+  const recallBadge = el("span", "bme-recall-tab-badge bme-recall-count-badge", recallBadgeText);
+  recallTab.appendChild(recallTabIcon);
+  recallTab.appendChild(recallTabTitle);
+  recallTab.appendChild(recallBadge);
+  bar.appendChild(recallTab);
+
+  const plannerTab = el("button", "bme-recall-tab bme-recall-tab-planner");
+  plannerTab.type = "button";
+  const plannerTabIcon = el("span", "bme-recall-tab-icon", "🧭");
+  const plannerTabTitle = el("span", "bme-recall-tab-title", t("recall.tab.planner"));
+  const plannerTabBadge = el("span", "bme-recall-tab-badge", t("recall.tab.plotLabel"));
+  plannerTab.appendChild(plannerTabIcon);
+  plannerTab.appendChild(plannerTabTitle);
+  plannerTab.appendChild(plannerTabBadge);
+  bar.appendChild(plannerTab);
+
+  const tokenHint = el("span", "bme-recall-token-hint", "");
+  bar.appendChild(tokenHint);
+
+  const arrow = el("span", "bme-recall-expand-arrow", "▶");
+  bar.appendChild(arrow);
+
+  card.appendChild(bar);
+
+  // -- 展开内容区 --
+  const body = el("div", "bme-recall-body");
+  card.appendChild(body);
+
+  function setUserInputEditMode(editing = false) {
+    isEditingUserInput = Boolean(editing);
+    card.classList.toggle("bme-recall-user-input-editing", isEditingUserInput);
+    userText.hidden = isEditingUserInput;
+    userEditWrap.hidden = !isEditingUserInput;
+    editUserInputBtn.disabled = isEditingUserInput;
+    if (!isEditingUserInput) return;
+
+    userEditTextarea.value = activeUserMessageText || "";
+    const lineCount = Math.max(3, String(activeUserMessageText || "").split(/\n/).length);
+    if (userEditTextarea.style && typeof userEditTextarea.style === "object") {
+      userEditTextarea.style.minHeight = `${Math.min(12, lineCount) * 22}px`;
+    }
+    userEditTextarea.focus?.();
+  }
+
+  function destroyRenderer() {
+    const pane = body.querySelector(".bme-recall-recall-pane");
+    if (pane?._bmeRenderer) {
+      pane._bmeRenderer.stopAnimation();
+      pane._bmeRenderer.destroy();
+      pane._bmeRenderer = null;
+    }
+  }
+
+  function updateBarState() {
+    const showRecall = hasRecall || !hasPlot;
+    const showPlanner = hasPlot || !hasRecall;
+    recallTab.hidden = !showRecall;
+    plannerTab.hidden = !showPlanner;
+    recallTab.classList.toggle("active", activeTab === "recall");
+    plannerTab.classList.toggle("active", activeTab === "planner");
+
+    const nodeCount = Array.isArray(activeRecord?.selectedNodeIds)
+      ? activeRecord.selectedNodeIds.length
+      : 0;
+    if (recallBadge) {
+      recallBadge.textContent = nodeCount > 0
+        ? t("recall.card.memoryCount", { count: nodeCount })
+        : t("recall.card.memoryReady");
+    }
+
+    const currentEstimate = activeTab === "planner" && hasPlotRecordContent(activePlotRecord)
+      ? estimateTokens(getPlotRecordBlocks(activePlotRecord).join("\n\n"))
+      : activeRecord?.tokenEstimate;
+    tokenHint.textContent = formatTokenHint(currentEstimate);
+  }
+
+  function buildExpandedContent(nextSignature = "") {
+    destroyRenderer();
+    body.innerHTML = "";
+    body.classList.toggle("active-tab-recall", activeTab === "recall");
+    body.classList.toggle("active-tab-planner", activeTab === "planner");
+
+    let pane = null;
+    if (activeTab === "planner" && activePlotRecord) {
+      pane = buildPlannerPane(activePlotRecord, { estimateTokens });
+    } else {
+      pane = buildRecallPane({
+        activeRecord,
+        activeUserMessageText,
+        activeGraph,
+        themeName,
+        activeCallbacks,
+        messageIndex,
+      });
+    }
+    body.appendChild(pane);
 
     expandedRenderSignature =
       nextSignature ||
@@ -548,14 +830,40 @@ export function createRecallCardElement({
         record: activeRecord,
         userMessageText: activeUserMessageText,
         selectedNodeIds: activeRecord?.selectedNodeIds || [],
-        subGraph: resolvedSubGraph,
+        subGraph: activeGraph
+          ? buildRecallSubGraph(activeGraph, activeRecord?.selectedNodeIds || [])
+          : { nodes: [], edges: [] },
+        plotRecord: activePlotRecord,
+        activeTab,
       });
     card.dataset.expandedRenderSignature = expandedRenderSignature;
+  }
+
+  function switchTab(tabName) {
+    if (tabName !== "recall" && tabName !== "planner") return;
+    const requestedAvailable =
+      (tabName === "recall" && (hasRecall || !hasPlot)) ||
+      (tabName === "planner" && (hasPlot || !hasRecall));
+    if (!requestedAvailable) return;
+
+    const wasExpanded = card.classList.contains("expanded");
+    if (wasExpanded && tabName === activeTab) return;
+    activeTab = tabName;
+    updateBarState();
+    card.dataset.activeTab = activeTab;
+
+    if (!wasExpanded) {
+      card.classList.add("expanded");
+    }
+    buildExpandedContent();
   }
 
   function applyCardRuntimeData(next = {}, { skipExpandedRerender = false } = {}) {
     if (next.record && typeof next.record === "object") {
       activeRecord = next.record;
+    }
+    if (Object.prototype.hasOwnProperty.call(next, "plotRecord")) {
+      activePlotRecord = next.plotRecord || null;
     }
     if (Object.prototype.hasOwnProperty.call(next, "userMessageText")) {
       activeUserMessageText = String(next.userMessageText || "");
@@ -572,7 +880,20 @@ export function createRecallCardElement({
       activeCallbacks = next.callbacks;
     }
 
+    const nextHasRecall = Boolean(activeRecord?.injectionText);
+    const nextHasPlot = hasPlotRecordContent(activePlotRecord);
+    hasRecall = nextHasRecall;
+    hasPlot = nextHasPlot;
+    activeTab =
+      (activeTab === "planner" && nextHasPlot) ||
+      (!nextHasRecall && nextHasPlot)
+        ? "planner"
+        : nextHasRecall || !nextHasPlot
+          ? "recall"
+          : activeTab;
+
     card.dataset.updatedAt = String(activeRecord?.updatedAt || "");
+    card.dataset.activeTab = activeTab;
     card.dataset.expandedRenderSignature = expandedRenderSignature;
     card.dataset.userInputDisplayMode = activeUserInputDisplayMode;
     card.classList.toggle(
@@ -584,27 +905,23 @@ export function createRecallCardElement({
       userEditTextarea.value = activeUserMessageText || "";
     }
 
-    const nodeCount = Array.isArray(activeRecord?.selectedNodeIds)
-      ? activeRecord.selectedNodeIds.length
-      : 0;
-    badge.textContent = nodeCount > 0 ? t("recall.card.memoryCount", { count: nodeCount }) : t("recall.card.memoryReady");
-    tokenHint.textContent = formatTokenHint(activeRecord?.tokenEstimate);
+    updateBarState();
 
     if (skipExpandedRerender || !card.classList.contains("expanded")) return;
 
-    const nextSubGraph = activeGraph
-      ? buildRecallSubGraph(activeGraph, activeRecord?.selectedNodeIds || [])
-      : { nodes: [], edges: [] };
     const nextSignature = buildExpandedRenderSignature({
       record: activeRecord,
       userMessageText: activeUserMessageText,
       selectedNodeIds: activeRecord?.selectedNodeIds || [],
-      subGraph: nextSubGraph,
+      subGraph: activeGraph
+        ? buildRecallSubGraph(activeGraph, activeRecord?.selectedNodeIds || [])
+        : { nodes: [], edges: [] },
+      plotRecord: activePlotRecord,
+      activeTab,
     });
     if (nextSignature === expandedRenderSignature) return;
 
-    destroyRenderer();
-    buildExpandedContent(nextSubGraph, nextSignature);
+    buildExpandedContent(nextSignature);
   }
 
   card._bmeUpdateRecallCard = applyCardRuntimeData;
@@ -634,8 +951,24 @@ export function createRecallCardElement({
     }
   });
 
-  // 点击召回条 toggle 展开/折叠
+  // Tab click: expand + switch tab
+  recallTab.addEventListener("click", (e) => {
+    e.stopPropagation();
+    switchTab("recall");
+  });
+
+  plannerTab.addEventListener("click", (e) => {
+    e.stopPropagation();
+    switchTab("planner");
+  });
+
+  // 点击 bar 非 tab 区域时，仅展开/折叠当前 tab（折叠时 tab 本身仍可切换）
   bar.addEventListener("click", (e) => {
+    const closestTab =
+      e.target && typeof e.target.closest === "function"
+        ? e.target.closest(".bme-recall-tab")
+        : null;
+    if (closestTab) return;
     e.stopPropagation();
     const isExpanded = card.classList.toggle("expanded");
     if (isExpanded) {
@@ -672,6 +1005,7 @@ export function updateRecallCardData(cardElement, record, options = {}) {
   if (typeof cardElement._bmeUpdateRecallCard === "function") {
     cardElement._bmeUpdateRecallCard({
       record,
+      plotRecord: options?.plotRecord,
       userMessageText: options?.userMessageText,
       userInputDisplayMode: options?.userInputDisplayMode,
       graph: options?.graph,
@@ -845,7 +1179,7 @@ export function openRecallSidebar({
       const count =
         typeof callbacks.estimateTokens === "function"
           ? callbacks.estimateTokens(textarea.value)
-          : textarea.value.length;
+          : defaultEstimateTokens(textarea.value);
       tokenHint.textContent = `~${count} tokens`;
     };
     updateTokenHint();

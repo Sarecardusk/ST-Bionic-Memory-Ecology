@@ -325,6 +325,17 @@ export default {
   "recall.sidebar.nodeType": "Type",
   "recall.sidebar.related": "Related",
 
+  "recall.tab.recall": "Memory Recall",
+  "recall.tab.planner": "Story Plot",
+  "recall.tab.plotLabel": "plot · note",
+  "recall.planner.empty": "No plot record",
+  "recall.planner.guidance": "Plot Guidance",
+  "recall.planner.notes": "Writing Notes",
+  "recall.planner.plotLog": "Plot Log",
+  "recall.planner.profile": "Profile: {profile}",
+  "recall.planner.rawTags": "Raw Tags",
+  "recall.planner.state": "Task State",
+
   "stage.extraction": "Extraction",
   "stage.history": "History Recovery",
   "stage.recall": "Recall",

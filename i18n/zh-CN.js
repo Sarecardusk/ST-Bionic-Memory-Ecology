@@ -325,6 +325,17 @@ export default {
   "recall.sidebar.nodeType": "类型",
   "recall.sidebar.related": "关联",
 
+  "recall.tab.recall": "记忆召回",
+  "recall.tab.planner": "剧情规划",
+  "recall.tab.plotLabel": "plot · note",
+  "recall.planner.empty": "暂无剧情规划",
+  "recall.planner.guidance": "剧情指引",
+  "recall.planner.notes": "写作注意",
+  "recall.planner.plotLog": "剧情记录",
+  "recall.planner.profile": "配置: {profile}",
+  "recall.planner.rawTags": "原始标签",
+  "recall.planner.state": "任务状态",
+
   "stage.extraction": "提取",
   "stage.history": "历史恢复",
   "stage.recall": "召回",

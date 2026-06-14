@@ -111,7 +111,10 @@ import {
   registerGenerationAfterCommandsController,
   scheduleSendIntentHookRetryController,
 } from "./host/event-binding.js";
-import { writeStructuredPlotRecordToMessage } from "./ena-planner/planner-plot-history.js";
+import {
+  readStructuredPlotRecordFromMessage,
+  writeStructuredPlotRecordToMessage,
+} from "./ena-planner/planner-plot-history.js";
 import {
   BME_HOST_PROFILE_LUKER,
   getBmeHostAdapter,
@@ -1871,6 +1874,7 @@ const recallMessageUiController = createRecallMessageUiController({
   updateRecallCardData,
   normalizeRecallInputText,
   rerunRecallForMessage: (messageIndex) => rerunRecallForMessage(messageIndex),
+  readStructuredPlotRecordFromMessage,
   PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS,
   PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS,
 });
