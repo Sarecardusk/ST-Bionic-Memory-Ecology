@@ -1,5 +1,6 @@
 export function createRerollRecallInput(deps = {}) {
   const plannerRecallHandoffs = new Map();
+  const consumedPlannerRecallHandoffs = new Map();
   const plannerPlotRecordHandoffs = new Map();
 
   const getCurrentChatId = (...args) => deps.getCurrentChatId?.(...args);
@@ -241,16 +242,21 @@ export function createRerollRecallInput(deps = {}) {
   }
 
   function cleanupPlannerRecallHandoffs(now = Date.now()) {
-    for (const [chatId, handoff] of plannerRecallHandoffs.entries()) {
-      if (
-        !handoff ||
-        String(handoff.chatId || "") !== String(chatId || "") ||
-        now - Number(handoff.updatedAt || handoff.createdAt || 0) >
-          getPlannerRecallHandoffTtlMs()
-      ) {
-        plannerRecallHandoffs.delete(chatId);
+    const pruneRecallHandoffMap = (map) => {
+      for (const [chatId, handoff] of map.entries()) {
+        if (
+          !handoff ||
+          String(handoff.chatId || "") !== String(chatId || "") ||
+          now - Number(handoff.updatedAt || handoff.createdAt || 0) >
+            getPlannerRecallHandoffTtlMs()
+        ) {
+          map.delete(chatId);
+        }
       }
-    }
+    };
+
+    pruneRecallHandoffMap(plannerRecallHandoffs);
+    pruneRecallHandoffMap(consumedPlannerRecallHandoffs);
     for (const [chatId, handoff] of plannerPlotRecordHandoffs.entries()) {
       if (
         !handoff ||
@@ -263,7 +269,8 @@ export function createRerollRecallInput(deps = {}) {
     }
   }
 
-  function peekPlannerRecallHandoff(
+  function peekPlannerRecallHandoffFromMap(
+    map,
     chatId = getCurrentChatId(),
     now = Date.now(),
   ) {
@@ -271,16 +278,30 @@ export function createRerollRecallInput(deps = {}) {
     const normalizedChatId = normalizeChatIdCandidate(chatId);
     if (!normalizedChatId) return null;
 
-    const handoff = plannerRecallHandoffs.get(normalizedChatId) || null;
+    const handoff = map.get(normalizedChatId) || null;
     if (!handoff) return null;
     if (
       now - Number(handoff.updatedAt || handoff.createdAt || 0) >
       getPlannerRecallHandoffTtlMs()
     ) {
-      plannerRecallHandoffs.delete(normalizedChatId);
+      map.delete(normalizedChatId);
       return null;
     }
     return handoff;
+  }
+
+  function peekPlannerRecallHandoff(
+    chatId = getCurrentChatId(),
+    now = Date.now(),
+  ) {
+    return peekPlannerRecallHandoffFromMap(plannerRecallHandoffs, chatId, now);
+  }
+
+  function peekConsumedPlannerRecallHandoff(
+    chatId = getCurrentChatId(),
+    now = Date.now(),
+  ) {
+    return peekPlannerRecallHandoffFromMap(consumedPlannerRecallHandoffs, chatId, now);
   }
 
   function clearPlannerRecallHandoffsForChat(
@@ -289,8 +310,9 @@ export function createRerollRecallInput(deps = {}) {
   ) {
     cleanupPlannerRecallHandoffs();
     if (clearAll) {
-      const removed = plannerRecallHandoffs.size + plannerPlotRecordHandoffs.size;
+      const removed = plannerRecallHandoffs.size + consumedPlannerRecallHandoffs.size + plannerPlotRecordHandoffs.size;
       plannerRecallHandoffs.clear();
+      consumedPlannerRecallHandoffs.clear();
       plannerPlotRecordHandoffs.clear();
       return removed;
     }
@@ -299,7 +321,18 @@ export function createRerollRecallInput(deps = {}) {
     if (!normalizedChatId) return 0;
     let removed = 0;
     if (plannerRecallHandoffs.delete(normalizedChatId)) removed += 1;
+    if (consumedPlannerRecallHandoffs.delete(normalizedChatId)) removed += 1;
     if (plannerPlotRecordHandoffs.delete(normalizedChatId)) removed += 1;
+    return removed;
+  }
+
+  function clearPlannerRecallOnlyForChat(chatId = getCurrentChatId()) {
+    cleanupPlannerRecallHandoffs();
+    const normalizedChatId = normalizeChatIdCandidate(chatId);
+    if (!normalizedChatId) return 0;
+    let removed = 0;
+    if (plannerRecallHandoffs.delete(normalizedChatId)) removed += 1;
+    if (consumedPlannerRecallHandoffs.delete(normalizedChatId)) removed += 1;
     return removed;
   }
 
@@ -336,6 +369,11 @@ export function createRerollRecallInput(deps = {}) {
     }
 
     plannerRecallHandoffs.delete(normalizedChatId);
+    consumedPlannerRecallHandoffs.set(normalizedChatId, {
+      ...handoff,
+      consumedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
     return handoff;
   }
 
@@ -440,6 +478,8 @@ export function createRerollRecallInput(deps = {}) {
     consumePlannerPlotRecordHandoff,
     cleanupPlannerRecallHandoffs,
     peekPlannerRecallHandoff,
+    peekConsumedPlannerRecallHandoff,
+    clearPlannerRecallOnlyForChat,
     clearPlannerRecallHandoffsForChat,
     consumePlannerRecallHandoff,
   };

@@ -5529,6 +5529,47 @@ async function testMessageSentFallsBackToLatestUserWhenHostMessageIdInvalid() {
   assert.equal(refreshCalls, 1);
 }
 
+async function testMessageSentPersistsPlannerRecallBeforePlotRecord() {
+  const order = [];
+  let refreshCalls = 0;
+
+  onMessageSentController(
+    {
+      getContext: () => ({
+        chat: [{ is_user: true, mes: "用户原文\n\n<plot>规划</plot>" }],
+      }),
+      isTrivialUserInput: () => ({ trivial: false, reason: "", normalizedText: "" }),
+      estimateTokens: () => 12,
+      recordRecallSentUserMessage(messageId, text, source = "message-sent") {
+        order.push(["record", messageId, text, source]);
+      },
+      persistPlannerRecallHandoffToUserMessage(messageId) {
+        order.push(["planner-recall", messageId]);
+        return true;
+      },
+      persistPlannerPlotRecordToUserMessage(messageId) {
+        order.push(["plot", messageId]);
+        return true;
+      },
+      rebindRecallRecordToNewUserMessage(messageId) {
+        order.push(["rebind", messageId]);
+      },
+      refreshPersistedRecallMessageUi() {
+        refreshCalls += 1;
+      },
+    },
+    0,
+  );
+
+  assert.deepEqual(order, [
+    ["record", 0, "用户原文\n\n<plot>规划</plot>", "message-sent"],
+    ["planner-recall", 0],
+    ["plot", 0],
+    ["rebind", 0],
+  ]);
+  assert.equal(refreshCalls, 1);
+}
+
 async function testUserMessageRenderedRefreshesRecallUiAfterRealDomRender() {
   const refreshCalls = [];
 
@@ -8957,6 +8998,7 @@ await testRegisterCoreEventHooksIsIdempotent();
 await testChatChangedDoesNotClearCoreEventBindings();
 await testSwipeRoutesToRerollWithoutHistoryRecoveryFallback();
 await testMessageSentFallsBackToLatestUserWhenHostMessageIdInvalid();
+await testMessageSentPersistsPlannerRecallBeforePlotRecord();
 await testUserMessageRenderedRefreshesRecallUiAfterRealDomRender();
 await testCharacterMessageRenderedRefreshesRecallUiAfterAssistantRender();
 await testMessageReceivedQueuesExtractionWithoutRuntimeQueueMicrotask();

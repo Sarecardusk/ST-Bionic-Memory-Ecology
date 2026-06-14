@@ -616,9 +616,6 @@ export async function runRecallController(runtime, options = {}) {
       cachedRecentMessages,
       cachedResult,
     );
-    runtime.consumePlannerRecallHandoff?.(cachedRecallPayload.chatId, {
-      handoffId: cachedRecallPayload.handoffId,
-    });
     return runtime.createRecallRunResult("completed", {
       reason: cachedRecallPayload.reason || "planner-handoff-reused",
       selectedNodeIds: cachedResult.selectedNodeIds || [],

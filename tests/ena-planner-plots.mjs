@@ -164,6 +164,15 @@ import {
   const plannerState = { bypassNextSend: false, lastInjectedText: '' };
   const plannerRecall = { result: { selected: ['memory-a'] } };
   const runtime = {
+    preparePlannerPlotRecordHandoff(payload) {
+      order.push('plot-handoff');
+      assert.equal('plannerRecall' in payload, false, 'plot handoff must not carry planner recall payload');
+      assert.deepEqual(payload, {
+        rawUserInput: 'raw input',
+        plannerAugmentedMessage: 'raw input\n\n<plot>next</plot>',
+        plotText: '<plot>next</plot>',
+      });
+    },
     preparePlannerRecallHandoff(payload) {
       order.push('handoff');
       assert.equal(payload.rawUserInput, 'raw input');
@@ -188,7 +197,7 @@ import {
     plannerState,
   });
 
-  assert.deepEqual(order, ['handoff', 'click']);
+  assert.deepEqual(order, ['plot-handoff', 'handoff', 'click']);
   assert.equal(result.applied, true);
   assert.equal(result.handoffPrepared, true);
   assert.equal(textarea.value, 'raw input\n\n<plot>next</plot>');
@@ -321,6 +330,32 @@ import {
   assert.equal(runtime.peekPlannerPlotRecordHandoff('chat-a')?.plotText, '<plot>next</plot>');
   assert.equal(runtime.consumePlannerPlotRecordHandoff('chat-a')?.plotText, '<plot>next</plot>');
   assert.equal(runtime.peekPlannerPlotRecordHandoff('chat-a'), null);
+}
+
+{
+  const runtime = createRerollRecallInput({
+    getCurrentChatId: () => 'chat-a',
+    normalizeChatIdCandidate: (value) => String(value || '').trim(),
+    normalizeRecallInputText: (value) => String(value || '').trim(),
+    hashRecallInput: (value) => `hash:${String(value || '').length}`,
+    formatInjection: (result) => result?.injectionText || '',
+    getSchema: () => ({}),
+  });
+  runtime.preparePlannerRecallHandoff({
+    chatId: 'chat-a',
+    rawUserInput: 'raw input',
+    plannerRecall: {
+      ok: true,
+      memoryBlock: 'planner memory',
+      result: { injectionText: 'planner memory', selectedNodeIds: ['n1'] },
+    },
+  });
+  assert.equal(runtime.peekPlannerRecallHandoff('chat-a')?.injectionText, 'planner memory');
+  assert.equal(runtime.consumePlannerRecallHandoff('chat-a')?.injectionText, 'planner memory');
+  assert.equal(runtime.peekPlannerRecallHandoff('chat-a'), null, 'consumed recall handoff must not be reused by generation recall');
+  assert.equal(runtime.peekConsumedPlannerRecallHandoff('chat-a')?.injectionText, 'planner memory', 'consumed handoff remains available for MESSAGE_SENT persistence');
+  assert.equal(runtime.clearPlannerRecallOnlyForChat('chat-a'), 1);
+  assert.equal(runtime.peekConsumedPlannerRecallHandoff('chat-a'), null);
 }
 
 {

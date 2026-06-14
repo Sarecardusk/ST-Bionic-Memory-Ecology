@@ -1744,39 +1744,40 @@ async function buildPlannerMessages(rawUserInput) {
 
     const charBlockRaw = formatCharCardBlock(charObj);
 
-    // --- BME memory: full recall with history/vector guards ---
-    let memoryBlock = '';
-    let memorySource = 'none';
-    let plannerRecall = null;
-    if (_bmeRuntime?.runPlannerRecallForEna) {
+    const startPlannerRecall = () => {
+        if (!_bmeRuntime?.runPlannerRecallForEna) {
+            return Promise.resolve({ memoryBlock: '', memorySource: 'none', plannerRecall: null });
+        }
         const controller = new AbortController();
         const recallTimeoutMs = getPlannerRecallTimeoutMs();
         const recallStartedAt = Date.now();
         const timeoutId = setTimeout(() => controller.abort(), recallTimeoutMs);
-        try {
-            const recall = await _bmeRuntime.runPlannerRecallForEna({
-                rawUserInput,
-                signal: controller.signal,
-            });
-            plannerRecall = recall ?? null;
-            if (recall?.ok && recall.memoryBlock) {
-                memoryBlock = recall.memoryBlock;
-                memorySource = 'bme';
-            }
-        } catch (e) {
+        return _bmeRuntime.runPlannerRecallForEna({
+            rawUserInput,
+            signal: controller.signal,
+        }).then((recall) => ({
+            memoryBlock: recall?.ok && recall.memoryBlock ? recall.memoryBlock : '',
+            memorySource: recall?.ok && recall.memoryBlock ? 'bme' : 'none',
+            plannerRecall: recall ?? null,
+        })).catch((e) => {
             if (e?.name === 'AbortError') {
                 console.warn(`[Ena] BME recall timed out (> ${Math.floor(recallTimeoutMs / 1000)}s)`);
             } else {
                 console.warn('[Ena] BME planner recall failed:', e);
             }
-        } finally {
+            return { memoryBlock: '', memorySource: 'none', plannerRecall: null };
+        }).finally(() => {
             clearTimeout(timeoutId);
             debugLog(
-                `[Ena] Planner recall finished in ${Date.now() - recallStartedAt}ms (source=${memorySource}, timeout=${recallTimeoutMs}ms)`,
+                `[Ena] Planner recall finished in ${Date.now() - recallStartedAt}ms (timeout=${recallTimeoutMs}ms)`,
             );
-        }
-    }
-    debugLog(`[Ena] Memory source: ${memorySource}`);
+        });
+    };
+
+    // --- BME memory: full recall with history/vector guards ---
+    // Start recall as early as possible and let it overlap with chat/worldbook
+    // context construction. The result is still awaited before template render.
+    const plannerRecallPromise = startPlannerRecall();
 
     // --- Chat history: last 2 AI messages (floors N-1 & N-3) ---
     // Two messages instead of one to avoid cross-device cache miss:
@@ -1789,7 +1790,15 @@ async function buildPlannerMessages(rawUserInput) {
     // Build scanText for worldbook keyword activation
     const scanText = [charBlockRaw, recentChatRaw, plotsRaw, rawUserInput].join('\n\n');
 
-    const worldbookRaw = await buildWorldbookBlock(scanText);
+    const [worldbookRaw, plannerRecallInfo] = await Promise.all([
+        buildWorldbookBlock(scanText),
+        plannerRecallPromise,
+    ]);
+
+    const memoryBlock = plannerRecallInfo.memoryBlock || '';
+    const memorySource = plannerRecallInfo.memorySource || 'none';
+    const plannerRecall = plannerRecallInfo.plannerRecall || null;
+    debugLog(`[Ena] Memory source: ${memorySource}`);
 
     // Render templates/macros
     const charBlock = await renderTemplateAll(charBlockRaw, env, messageVars);
