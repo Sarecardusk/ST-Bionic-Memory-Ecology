@@ -2367,67 +2367,7 @@ export class GraphRenderer {
         const width = Math.max(1, Number(W) || 1);
         const height = Math.max(1, Number(H) || 1);
         const theme = THEMES[this.themeName] || THEMES.crimson;
-        const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
-        if (isLightTheme) {
-            ctx.fillStyle = createCanvasGradient(
-                ctx,
-                'createRadialGradient',
-                [
-                    width * 0.52,
-                    height * 0.36,
-                    0,
-                    width * 0.52,
-                    height * 0.36,
-                    Math.max(width, height) * 0.82,
-                ],
-                [
-                    [0, colorWithAlpha(theme.primary, 0.08)],
-                    [0.42, colorWithAlpha(theme.secondary, 0.045)],
-                    [1, theme.surfaceLowest || theme.surfaceLow || '#f8fafc'],
-                ],
-                theme.surfaceLowest || theme.surfaceLow || '#f8fafc',
-            );
-            ctx.fillRect(0, 0, width, height);
-
-            ctx.fillStyle = createCanvasGradient(
-                ctx,
-                'createRadialGradient',
-                [
-                    width * 0.82,
-                    height * 0.18,
-                    0,
-                    width * 0.82,
-                    height * 0.18,
-                    Math.max(width, height) * 0.46,
-                ],
-                [
-                    [0, colorWithAlpha(theme.accent2 || theme.primary, 0.055)],
-                    [1, 'rgba(255, 255, 255, 0)'],
-                ],
-                'rgba(255, 255, 255, 0)',
-            );
-            ctx.fillRect(0, 0, width, height);
-            return;
-        }
-
-        ctx.fillStyle = createCanvasGradient(
-            ctx,
-            'createRadialGradient',
-            [
-                width * 0.5,
-                height * 0.5,
-                0,
-                width * 0.5,
-                height * 0.5,
-                Math.max(width, height) * 0.8,
-            ],
-            [
-                [0, colorWithAlpha(theme.primary || '#e94560', 0.075)],
-                [0.5, theme.surfaceLowest || theme.surfaceLow || '#08080d'],
-                [1, theme.surface || theme.surfaceLowest || '#06060a'],
-            ],
-            theme.surfaceLowest || '#06060a'
-        );
+        ctx.fillStyle = theme.surfaceLowest || theme.surfaceLow || theme.surface || '#06060a';
         ctx.fillRect(0, 0, width, height);
     }
 

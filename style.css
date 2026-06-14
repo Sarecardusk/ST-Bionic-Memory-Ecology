@@ -553,25 +553,11 @@
   flex-direction: column;
   min-height: 0;
   position: relative;
-  background:
-    radial-gradient(circle at 52% 34%, var(--bme-primary-dim, rgba(233, 69, 96, 0.12)), transparent 42%),
-    radial-gradient(circle at 86% 16%, color-mix(in srgb, var(--bme-secondary, #fc536d) 8%, transparent), transparent 34%),
-    radial-gradient(circle at 12% 82%, color-mix(in srgb, var(--bme-accent2, #4edea3) 6%, transparent), transparent 36%),
-    var(--bme-surface-lowest, #0e0e11);
+  background: var(--bme-surface-lowest, #0e0e11);
 }
 
 .bme-graph-workspace::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    radial-gradient(circle, color-mix(in srgb, var(--bme-on-surface, #fff) 26%, transparent) 0 1px, transparent 1.4px),
-    radial-gradient(circle, color-mix(in srgb, var(--bme-primary, #57c7ff) 16%, transparent) 0 1px, transparent 1.6px);
-  background-position: 18px 24px, 68px 86px;
-  background-size: 134px 134px, 211px 211px;
-  opacity: 0.11;
-  z-index: 0;
+  content: none;
 }
 
 .bme-graph-workspace > .bme-graph-toolbar,

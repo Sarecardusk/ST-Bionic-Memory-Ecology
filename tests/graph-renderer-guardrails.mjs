@@ -418,7 +418,7 @@ const { setLocale } = await import("../i18n/index.js");
   renderer.loadGraph(graph, { userPovAliases: ["Host"] });
   renderer.highlightNode("char-1");
   assertInputUnchanged(graph, before);
-  assert.ok(canvasMockStats.radialGradientCalls > 0);
+  assert.equal(canvasMockStats.radialGradientCalls, 0, "graph background should stay flat without blurred radial blobs");
   assert.equal(
     Math.max(0, ...canvasMockStats.shadowBlurValues),
     0,
@@ -482,7 +482,7 @@ const { setLocale } = await import("../i18n/index.js");
   assert.equal(diagnostics.activeCount, 3);
   assert.equal(diagnostics.reducedMotion, false);
   assert.ok(flushNextRaf());
-  assert.ok(canvasMockStats.radialGradientCalls > 0);
+  assert.equal(canvasMockStats.radialGradientCalls, 0, "transient highlights should not reintroduce blurred radial blobs");
   assert.ok(canvasMockStats.strokeCalls > 0);
   assert.ok(
     Math.max(0, ...canvasMockStats.arcRadii) <= 18,
