@@ -447,7 +447,10 @@ function appendPlannerTextSection(pane, className, label, entries = []) {
   return true;
 }
 
-function buildPlannerPane(plotRecord, { estimateTokens = defaultEstimateTokens } = {}) {
+function buildPlannerPane(
+  plotRecord,
+  { estimateTokens = defaultEstimateTokens, callbacks = {}, messageIndex = null } = {},
+) {
   const pane = el("div", "bme-recall-pane bme-recall-planner-pane");
 
   if (!hasPlotRecordContent(plotRecord)) {
@@ -510,6 +513,19 @@ function buildPlannerPane(plotRecord, { estimateTokens = defaultEstimateTokens }
   if (meta) pane.appendChild(meta);
 
   pane.appendChild(buildPlannerRawTags(plotRecord));
+
+  // Actions row
+  const actions = el("div", "bme-recall-actions");
+  const removeBtn = el("button", "bme-recall-action-btn danger");
+  removeBtn.type = "button";
+  removeBtn.innerHTML = `<span class="bme-recall-btn-icon">🗑</span> ${t("recall.card.removePlot")}`;
+  setupDeleteConfirmation(removeBtn, () => {
+    if (typeof callbacks.onRemovePlannerPlot === "function") {
+      callbacks.onRemovePlannerPlot(messageIndex);
+    }
+  });
+  actions.appendChild(removeBtn);
+  pane.appendChild(actions);
 
   return pane;
 }
@@ -811,7 +827,11 @@ export function createRecallCardElement({
 
     let pane = null;
     if (activeTab === "planner" && activePlotRecord) {
-      pane = buildPlannerPane(activePlotRecord, { estimateTokens });
+      pane = buildPlannerPane(activePlotRecord, {
+        estimateTokens,
+        callbacks: activeCallbacks,
+        messageIndex,
+      });
     } else {
       pane = buildRecallPane({
         activeRecord,

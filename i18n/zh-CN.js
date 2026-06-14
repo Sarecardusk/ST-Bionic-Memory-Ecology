@@ -301,6 +301,8 @@ export default {
   "recall.card.confirmDeleteShort": "确认删除？",
   "recall.card.empty.graphNotReady": "图谱未就绪",
   "recall.card.empty.nodesMissing": "召回节点已不存在或图谱已重建",
+  "recall.card.removePlot": "移除规划",
+  "recall.card.removedPlot": "已移除剧情规划",
   "recall.card.enaNote": "由 Ena Planner 触发的本轮记忆块",
   "recall.card.injectionPreview": "注入预览",
   "recall.card.injectionPreview.ena": "ENA 注入预览",

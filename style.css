@@ -6346,6 +6346,10 @@
   opacity: 1;
 }
 
+.bme-recall-card.expanded .bme-recall-body.active-tab-planner {
+  overflow-y: auto;
+}
+
 .bme-recall-pane {
   display: none;
   flex-direction: column;

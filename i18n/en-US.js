@@ -301,6 +301,8 @@ export default {
   "recall.card.confirmDeleteShort": "Delete?",
   "recall.card.empty.graphNotReady": "Graph is not ready",
   "recall.card.empty.nodesMissing": "Recalled nodes no longer exist or the graph was rebuilt",
+  "recall.card.removePlot": "Remove Plot",
+  "recall.card.removedPlot": "Plot planning removed",
   "recall.card.enaNote": "Memory block triggered by Ena Planner for this turn",
   "recall.card.injectionPreview": "Injection Preview",
   "recall.card.injectionPreview.ena": "ENA Injection Preview",

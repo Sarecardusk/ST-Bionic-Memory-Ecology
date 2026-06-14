@@ -2533,6 +2533,115 @@ async function testRecallCardMountsForPlotBlocksOnlyMessage() {
   }
 }
 
+async function testRecallCardRemovePlotHidesCardForPlotOnlyMessage() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot only input",
+      extra: {
+        st_bme_plot: buildPlotRecord(),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(Boolean(card), true);
+    card.querySelector(".bme-recall-tab-planner")?.click();
+
+    const removeBtn = card.querySelector(".bme-recall-action-btn.danger");
+    assert.equal(Boolean(removeBtn), true, "remove plot button should exist");
+    removeBtn.click();
+    removeBtn.click();
+
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(chat[0].extra, "st_bme_plot"),
+      false,
+      "st_bme_plot should be removed from chat extra",
+    );
+
+    harness.api.schedulePersistedRecallMessageUiRefresh();
+    await waitForTick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitForTick();
+
+    assert.equal(
+      harness.chatRoot.querySelectorAll(".bme-recall-card").length,
+      0,
+      "card should be removed when only plot existed",
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardRemovePlotSwitchesToRecallTabWhenRecallExists() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "recall-0",
+          selectedNodeIds: ["n1"],
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord(),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(card.dataset.activeTab, "planner");
+    card.querySelector(".bme-recall-tab-planner")?.click();
+
+    const removeBtn = card.querySelector(".bme-recall-action-btn.danger");
+    assert.equal(Boolean(removeBtn), true, "remove plot button should exist");
+    removeBtn.click();
+    removeBtn.click();
+
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(chat[0].extra, "st_bme_plot"),
+      false,
+      "st_bme_plot should be removed from chat extra",
+    );
+
+    harness.api.schedulePersistedRecallMessageUiRefresh();
+    await waitForTick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitForTick();
+
+    assert.equal(
+      harness.chatRoot.querySelectorAll(".bme-recall-card").length,
+      1,
+      "card should remain when recall exists",
+    );
+    const updatedCard = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(updatedCard.dataset.activeTab, "recall");
+    assert.equal(updatedCard.querySelector(".bme-recall-tab-planner").hidden, true);
+    assert.equal(updatedCard.querySelector(".bme-recall-tab-recall").hidden, false);
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
 function makeEvent(seq, title) {
   return createNode({
     type: "event",
@@ -8898,6 +9007,8 @@ await testRecallCardCanSwitchToRecallTab();
 await testRecallCardMountsForPlotOnlyMessage();
 await testRecallCardPlannerPaneRendersGuidanceAndNotes();
 await testRecallCardMountsForPlotBlocksOnlyMessage();
+await testRecallCardRemovePlotHidesCardForPlotOnlyMessage();
+await testRecallCardRemovePlotSwitchesToRecallTabWhenRecallExists();
 await testRecallSubGraphAndDataLayerEntryPoints();
 await testRerollUsesBatchBoundaryRollbackAndPersistsState();
 await testNotifyHistoryDirtyUsesStageNoticeWithoutGenericWarningToast();

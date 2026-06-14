@@ -1,4 +1,5 @@
 import { readStructuredPlotRecordFromMessage } from "../ena-planner/planner-plot-history.js";
+import { t } from "../i18n/index.js";
 
 export function createRecallMessageUiController(deps = {}) {
   let persistedRecallUiRefreshTimer = null;
@@ -64,6 +65,19 @@ function removeMessageRecallRecord(messageIndex) {
     deps.triggerChatMetadataSave(getContextValue(), { immediate: false });
   }
   return removed;
+}
+
+function removePlotRecordFromUserMessage(messageIndex) {
+  const chat = getContextValue()?.chat;
+  if (!Array.isArray(chat)) return false;
+  const message = chat[messageIndex];
+  if (!message || !message.extra || typeof message.extra !== "object") return false;
+  if (!Object.prototype.hasOwnProperty.call(message.extra, "st_bme_plot")) {
+    return false;
+  }
+  delete message.extra.st_bme_plot;
+  deps.triggerChatMetadataSave(getContextValue(), { immediate: false });
+  return true;
 }
 
 function editMessageRecallRecord(messageIndex, nextInjectionText) {
@@ -619,6 +633,12 @@ function getRecallCardCallbacks() {
     onDelete: (messageIndex) => {
       if (removeMessageRecallRecord(messageIndex)) {
         getToastr().success("已删除持久召回注入");
+        schedulePersistedRecallMessageUiRefresh();
+      }
+    },
+    onRemovePlannerPlot: (messageIndex) => {
+      if (removePlotRecordFromUserMessage(messageIndex)) {
+        getToastr().success(t("recall.card.removedPlot"));
         schedulePersistedRecallMessageUiRefresh();
       }
     },
