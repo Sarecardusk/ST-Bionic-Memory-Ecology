@@ -440,7 +440,7 @@ const { setLocale } = await import("../i18n/index.js");
   assertInputUnchanged(graph, before);
   assert.ok(
     canvasMockStats.fillTextCalls <= 7,
-    "dark galaxy mode limits default labels to a small core budget",
+    "galaxy mode limits default dark-theme labels to a small core budget",
   );
   renderer.destroy();
 }
@@ -683,10 +683,10 @@ const { setLocale } = await import("../i18n/index.js");
   renderer.setTheme("paperDawn");
   const lightObjectivePanel = renderer._regionPanels.find((panel) => panel.key === "objective");
   assert.ok(darkObjectivePanel && lightObjectivePanel, "theme switch keeps objective panel metadata");
-  assert.notEqual(
+  assert.equal(
     Math.round(darkObjectivePanel.w),
     Math.round(lightObjectivePanel.w),
-    "dark/light theme switch recomputes galaxy versus legacy layout regions",
+    "dark/light theme switch keeps the same galaxy layout regions",
   );
   renderer.destroy();
 }
@@ -705,7 +705,7 @@ const { setLocale } = await import("../i18n/index.js");
 
   renderer.loadGraph(graph, { userPovAliases: ["Host"] });
   const diagnostics = renderer.getLastLayoutDiagnostics();
-  assert.notEqual(diagnostics.mode, "native-worker", "dark galaxy mode disables native layout until cross-region spring parity exists");
+  assert.notEqual(diagnostics.mode, "native-worker", "galaxy mode disables native layout until cross-region spring parity exists");
   renderer.destroy();
 }
 

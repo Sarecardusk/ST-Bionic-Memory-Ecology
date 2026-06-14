@@ -659,13 +659,13 @@ export class GraphRenderer {
      * 切换主题
      */
     setTheme(themeName) {
-        const wasGalaxyMode = this._isDarkGalaxyMode();
+        const wasGalaxyMode = this._isGalaxyMode();
         this.themeName = themeName;
         this.colors = getNodeColors(themeName);
         this.scopeColors = getScopeColors(themeName);
         this.edgeRelationColors = getEdgeRelationColors(themeName);
         this.transientHighlightColors = getTransientHighlightColors(themeName);
-        const nextGalaxyMode = this._isDarkGalaxyMode();
+        const nextGalaxyMode = this._isGalaxyMode();
         if (!this.enabled) return;
         if (wasGalaxyMode !== nextGalaxyMode && this.nodes.length > 0) {
             this._nextLayoutSolveRevision();
@@ -942,12 +942,16 @@ export class GraphRenderer {
 
     // ==================== 分区布局 ====================
 
+    _isGalaxyMode() {
+        return this.config?.galaxyLayout !== false;
+    }
+
     _isDarkGalaxyMode() {
-        return !LIGHT_PANEL_THEMES.has(this.themeName) && this.config?.galaxyLayout !== false;
+        return this._isGalaxyMode();
     }
 
     _computeRegionPanels(W, H, { objective, userPov, charMap }) {
-        if (this._isDarkGalaxyMode()) {
+        if (this._isGalaxyMode()) {
             return this._computeGalaxyRegionPanels(W, H, { objective, userPov, charMap });
         }
         const scopeColors = this.scopeColors || getScopeColors(this.themeName);
@@ -1109,7 +1113,7 @@ export class GraphRenderer {
             const cy = height * 0.5 + Math.sin(angle) * radius * 0.78;
             const rect = makeRect(cx, cy, width * 0.34, height * 0.36);
             const key = `char:${owner || 'unknown'}`;
-            const displayName = owner || translateUi('graph.scope.unknownCharacter');
+            const displayName = characterPovLabelFromNodes(nodes) || owner || translateUi('graph.scope.unknownCharacter');
             panels.push({ ...rect, label: `Character POV · ${displayName}`, labelKey: 'graph.scope.characterPov', labelParams: { name: displayName }, tint: 'rgba(255, 179, 71, 0.02)', key });
             for (const n of nodes) n.regionRect = rect;
         });
@@ -1597,9 +1601,9 @@ export class GraphRenderer {
     }
 
     _shouldTryNativeLayout(nodeCount = 0, edgeCount = 0) {
-        // Dark galaxy mode currently uses weak cross-region springs in the JS solver.
+        // Galaxy mode currently uses weak cross-region springs in the JS solver.
         // Keep native/worker disabled until payload parity supports that spring model.
-        if (this._isDarkGalaxyMode()) return false;
+        if (this._isGalaxyMode()) return false;
         if (this.runtimeConfig.graphNativeForceDisable) return false;
         if (!this.runtimeConfig.graphUseNativeLayout) return false;
         const bridge = this._ensureNativeLayoutBridge();
@@ -1978,7 +1982,7 @@ export class GraphRenderer {
         for (const edge of this.edges) {
             const { from, to, strength } = edge;
             const sameRegion = from.regionKey === to.regionKey;
-            if (!sameRegion && !this._isDarkGalaxyMode()) continue;
+            if (!sameRegion && !this._isGalaxyMode()) continue;
             const ideal =
                 springIdeal.get(sameRegion ? from.regionKey : 'objective') ?? 68;
             let dx = to.x - from.x;
@@ -2041,6 +2045,7 @@ export class GraphRenderer {
     }
 
     _drawRegionPanels(ctx) {
+        if (this._isGalaxyMode()) return;
         if (!LIGHT_PANEL_THEMES.has(this.themeName)) return;
         const theme = THEMES[this.themeName] || THEMES.crimson;
         for (const p of this._regionPanels) {
@@ -2155,7 +2160,8 @@ export class GraphRenderer {
         this.edges.forEach((e, i) => this._drawSynapseEdge(ctx, e, i, focus));
 
         const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
-        const coreLabelNodes = isLightTheme
+        const isGalaxyMode = this._isGalaxyMode();
+        const coreLabelNodes = !isGalaxyMode || isLightTheme
             ? null
             : new Set(
             [...this.nodes]
@@ -2230,7 +2236,7 @@ export class GraphRenderer {
                     : 0.52;
                 maxLabelW = Math.max(36, Math.min(220, rect.w * frac));
             }
-            const showLabel = isLightTheme || isHovered || isSelected || coreLabelNodes.has(node);
+            const showLabel = !isGalaxyMode || isLightTheme || isHovered || isSelected || coreLabelNodes.has(node);
             if (showLabel) {
                 const labelDraw = this._ellipsisLabel(
                     ctx,
