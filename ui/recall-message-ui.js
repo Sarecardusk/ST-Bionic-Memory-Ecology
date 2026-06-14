@@ -735,6 +735,7 @@ export function createRecallCardElement({
 
   const recallTab = el("button", "bme-recall-tab bme-recall-tab-recall");
   recallTab.type = "button";
+  recallTab.setAttribute("aria-pressed", "false");
   const initialNodeCount = Array.isArray(activeRecord?.selectedNodeIds)
     ? activeRecord.selectedNodeIds.length
     : 0;
@@ -751,6 +752,7 @@ export function createRecallCardElement({
 
   const plannerTab = el("button", "bme-recall-tab bme-recall-tab-planner");
   plannerTab.type = "button";
+  plannerTab.setAttribute("aria-pressed", "false");
   const plannerTabIcon = el("span", "bme-recall-tab-icon", "🧭");
   const plannerTabTitle = el("span", "bme-recall-tab-title", t("recall.tab.planner"));
   const plannerTabBadge = el("span", "bme-recall-tab-badge", t("recall.tab.plotLabel"));
@@ -803,6 +805,8 @@ export function createRecallCardElement({
     plannerTab.hidden = !showPlanner;
     recallTab.classList.toggle("active", activeTab === "recall");
     plannerTab.classList.toggle("active", activeTab === "planner");
+    recallTab.setAttribute("aria-pressed", activeTab === "recall" ? "true" : "false");
+    plannerTab.setAttribute("aria-pressed", activeTab === "planner" ? "true" : "false");
 
     const nodeCount = Array.isArray(activeRecord?.selectedNodeIds)
       ? activeRecord.selectedNodeIds.length
@@ -867,7 +871,7 @@ export function createRecallCardElement({
     if (!requestedAvailable) return;
 
     const wasExpanded = card.classList.contains("expanded");
-    if (wasExpanded && tabName === activeTab) return;
+    const sameTab = tabName === activeTab;
     activeTab = tabName;
     updateBarState();
     card.dataset.activeTab = activeTab;
@@ -875,6 +879,7 @@ export function createRecallCardElement({
     if (!wasExpanded) {
       card.classList.add("expanded");
     }
+    if (sameTab && wasExpanded && body.childElementCount > 0) return;
     buildExpandedContent();
   }
 
@@ -973,11 +978,13 @@ export function createRecallCardElement({
 
   // Tab click: expand + switch tab
   recallTab.addEventListener("click", (e) => {
+    e.preventDefault();
     e.stopPropagation();
     switchTab("recall");
   });
 
   plannerTab.addEventListener("click", (e) => {
+    e.preventDefault();
     e.stopPropagation();
     switchTab("planner");
   });

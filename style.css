@@ -6225,7 +6225,7 @@
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: 12px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--bme-on-surface-dim, rgba(228, 225, 230, 0.7));
@@ -6245,9 +6245,12 @@
 }
 
 .bme-recall-tab.active {
-  background: var(--bme-surface-container, #1f1f22);
+  background: color-mix(in srgb, var(--bme-primary, #e94560) 18%, var(--bme-surface-container, #1f1f22));
   border-color: var(--bme-border-active, rgba(233, 69, 96, 0.35));
   color: var(--bme-on-surface, #e4e1e6);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--bme-primary, #e94560) 36%, transparent),
+    0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 
 .bme-recall-tab-recall.active {
@@ -6256,6 +6259,10 @@
 
 .bme-recall-tab-planner.active {
   border-color: rgba(111, 194, 255, 0.45);
+  background: color-mix(in srgb, #6fc2ff 18%, var(--bme-surface-container, #1f1f22));
+  box-shadow:
+    inset 0 0 0 1px rgba(111, 194, 255, 0.34),
+    0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 
 .bme-recall-tab-icon {

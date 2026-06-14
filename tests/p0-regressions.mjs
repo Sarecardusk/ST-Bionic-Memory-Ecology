@@ -2363,6 +2363,52 @@ async function testRecallCardDefaultsToPlannerTabWhenPlotTextExists() {
   }
 }
 
+async function testRecallCardActiveTabClickExpandsCurrentPane() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "recall-0",
+          selectedNodeIds: ["n1"],
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord({
+          plotText: "<plot>Planner guidance visible.</plot>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    const plannerTab = card.querySelector(".bme-recall-tab-planner");
+
+    assert.equal(card.dataset.activeTab, "planner");
+    assert.equal(card.classList.contains("expanded"), false);
+    plannerTab.click();
+
+    assert.equal(card.dataset.activeTab, "planner");
+    assert.equal(card.classList.contains("expanded"), true);
+    assert.equal(plannerTab.getAttribute("aria-pressed"), "true");
+    assert.ok(
+      card.querySelector(".bme-recall-planner-plot")?.textContent.includes("Planner guidance visible"),
+      "clicking the active planner tag should expand and render planner content",
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
 async function testRecallCardCanSwitchToRecallTab() {
   const chat = [
     {
@@ -9045,6 +9091,7 @@ await testRecallCardShowsEnaSourceChipAndExpandedPreview();
 await testRecallCardBeautifiesInjectionPreviewSections();
 await testRecallCardWithRecallAndPlotShowsBothTabs();
 await testRecallCardDefaultsToPlannerTabWhenPlotTextExists();
+await testRecallCardActiveTabClickExpandsCurrentPane();
 await testRecallCardCanSwitchToRecallTab();
 await testRecallCardMountsForPlotOnlyMessage();
 await testRecallCardPlannerPaneRendersGuidanceAndNotes();
