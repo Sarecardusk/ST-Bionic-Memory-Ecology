@@ -172,6 +172,36 @@ export const THEMES = {
 /** 使用亮色 color-scheme 的面板主题（原生 number/select 等控件配色） */
 export const LIGHT_PANEL_THEMES = new Set(['paperDawn', 'glacierSky']);
 
+function buildScopeColors(theme) {
+    return {
+        objective: theme.scopeObjective || theme.primary,
+        character: theme.scopeCharacter || theme.secondary || theme.accent3 || theme.primary,
+        characterPov: theme.scopeCharacter || theme.secondary || theme.accent3 || theme.primary,
+        user: theme.scopeUser || theme.accent2 || theme.primary,
+        userPov: theme.scopeUser || theme.accent2 || theme.primary,
+    };
+}
+
+function buildEdgeRelationColors(theme) {
+    return {
+        updates: theme.edgeUpdates || theme.primary,
+        temporal_update: theme.edgeUpdates || theme.primary,
+        evolves: theme.edgeEvolves || theme.secondary || theme.primary,
+        same: theme.edgeSame || theme.accent2 || theme.primary,
+        related: theme.edgeRelated || theme.nodeEvent || theme.primary,
+    };
+}
+
+function buildTransientColors(theme) {
+    return {
+        recall: theme.transientRecall || theme.primary,
+        extracted: theme.transientExtracted || theme.secondary || theme.primary,
+        mixedA: theme.transientMixedA || theme.primary,
+        mixedB: theme.transientMixedB || theme.secondary || theme.accent2 || theme.primary,
+        created: theme.transientCreated || theme.accent2 || theme.primary,
+    };
+}
+
 /**
  * 将主题配色应用为 CSS 变量
  * @param {string} themeName - crimson | cyan | amber | violet | paperDawn | glacierSky
@@ -180,6 +210,9 @@ export const LIGHT_PANEL_THEMES = new Set(['paperDawn', 'glacierSky']);
 export function applyTheme(themeName, root = null) {
     const theme = THEMES[themeName] || THEMES.crimson;
     const el = root || document.documentElement;
+    const scopeColors = buildScopeColors(theme);
+    const edgeColors = buildEdgeRelationColors(theme);
+    const transientColors = buildTransientColors(theme);
 
     const vars = {
         '--bme-primary': theme.primary,
@@ -206,6 +239,20 @@ export function applyTheme(themeName, root = null) {
         '--bme-node-rule': theme.nodeRule,
         '--bme-node-synopsis': theme.nodeSynopsis,
         '--bme-node-reflection': theme.nodeReflection,
+        '--bme-scope-objective': scopeColors.objective,
+        '--bme-scope-character': scopeColors.character,
+        '--bme-scope-user': scopeColors.user,
+        '--bme-edge-related': edgeColors.related,
+        '--bme-edge-updates': edgeColors.updates,
+        '--bme-edge-evolves': edgeColors.evolves,
+        '--bme-edge-same': edgeColors.same,
+        '--bme-transient-recall': transientColors.recall,
+        '--bme-transient-extracted': transientColors.extracted,
+        '--bme-transient-created': transientColors.created,
+        '--bme-status-success': theme.statusSuccess || theme.accent2 || theme.primary,
+        '--bme-status-running': theme.statusRunning || theme.primary,
+        '--bme-status-warning': theme.statusWarning || theme.accent3 || theme.secondary || theme.primary,
+        '--bme-status-error': theme.statusError || theme.secondary || theme.primary,
     };
 
     for (const [key, value] of Object.entries(vars)) {
@@ -233,5 +280,34 @@ export function getNodeColors(themeName) {
         rule:      theme.nodeRule,
         synopsis:  theme.nodeSynopsis,
         reflection: theme.nodeReflection,
+        pov_memory: theme.nodeReflection || theme.nodeSynopsis || theme.nodeEvent,
+        default: theme.nodeEvent || theme.primary,
     };
+}
+
+/**
+ * 获取当前主题的图谱分层/POV 轮廓颜色
+ * @param {string} themeName
+ * @returns {{objective: string, character: string, characterPov: string, user: string, userPov: string}}
+ */
+export function getScopeColors(themeName) {
+    return buildScopeColors(THEMES[themeName] || THEMES.crimson);
+}
+
+/**
+ * 获取当前主题的图谱关系边颜色
+ * @param {string} themeName
+ * @returns {Object<string, string>}
+ */
+export function getEdgeRelationColors(themeName) {
+    return buildEdgeRelationColors(THEMES[themeName] || THEMES.crimson);
+}
+
+/**
+ * 获取当前主题的图谱瞬态高亮颜色
+ * @param {string} themeName
+ * @returns {{recall: string, extracted: string, mixedA: string, mixedB: string, created: string}}
+ */
+export function getTransientHighlightColors(themeName) {
+    return buildTransientColors(THEMES[themeName] || THEMES.crimson);
 }

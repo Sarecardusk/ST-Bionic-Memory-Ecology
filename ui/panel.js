@@ -53,7 +53,7 @@ import {
   setActiveTaskProfileId,
   upsertTaskProfile,
 } from "../prompting/prompt-profiles.js";
-import { getNodeColors } from "./themes.js";
+import { getNodeColors, getScopeColors } from "./themes.js";
 import {
   getSuggestedBackendModel,
   getVectorIndexStats,
@@ -5819,12 +5819,9 @@ function _buildLegend() {
   if (!legendEl) return;
 
   const settings = _getSettings?.() || {};
-  const colors = getNodeColors(settings.panelTheme || "crimson");
-  const scopeColors = {
-    objective: "#57c7ff",
-    characterPov: "#ffb347",
-    userPov: "#7dff9b",
-  };
+  const themeName = settings.panelTheme || "crimson";
+  const colors = getNodeColors(themeName);
+  const scopeColors = getScopeColors(themeName);
   const layers = [
     { key: "objective", label: "客观层" },
     { key: "characterPov", label: "角色 POV" },

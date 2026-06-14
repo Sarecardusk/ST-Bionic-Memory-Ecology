@@ -1,7 +1,14 @@
 // ST-BME: Canvas 图谱渲染器 — 分区「神经视图」布局
 // 零依赖：客观层 / 角色 POV / 用户 POV 分区内 Vogel 初值 + 有预算的短力导向动画
 
-import { getNodeColors, LIGHT_PANEL_THEMES, THEMES } from './themes.js';
+import {
+    getEdgeRelationColors,
+    getNodeColors,
+    getScopeColors,
+    getTransientHighlightColors,
+    LIGHT_PANEL_THEMES,
+    THEMES,
+} from './themes.js';
 import {
     isUsableGraphCanvasSize,
     remapPositionBetweenRects,
@@ -17,17 +24,6 @@ import {
     normalizeGraphNativeRuntimeOptions,
 } from './graph-native-bridge.js';
 import { t as translateUi } from '../i18n/index.js';
-
-const GALAXY_COLORS = {
-    character: '#ff4f8b',
-    event: '#438cff',
-    location: '#10b981',
-    thread: '#8b5cf6',
-    rule: '#f59e0b',
-    synopsis: '#d946ef',
-    reflection: '#06b6d4',
-    default: '#64748b',
-};
 
 /**
  * @typedef {Object} GraphNode
@@ -164,20 +160,6 @@ function roundRectPath(ctx, x, y, w, h, r) {
     ctx.closePath();
 }
 
-const SCOPE_OUTLINE_COLORS = {
-    objective: '#57c7ff',
-    character: '#ffb347',
-    user: '#7dff9b',
-};
-
-const EDGE_RELATION_COLORS = {
-    updates: '#7cf8ff',
-    temporal_update: '#7cf8ff',
-    evolves: '#b79cff',
-    same: '#8fffd2',
-    related: '#7aa7ff',
-};
-
 function colorWithAlpha(color, alpha = 1) {
     const a = Math.max(0, Math.min(1, Number(alpha) || 0));
     const hex = String(color || '').trim();
@@ -200,9 +182,9 @@ function colorWithAlpha(color, alpha = 1) {
     return `rgba(255, 255, 255, ${a})`;
 }
 
-function edgeColorForRelation(relation) {
+function edgeColorForRelation(relation, relationColors = {}) {
     const key = String(relation || 'related').trim().toLowerCase();
-    return EDGE_RELATION_COLORS[key] || EDGE_RELATION_COLORS.related;
+    return relationColors[key] || relationColors.related || relationColors.updates || '#7aa7ff';
 }
 
 function createCanvasGradient(ctx, methodName, args = [], stops = [], fallback = 'rgba(0, 0, 0, 0)') {
@@ -355,6 +337,9 @@ export class GraphRenderer {
         this.edges = [];
         this.nodeMap = new Map();
         this.colors = getNodeColors(themeName);
+        this.scopeColors = getScopeColors(themeName);
+        this.edgeRelationColors = getEdgeRelationColors(themeName);
+        this.transientHighlightColors = getTransientHighlightColors(themeName);
         this.themeName = themeName;
         this.config = { ...DEFAULT_LAYOUT_CONFIG, ...fromForce, ...layoutOverride };
         this.runtimeConfig = normalizeGraphNativeRuntimeOptions(runtimeConfig);
@@ -677,6 +662,9 @@ export class GraphRenderer {
         const wasGalaxyMode = this._isDarkGalaxyMode();
         this.themeName = themeName;
         this.colors = getNodeColors(themeName);
+        this.scopeColors = getScopeColors(themeName);
+        this.edgeRelationColors = getEdgeRelationColors(themeName);
+        this.transientHighlightColors = getTransientHighlightColors(themeName);
         const nextGalaxyMode = this._isDarkGalaxyMode();
         if (!this.enabled) return;
         if (wasGalaxyMode !== nextGalaxyMode && this.nodes.length > 0) {
@@ -962,6 +950,7 @@ export class GraphRenderer {
         if (this._isDarkGalaxyMode()) {
             return this._computeGalaxyRegionPanels(W, H, { objective, userPov, charMap });
         }
+        const scopeColors = this.scopeColors || getScopeColors(this.themeName);
         const pad = 14;
         const gutter = 10;
         const topPad = 20;
@@ -980,7 +969,7 @@ export class GraphRenderer {
             h: Math.max(0, H - pad * 2 - 6),
             label: 'Objective Layer',
             labelKey: 'graph.scope.objective',
-            tint: 'rgba(26, 35, 50, 0.42)',
+            tint: colorWithAlpha(scopeColors.objective, 0.08),
             key: 'objective',
         };
         panels.push(objectivePanel);
@@ -1015,7 +1004,7 @@ export class GraphRenderer {
                 h: fullH,
                 label: 'User POV',
                 labelKey: 'graph.scope.userPov',
-                tint: 'rgba(32, 48, 40, 0.42)',
+                tint: colorWithAlpha(scopeColors.user, 0.08),
                 key: 'user',
             });
             const innerU = {
@@ -1051,7 +1040,7 @@ export class GraphRenderer {
                 label: `Character POV · ${displayName}`,
                 labelKey: 'graph.scope.characterPov',
                 labelParams: { name: displayName },
-                tint: 'rgba(55, 42, 28, 0.38)',
+                tint: colorWithAlpha(scopeColors.character, 0.08),
                 key: `char:${key}`,
             });
             const inner = {
@@ -1073,7 +1062,7 @@ export class GraphRenderer {
                 h: userStripH,
                 label: 'User POV',
                 labelKey: 'graph.scope.userPov',
-                tint: 'rgba(32, 48, 40, 0.42)',
+                tint: colorWithAlpha(scopeColors.user, 0.08),
                 key: 'user',
             });
             const innerU = {
@@ -2053,6 +2042,7 @@ export class GraphRenderer {
 
     _drawRegionPanels(ctx) {
         if (!LIGHT_PANEL_THEMES.has(this.themeName)) return;
+        const theme = THEMES[this.themeName] || THEMES.crimson;
         for (const p of this._regionPanels) {
             const pw = Number(p.w) || 0;
             const ph = Number(p.h) || 0;
@@ -2065,17 +2055,17 @@ export class GraphRenderer {
                 [p.x, p.y, p.x + pw, p.y + ph],
                 [
                     [0, p.tint],
-                    [0.62, 'rgba(6, 10, 22, 0.22)'],
-                    [1, 'rgba(87, 199, 255, 0.035)'],
+                    [0.62, colorWithAlpha(theme.surfaceContainer || theme.surface, 0.22)],
+                    [1, colorWithAlpha(theme.primary, 0.035)],
                 ],
                 p.tint,
             );
             ctx.fill();
-            ctx.strokeStyle = 'rgba(141, 213, 255, 0.14)';
+            ctx.strokeStyle = colorWithAlpha(theme.primary, 0.14);
             ctx.lineWidth = 1;
             ctx.stroke();
 
-            ctx.fillStyle = 'rgba(222, 239, 255, 0.64)';
+            ctx.fillStyle = colorWithAlpha(theme.onSurface || '#dae5f2', 0.64);
             ctx.font = '700 10px Inter, sans-serif';
             ctx.textAlign = 'left';
             ctx.fillText(this._formatRegionPanelLabel(p), p.x + 12, p.y + 16);
@@ -2103,9 +2093,10 @@ export class GraphRenderer {
         const cy = my + ny * bend;
 
         const isLightTheme = LIGHT_PANEL_THEMES.has(this.themeName);
-        const relationColor = edgeColorForRelation(edge.relation);
-        const edgeColor = isLightTheme ? relationColor : (GALAXY_COLORS[from.type] || GALAXY_COLORS.default);
-        const unselectedColor = isLightTheme ? '#9eb2cf' : edgeColor;
+        const theme = THEMES[this.themeName] || THEMES.crimson;
+        const relationColor = edgeColorForRelation(edge.relation, this.edgeRelationColors);
+        const edgeColor = relationColor;
+        const unselectedColor = isLightTheme ? (theme.onSurface || edgeColor) : edgeColor;
 
         const baseAlpha = sameZone ? 0.04 + strength * 0.06 : 0.03 + strength * 0.05;
         let alpha = isDimmed ? (isLightTheme ? 0.012 : 0.01) : (isConnectedToSelection ? 0.35 + strength * 0.25 : baseAlpha);
@@ -2174,7 +2165,7 @@ export class GraphRenderer {
 
         for (const node of this.nodes) {
             const baseRadius = this._nodeVisualRadius(node);
-            const color = isLightTheme ? (this.colors[node.type] || this.colors.event) : (GALAXY_COLORS[node.type] || GALAXY_COLORS.default);
+            const color = this.colors[node.type] || this.colors.default || this.colors.event;
             const isSelected = node === this.selectedNode;
             const isHovered = node === this.hoveredNode;
             const isDimmed = focus.selectedNode && !focus.connectedNodes.has(node);
@@ -2187,9 +2178,9 @@ export class GraphRenderer {
             const scope = normalizeMemoryScope(node.raw?.scope);
             const outlineColor = scope.layer === 'pov'
                 ? (scope.ownerType === 'user'
-                    ? SCOPE_OUTLINE_COLORS.user
-                    : SCOPE_OUTLINE_COLORS.character)
-                : SCOPE_OUTLINE_COLORS.objective;
+                    ? this.scopeColors.user
+                    : this.scopeColors.character)
+                : this.scopeColors.objective;
 
             ctx.save();
             if (isDimmed) ctx.globalAlpha = 0.2;
@@ -2208,7 +2199,7 @@ export class GraphRenderer {
                 if (isSelected) {
                     ctx.beginPath();
                     ctx.arc(node.x, node.y, r + 8.2, 0, Math.PI * 2);
-                    ctx.strokeStyle = colorWithAlpha('#dbeafe', 0.22);
+                    ctx.strokeStyle = colorWithAlpha(color, 0.18);
                     ctx.lineWidth = 0.75;
                     ctx.stroke();
                 }
@@ -2223,7 +2214,7 @@ export class GraphRenderer {
             ctx.fill();
 
             ctx.strokeStyle = isSelected
-                ? colorWithAlpha('#eef6ff', 0.72)
+                ? colorWithAlpha(color, 0.72)
                 : colorWithAlpha(outlineColor, isHovered ? 0.58 : 0.38);
             ctx.lineWidth = isSelected ? 1.15 : (isHovered ? 0.95 : 0.65);
             ctx.stroke();
@@ -2255,14 +2246,17 @@ export class GraphRenderer {
                     ctx.beginPath();
                     roundRectPath(ctx, pillX, pillY, pillW, pillH, 5);
                     ctx.fillStyle = isSelected
-                        ? 'rgba(8, 10, 16, 0.64)'
-                        : 'rgba(8, 10, 16, 0.52)';
+                        ? colorWithAlpha((THEMES[this.themeName] || THEMES.crimson).surface || '#131316', 0.78)
+                        : colorWithAlpha((THEMES[this.themeName] || THEMES.crimson).surface || '#131316', 0.62);
                     ctx.fill();
-                    ctx.strokeStyle = 'rgba(238, 246, 255, 0.09)';
+                    ctx.strokeStyle = colorWithAlpha(color, 0.16);
                     ctx.lineWidth = 1;
                     ctx.stroke();
                 }
-                ctx.fillStyle = `rgba(218,229,242,${isHovered || isSelected ? 0.88 : 0.52})`;
+                ctx.fillStyle = colorWithAlpha(
+                    (THEMES[this.themeName] || THEMES.crimson).onSurface || '#dae5f2',
+                    isHovered || isSelected ? 0.88 : 0.52,
+                );
                 ctx.fillText(labelDraw, node.x, node.y + r + 14);
             }
             ctx.restore();
@@ -2283,6 +2277,7 @@ export class GraphRenderer {
         const phase = reducedMotion ? 0.55 : (Math.sin(progress * Math.PI * 4) + 1) / 2;
         const fade = Math.max(0, 1 - progress);
         const kind = highlight.kind || 'recall';
+        const transientColors = this.transientHighlightColors || getTransientHighlightColors(this.themeName);
         if (kind === 'extracted') {
             const birth = reducedMotion ? 1 : Math.min(1, progress / 0.42);
             return {
@@ -2291,7 +2286,7 @@ export class GraphRenderer {
                 phase,
                 progress,
                 fade,
-                color: '#b79cff',
+                color: transientColors.extracted,
             };
         }
         if (kind === 'mixed') {
@@ -2301,7 +2296,7 @@ export class GraphRenderer {
                 phase,
                 progress,
                 fade,
-                color: phase > 0.5 ? '#7cf8ff' : '#b79cff',
+                color: phase > 0.5 ? transientColors.mixedA : transientColors.mixedB,
             };
         }
         return {
@@ -2310,7 +2305,7 @@ export class GraphRenderer {
             phase,
             progress,
             fade,
-            color: '#7cf8ff',
+            color: transientColors.recall,
         };
     }
 
@@ -2321,6 +2316,7 @@ export class GraphRenderer {
         const phase = pulse.phase;
         const fade = pulse.fade;
         const kind = highlight.kind || 'recall';
+        const transientColors = this.transientHighlightColors || getTransientHighlightColors(this.themeName);
         const drawThinPulse = (color, offset, alphaScale = 1) => {
             const pulseAmount = reducedMotion ? 0.2 : phase;
             const ringRadius = radius + offset + pulseAmount * 2.4;
@@ -2334,18 +2330,18 @@ export class GraphRenderer {
 
         ctx.beginPath();
         ctx.arc(node.x, node.y, radius + 1.4 + phase * 1.2, 0, Math.PI * 2);
-        ctx.strokeStyle = colorWithAlpha(pulse.color || '#7cf8ff', (0.2 + phase * 0.16) * fade);
+        ctx.strokeStyle = colorWithAlpha(pulse.color || transientColors.recall, (0.2 + phase * 0.16) * fade);
         ctx.lineWidth = 0.8 + phase * 0.28;
         ctx.stroke();
 
         if (kind === 'mixed') {
-            drawThinPulse('#7cf8ff', 3.8, 0.55);
-            drawThinPulse('#b79cff', 5.6, 0.42);
+            drawThinPulse(transientColors.mixedA, 3.8, 0.55);
+            drawThinPulse(transientColors.mixedB, 5.6, 0.42);
         } else if (kind === 'extracted') {
-            drawThinPulse('#b79cff', 3.6, 0.5);
-            drawThinPulse('#75ffb1', 5.4, 0.28);
+            drawThinPulse(transientColors.extracted, 3.6, 0.5);
+            drawThinPulse(transientColors.created, 5.4, 0.28);
         } else {
-            drawThinPulse('#7cf8ff', 4.0, 0.48);
+            drawThinPulse(transientColors.recall, 4.0, 0.48);
         }
     }
 
@@ -2426,11 +2422,11 @@ export class GraphRenderer {
                 Math.max(width, height) * 0.8,
             ],
             [
-                [0, '#0a0a10'],
-                [0.5, '#08080d'],
-                [1, '#06060a'],
+                [0, colorWithAlpha(theme.primary || '#e94560', 0.075)],
+                [0.5, theme.surfaceLowest || theme.surfaceLow || '#08080d'],
+                [1, theme.surface || theme.surfaceLowest || '#06060a'],
             ],
-            '#06060a'
+            theme.surfaceLowest || '#06060a'
         );
         ctx.fillRect(0, 0, width, height);
     }
