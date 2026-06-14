@@ -4,6 +4,7 @@
     "build:native:wasm": "node scripts/build-native-wasm.mjs",
     "test:p0": "node tests/p0-regressions.mjs",
     "test:panel-bridge": "node tests/panel-bridge.mjs",
+    "test:panel-ena-debug": "node tests/panel-ena-debug.mjs",
     "test:recall-inject-decoupling": "node tests/recall-inject-decoupling.mjs",
     "test:recall-reapply-block": "node tests/recall-reapply-block.mjs",
     "test:triviumdb-poc": "node tests/triviumdb-poc.mjs",
