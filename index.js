@@ -291,12 +291,12 @@ import {
   resolveRecallInputController,
   runRecallController,
 } from "./retrieval/recall-controller.js";
-import { createRecallMessageUiController } from "./ui/recall-message-ui-controller.js";
+import { createRecallMessageUiController } from "./ui/recall-message-ui-controller.js?v=recall-tabs-v4";
 import {
   createRecallCardElement,
   openRecallSidebar,
   updateRecallCardData,
-} from "./ui/recall-message-ui.js";
+} from "./ui/recall-message-ui.js?v=recall-tabs-v4";
 import {
   buildPersistedRecallRecord,
   bumpPersistedRecallGenerationCount,

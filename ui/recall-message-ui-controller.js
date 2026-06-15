@@ -561,8 +561,9 @@ function refreshPersistedRecallMessageUi() {
       ...callbacks,
       estimateTokens: deps.estimateTokens,
     };
+    let shouldCreateCard = !currentCard;
     if (currentCard) {
-      deps.updateRecallCardData(currentCard, record || {}, {
+      const updated = deps.updateRecallCardData(currentCard, record || {}, {
         plotRecord,
         userMessageText: displayUserMessageText,
         userInputDisplayMode: recallCardUserInputDisplayMode,
@@ -570,7 +571,13 @@ function refreshPersistedRecallMessageUi() {
         themeName,
         callbacks: cardCallbacks,
       });
-    } else {
+      if (updated === false) {
+        cleanupRecallCardElement(currentCard);
+        shouldCreateCard = true;
+      }
+    }
+
+    if (shouldCreateCard) {
       const card = deps.createRecallCardElement({
         messageIndex,
         record: record || {},
