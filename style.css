@@ -6221,6 +6221,8 @@
 }
 
 .bme-recall-tab {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -6232,6 +6234,7 @@
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  pointer-events: auto;
   transition:
     background 0.15s,
     border-color 0.15s,

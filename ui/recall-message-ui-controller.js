@@ -1,4 +1,7 @@
-import { readStructuredPlotRecordFromMessage } from "../ena-planner/planner-plot-history.js";
+import {
+  hashPlannerPlotInput,
+  readStructuredPlotRecordFromMessage,
+} from "../ena-planner/planner-plot-history.js";
 import { t } from "../i18n/index.js";
 
 export function createRecallMessageUiController(deps = {}) {
@@ -190,6 +193,20 @@ function editMessageUserInputText(messageIndex, nextUserInputText) {
     }
     if (typeof message.extra.current_display_text === "string") {
       message.extra.current_display_text = normalizedText;
+    }
+    const plotRecord = message.extra.st_bme_plot;
+    if (plotRecord && typeof plotRecord === "object") {
+      plotRecord.rawUserInput = normalizedText;
+      plotRecord.inputHash = hashPlannerPlotInput(normalizedText);
+      plotRecord.userInputEditedAt = Date.now();
+    }
+    const persistedRecall = message.extra.bme_recall;
+    if (persistedRecall && typeof persistedRecall === "object") {
+      persistedRecall.recallInput = normalizedText;
+      persistedRecall.userInputEditedAt = Date.now();
+      if (recallMayBeStale) {
+        persistedRecall.recallMayBeStale = true;
+      }
     }
   }
 
@@ -537,6 +554,9 @@ function refreshPersistedRecallMessageUi() {
         `.bme-recall-card[data-message-index="${messageIndex}"]`,
       ) || null;
 
+    const displayUserMessageText = String(
+      plotRecord?.rawUserInput || record?.recallInput || message.mes || "",
+    );
     const cardCallbacks = {
       ...callbacks,
       estimateTokens: deps.estimateTokens,
@@ -544,7 +564,7 @@ function refreshPersistedRecallMessageUi() {
     if (currentCard) {
       deps.updateRecallCardData(currentCard, record || {}, {
         plotRecord,
-        userMessageText: message.mes || "",
+        userMessageText: displayUserMessageText,
         userInputDisplayMode: recallCardUserInputDisplayMode,
         graph: getCurrentGraphValue(),
         themeName,
@@ -555,7 +575,7 @@ function refreshPersistedRecallMessageUi() {
         messageIndex,
         record: record || {},
         plotRecord,
-        userMessageText: message.mes || "",
+        userMessageText: displayUserMessageText,
         userInputDisplayMode: recallCardUserInputDisplayMode,
         graph: getCurrentGraphValue(),
         themeName,

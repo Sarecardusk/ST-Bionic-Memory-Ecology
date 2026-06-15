@@ -2171,6 +2171,64 @@ async function testRecallCardSupportsManagedUserInputEditing() {
   }
 }
 
+async function testRecallCardEditSyncsPlannerAndRecallRawInput() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "old raw\n\n<plot>planner text</plot>",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "[Memory - Recalled]\nline-1",
+          selectedNodeIds: ["n1"],
+          recallInput: "old raw",
+          boundUserFloorText: "old raw\n\n<plot>planner text</plot>",
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord({
+          rawUserInput: "old raw",
+          plotText: "<plot>planner text</plot>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    let card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(card.querySelector(".bme-recall-user-text")?.textContent, "old raw");
+
+    card.querySelector(".bme-recall-user-edit-btn")?.click();
+    const textarea = card.querySelector(".bme-recall-user-edit-textarea");
+    textarea.value = "new raw";
+    await card.querySelector(".bme-recall-user-edit-action.primary")?.dispatchEvent({
+      type: "click",
+      stopPropagation() {},
+    });
+
+    assert.equal(chat[0].mes, "new raw");
+    assert.equal(chat[0].extra.st_bme_plot.rawUserInput, "new raw");
+    assert.equal(chat[0].extra.bme_recall.recallInput, "new raw");
+    assert.equal(chat[0].extra.bme_recall.recallMayBeStale, true);
+
+    harness.api.refreshPersistedRecallMessageUi();
+    card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(
+      card.querySelector(".bme-recall-user-text")?.textContent,
+      "new raw",
+      "refresh should not roll back to the old plot rawUserInput",
+    );
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
 async function testRecallCardShowsEnaSourceChipAndExpandedPreview() {
   const chat = [
     {
@@ -2324,6 +2382,94 @@ async function testRecallCardWithRecallAndPlotShowsBothTabs() {
     assert.equal(Boolean(plannerTab), true, "planner tab should be present");
     assert.equal(recallTab.hidden, false);
     assert.equal(plannerTab.hidden, false);
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardWithPlotShowsRawUserInputOnly() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "raw user input\n\n<plot>hidden planner guidance</plot>\n\n<note>hidden planner note</note>",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "recall-0",
+          selectedNodeIds: ["n1"],
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord({
+          rawUserInput: "raw user input",
+          plotText: "<plot>hidden planner guidance</plot>\n<note>hidden planner note</note>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    assert.equal(
+      card.querySelector(".bme-recall-user-text")?.textContent,
+      "raw user input",
+    );
+    assert.ok(!card.querySelector(".bme-recall-user-text")?.textContent.includes("<plot>"));
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallTabWithPlotUsesPlainInjectionPreview() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input\n\n<plot>plan</plot>",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "[Memory - Recalled]\n普通召回注入",
+          selectedNodeIds: ["n1"],
+          recallSource: "planner-handoff",
+          hookName: "ena-planner",
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord({
+          rawUserInput: "plot user input",
+          plotText: "<plot>plan</plot>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    card.querySelector(".bme-recall-tab-recall")?.click();
+
+    const sourceTag = card.querySelector(".bme-recall-meta-tag.is-ena");
+    assert.equal(sourceTag?.textContent, "🧭 ENA Planner");
+    const preview = card.querySelector(".bme-recall-injection-preview");
+    assert.equal(Boolean(preview), true);
+    assert.equal(preview.classList.contains("is-ena"), false);
+    assert.equal(preview.classList.contains("expanded"), false);
+    assert.ok(
+      preview.querySelector(".bme-recall-injection-toggle")?.innerHTML.includes("注入预览"),
+      "recall tab preview should use the plain injection preview label",
+    );
+    assert.equal(card.querySelector(".bme-recall-injection-note"), null);
   } finally {
     harness.restoreGlobals();
   }
@@ -9087,9 +9233,12 @@ await testRecallCardExpandedContentRerendersAfterRecordUpdate();
 await testRecallCardUserTextRefreshesWithoutCardRecreate();
 await testRecallCardDisplayModeToggleRestoresOriginalUserText();
 await testRecallCardSupportsManagedUserInputEditing();
+await testRecallCardEditSyncsPlannerAndRecallRawInput();
 await testRecallCardShowsEnaSourceChipAndExpandedPreview();
 await testRecallCardBeautifiesInjectionPreviewSections();
 await testRecallCardWithRecallAndPlotShowsBothTabs();
+await testRecallCardWithPlotShowsRawUserInputOnly();
+await testRecallTabWithPlotUsesPlainInjectionPreview();
 await testRecallCardDefaultsToPlannerTabWhenPlotTextExists();
 await testRecallCardActiveTabClickExpandsCurrentPane();
 await testRecallCardCanSwitchToRecallTab();

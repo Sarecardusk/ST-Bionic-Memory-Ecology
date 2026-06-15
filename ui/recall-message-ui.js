@@ -320,11 +320,11 @@ function appendInjectionPreviewContent(container, injectionText = "") {
   flushTable();
 }
 
-function buildInjectionPreviewBlock(record = {}) {
+function buildInjectionPreviewBlock(record = {}, { forcePlain = false } = {}) {
   const injectionText = String(record?.injectionText || "").trim();
   if (!injectionText) return null;
 
-  const isEna = isPlannerRecallSource(record);
+  const isEna = !forcePlain && isPlannerRecallSource(record);
   const wrap = el(
     "div",
     `bme-recall-injection-preview${isEna ? " is-ena" : ""}`,
@@ -539,6 +539,7 @@ function buildRecallPane({
   themeName,
   activeCallbacks,
   messageIndex,
+  hasPlot = false,
 }) {
   const pane = el("div", "bme-recall-pane bme-recall-recall-pane");
 
@@ -607,7 +608,9 @@ function buildRecallPane({
     }
     pane.appendChild(meta);
 
-    const injectionPreviewBlock = buildInjectionPreviewBlock(activeRecord || {});
+    const injectionPreviewBlock = buildInjectionPreviewBlock(activeRecord || {}, {
+      forcePlain: hasPlot,
+    });
     if (injectionPreviewBlock) {
       pane.appendChild(injectionPreviewBlock);
     }
@@ -844,6 +847,7 @@ export function createRecallCardElement({
         themeName,
         activeCallbacks,
         messageIndex,
+        hasPlot,
       });
     }
     body.appendChild(pane);
@@ -976,26 +980,30 @@ export function createRecallCardElement({
     }
   });
 
-  // Tab click: expand + switch tab
-  recallTab.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    switchTab("recall");
-  });
+  function handleRecallTabClick(event, tabName) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    switchTab(tabName);
+  }
 
-  plannerTab.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    switchTab("planner");
-  });
+  // Direct listeners cover normal button clicks and the test harness DOM.
+  // The capture delegate below covers real ST message wrappers that may retarget
+  // or intercept nested tab children before the button listener bubbles.
+  recallTab.addEventListener("click", (event) => handleRecallTabClick(event, "recall"));
+  plannerTab.addEventListener("click", (event) => handleRecallTabClick(event, "planner"));
 
-  // 点击 bar 非 tab 区域时，仅展开/折叠当前 tab（折叠时 tab 本身仍可切换）
+  // 点击 bar：tab 区域切换并展开；非 tab 区域仅展开/折叠当前 tab。
+  // 用 capture 委托处理，避免真实 ST 消息层/子元素吞掉按钮点击导致“点了没反应”。
   bar.addEventListener("click", (e) => {
     const closestTab =
       e.target && typeof e.target.closest === "function"
         ? e.target.closest(".bme-recall-tab")
         : null;
-    if (closestTab) return;
+    if (closestTab) {
+      if (closestTab === recallTab) handleRecallTabClick(e, "recall");
+      if (closestTab === plannerTab) handleRecallTabClick(e, "planner");
+      return;
+    }
     e.stopPropagation();
     const isExpanded = card.classList.toggle("expanded");
     if (isExpanded) {
@@ -1007,7 +1015,7 @@ export function createRecallCardElement({
       expandedRenderSignature = "";
       card.dataset.expandedRenderSignature = "";
     }
-  });
+  }, true);
 
   applyCardRuntimeData({}, { skipExpandedRerender: true });
   setUserInputEditMode(false);
