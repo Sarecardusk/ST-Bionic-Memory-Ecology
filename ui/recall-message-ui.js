@@ -591,11 +591,12 @@ function buildRecallPane({
     if (typeof HTMLElement === "undefined" || !(meta instanceof HTMLElement)) {
       meta.textContent = metaText;
     }
-    if (sourceLabel) {
+    const showEnaSource = !hasPlot && isPlannerRecallSource(activeRecord);
+    if (sourceLabel && !hasPlot) {
       const sourceTag = el(
         "span",
-        `bme-recall-meta-tag${isPlannerRecallSource(activeRecord) ? " is-ena" : ""}`,
-        isPlannerRecallSource(activeRecord) ? `🧭 ${sourceLabel}` : sourceLabel,
+        `bme-recall-meta-tag${showEnaSource ? " is-ena" : ""}`,
+        showEnaSource ? `🧭 ${sourceLabel}` : sourceLabel,
       );
       meta.appendChild(sourceTag);
     }
@@ -980,31 +981,95 @@ export function createRecallCardElement({
     }
   });
 
-  function handleRecallTabClick(event, tabName) {
+  const BAR_INTERACTION_TYPES = new Set(["click", "pointerup", "touchend"]);
+  let lastPointerHandledAt = 0;
+  let lastPointerHandledType = "";
+  let lastPointerHandledTarget = null;
+
+  function isBarInteractionEvent(type = "") {
+    return BAR_INTERACTION_TYPES.has(String(type || "").toLowerCase());
+  }
+
+  function markPointerHandled(event) {
+    if (event.type === "pointerup" || event.type === "touchend") {
+      lastPointerHandledAt = Date.now();
+      lastPointerHandledType = String(event.type || "");
+      lastPointerHandledTarget = resolveComparableInteractionTarget(event);
+    }
+  }
+
+  function shouldSkipDuplicatePointerEvent(event) {
+    const type = String(event?.type || "");
+    if (type !== "click" && type !== "touchend") return false;
+    if (!lastPointerHandledAt || Date.now() - lastPointerHandledAt >= 750) return false;
+    const target = resolveComparableInteractionTarget(event);
+    if (!target || target !== lastPointerHandledTarget) return false;
+    // Suppress the touchend + synthetic click that can follow pointerup on real touch devices.
+    return type === "click" || (type === "touchend" && lastPointerHandledType === "pointerup");
+  }
+
+  function handleTabInteraction(event, tabName) {
     event?.preventDefault?.();
     event?.stopPropagation?.();
     switchTab(tabName);
+    markPointerHandled(event);
+  }
+
+  function resolveTabFromBarEvent(event) {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : null;
+    if (Array.isArray(path)) {
+      for (const node of path) {
+        if (node === bar) break;
+        if (
+          node &&
+          node.nodeType === 1 &&
+          typeof node.classList?.contains === "function" &&
+          node.classList.contains("bme-recall-tab")
+        ) {
+          return node;
+        }
+      }
+    }
+    if (event.target && typeof event.target.closest === "function") {
+      return event.target.closest(".bme-recall-tab") || null;
+    }
+    return null;
+  }
+
+  function resolveComparableInteractionTarget(event) {
+    return resolveTabFromBarEvent(event) || event?.target || null;
   }
 
   // Direct listeners cover normal button clicks and the test harness DOM.
-  // The capture delegate below covers real ST message wrappers that may retarget
-  // or intercept nested tab children before the button listener bubbles.
-  recallTab.addEventListener("click", (event) => handleRecallTabClick(event, "recall"));
-  plannerTab.addEventListener("click", (event) => handleRecallTabClick(event, "planner"));
+  // pointerup/touchend delegates on the bar cover real ST touch/pen interactions
+  // where the host message wrapper may retarget or intercept events.
+  recallTab.addEventListener("click", (event) => handleTabInteraction(event, "recall"));
+  plannerTab.addEventListener("click", (event) => handleTabInteraction(event, "planner"));
 
   // 点击 bar：tab 区域切换并展开；非 tab 区域仅展开/折叠当前 tab。
-  // 用 capture 委托处理，避免真实 ST 消息层/子元素吞掉按钮点击导致“点了没反应”。
-  bar.addEventListener("click", (e) => {
-    const closestTab =
-      e.target && typeof e.target.closest === "function"
-        ? e.target.closest(".bme-recall-tab")
-        : null;
-    if (closestTab) {
-      if (closestTab === recallTab) handleRecallTabClick(e, "recall");
-      if (closestTab === plannerTab) handleRecallTabClick(e, "planner");
+  // 使用 bubble 阶段，避免 capture stopPropagation 阻断内部 button 的 fallback 行为。
+  function handleBarInteraction(event) {
+    if (!isBarInteractionEvent(event.type)) return;
+    if (shouldSkipDuplicatePointerEvent(event)) {
+      if (event.type === "click") {
+        lastPointerHandledAt = 0;
+        lastPointerHandledType = "";
+        lastPointerHandledTarget = null;
+      }
       return;
     }
-    e.stopPropagation();
+
+    const tab = resolveTabFromBarEvent(event);
+    if (tab) {
+      if (tab === recallTab) handleTabInteraction(event, "recall");
+      if (tab === plannerTab) handleTabInteraction(event, "planner");
+      return;
+    }
+
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    markPointerHandled(event);
+
     const isExpanded = card.classList.toggle("expanded");
     if (isExpanded) {
       applyCardRuntimeData({}, { skipExpandedRerender: true });
@@ -1015,7 +1080,11 @@ export function createRecallCardElement({
       expandedRenderSignature = "";
       card.dataset.expandedRenderSignature = "";
     }
-  }, true);
+  }
+
+  bar.addEventListener("click", handleBarInteraction);
+  bar.addEventListener("pointerup", handleBarInteraction);
+  bar.addEventListener("touchend", handleBarInteraction);
 
   applyCardRuntimeData({}, { skipExpandedRerender: true });
   setUserInputEditMode(false);

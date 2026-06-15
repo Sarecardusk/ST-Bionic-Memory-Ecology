@@ -6049,6 +6049,8 @@
 /* --- Recall Message Card --- */
 
 .bme-recall-card {
+  position: relative;
+  z-index: 5;
   margin-top: 8px;
   background: var(--bme-surface-container, #1f1f22);
   border: 1px solid var(--bme-border, rgba(255, 255, 255, 0.08));
@@ -6201,7 +6203,10 @@
 
 /* --- Recall Bar (collapse/expand trigger) --- */
 
-.bme-recall-bar {
+.bme-recall-bar,
+.bme-recall-tabs {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -6222,7 +6227,7 @@
 
 .bme-recall-tab {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -6240,6 +6245,10 @@
     border-color 0.15s,
     color 0.15s;
   white-space: nowrap;
+}
+
+.bme-recall-tab > * {
+  pointer-events: none;
 }
 
 .bme-recall-tab:hover {

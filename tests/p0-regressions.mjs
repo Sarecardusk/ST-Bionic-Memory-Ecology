@@ -1069,6 +1069,7 @@ class FakeClassList {
 class FakeElement {
   constructor(tagName, ownerDocument) {
     this.tagName = String(tagName || "div").toUpperCase();
+    this.nodeType = 1;
     this.ownerDocument = ownerDocument;
     this.children = [];
     this.parentElement = null;
@@ -1171,29 +1172,94 @@ class FakeElement {
     this.parentElement?.removeChild(this);
   }
 
-  addEventListener(type, handler) {
+  addEventListener(type, handler, options) {
     const key = String(type || "");
     const handlers = this.eventListeners.get(key) || [];
+    const capture =
+      (typeof options === "boolean" && options) ||
+      (options && typeof options === "object" && options.capture === true);
+    handler._capture = capture === true;
     handlers.push(handler);
     this.eventListeners.set(key, handlers);
   }
 
   dispatchEvent(event = {}) {
-    const key = String(event.type || "");
-    const handlers = this.eventListeners.get(key) || [];
-    for (const handler of handlers) {
-      handler({
-        stopPropagation() {},
-        preventDefault() {},
-        ...event,
-        target: this,
-        currentTarget: this,
-      });
+    const type = String(event.type || "");
+    const path = [];
+    for (let node = this; node; node = node.parentElement) {
+      path.push(node);
+      if (node === this.ownerDocument?.body) break;
+    }
+
+    let stopped = false;
+    const ev = {
+      stopPropagation() {
+        stopped = true;
+      },
+      preventDefault() {},
+      composedPath() {
+        return path.slice();
+      },
+      target: this,
+      currentTarget: null,
+      type,
+      ...event,
+    };
+
+    // capture phase
+    for (let i = path.length - 1; i >= 0 && !stopped; i--) {
+      const current = path[i];
+      ev.currentTarget = current;
+      const handlers = (current.eventListeners.get(type) || []).filter(
+        (h) => h._capture === true,
+      );
+      for (const handler of handlers) handler(ev);
+    }
+
+    // bubble phase
+    for (let i = 0; i < path.length && !stopped; i++) {
+      const current = path[i];
+      ev.currentTarget = current;
+      const handlers = (current.eventListeners.get(type) || []).filter(
+        (h) => h._capture !== true,
+      );
+      for (const handler of handlers) handler(ev);
     }
   }
 
   click() {
     this.dispatchEvent({ type: "click" });
+  }
+
+  closest(selector) {
+    if (!selector) return null;
+    const classMatch = /^\.([A-Za-z0-9_-]+)$/.exec(selector);
+    if (classMatch) {
+      const name = classMatch[1];
+      let node = this;
+      while (node) {
+        if (node.nodeType === 1 && node.classList?.contains(name)) return node;
+        node = node.parentElement;
+      }
+      return null;
+    }
+    const idMatch = /^#([A-Za-z0-9_-]+)$/.exec(selector);
+    if (idMatch) {
+      const name = idMatch[1];
+      let node = this;
+      while (node) {
+        if (node.id === name) return node;
+        node = node.parentElement;
+      }
+      return null;
+    }
+    const tagName = String(selector).trim().toUpperCase();
+    let node = this;
+    while (node) {
+      if (node.tagName === tagName) return node;
+      node = node.parentElement;
+    }
+    return null;
   }
 
   get isConnected() {
@@ -2460,16 +2526,121 @@ async function testRecallTabWithPlotUsesPlainInjectionPreview() {
     card.querySelector(".bme-recall-tab-recall")?.click();
 
     const sourceTag = card.querySelector(".bme-recall-meta-tag.is-ena");
-    assert.equal(sourceTag?.textContent, "🧭 ENA Planner");
+    assert.equal(sourceTag, null, "recall pane should not show ENA source chip when plot also exists");
     const preview = card.querySelector(".bme-recall-injection-preview");
     assert.equal(Boolean(preview), true);
     assert.equal(preview.classList.contains("is-ena"), false);
     assert.equal(preview.classList.contains("expanded"), false);
+    const toggleHTML = preview.querySelector(".bme-recall-injection-toggle")?.innerHTML || "";
     assert.ok(
-      preview.querySelector(".bme-recall-injection-toggle")?.innerHTML.includes("注入预览"),
+      toggleHTML.includes("注入预览"),
       "recall tab preview should use the plain injection preview label",
     );
+    assert.equal(
+      toggleHTML.includes("ENA"),
+      false,
+      "recall tab preview label must not contain ENA",
+    );
     assert.equal(card.querySelector(".bme-recall-injection-note"), null);
+  } finally {
+    harness.restoreGlobals();
+  }
+}
+
+async function testRecallCardTabInteractionsSupportPointerAndChildTargets() {
+  const chat = [
+    {
+      is_user: true,
+      mes: "plot user input\n\n<plot>plan</plot>",
+      extra: {
+        bme_recall: buildPersistedRecallRecord({
+          injectionText: "[Memory - Recalled]\n普通召回注入",
+          selectedNodeIds: ["n1"],
+          recallSource: "planner-handoff",
+          hookName: "ena-planner",
+          nowIso: "2026-01-01T00:00:00.000Z",
+        }),
+        st_bme_plot: buildPlotRecord({
+          rawUserInput: "plot user input",
+          plotText: "<plot>plan</plot>",
+        }),
+      },
+    },
+  ];
+  const harness = await createRecallUiHarness({ chat });
+  const messageElement = createMessageElement(harness.document, 0, {
+    stableId: true,
+    withMesBlock: true,
+    isUser: true,
+  });
+  harness.chatRoot.appendChild(messageElement);
+
+  try {
+    harness.api.refreshPersistedRecallMessageUi();
+    const card = harness.chatRoot.querySelector(".bme-recall-card");
+    const recallTab = card.querySelector(".bme-recall-tab-recall");
+    const plannerTab = card.querySelector(".bme-recall-tab-planner");
+    const recallTitle = recallTab.querySelector(".bme-recall-tab-title");
+    const plannerBadge = plannerTab.querySelector(".bme-recall-tab-badge");
+
+    assert.equal(card.dataset.activeTab, "planner", "default should be planner tab");
+    assert.equal(card.classList.contains("expanded"), false, "card should start collapsed");
+
+    // Clicking a child element of the recall tab (title) should switch tabs.
+    recallTitle.click();
+    assert.equal(
+      card.dataset.activeTab,
+      "recall",
+      "clicking recall tab title should switch to recall",
+    );
+    assert.equal(card.classList.contains("expanded"), true, "switching tab should expand card");
+    assert.equal(recallTab.classList.contains("active"), true);
+
+    // pointerup on a child element of the planner tab (badge) should switch back.
+    plannerBadge.dispatchEvent({ type: "pointerup", pointerType: "touch" });
+    assert.equal(
+      card.dataset.activeTab,
+      "planner",
+      "pointerup on planner badge should switch to planner",
+    );
+    assert.equal(card.classList.contains("expanded"), true);
+
+    // touchend on the recall tab button should switch again.
+    recallTab.dispatchEvent({ type: "touchend" });
+    assert.equal(
+      card.dataset.activeTab,
+      "recall",
+      "touchend on recall tab should switch to recall",
+    );
+
+    // Non-tab bar area (expand arrow) should collapse.
+    const arrow = card.querySelector(".bme-recall-expand-arrow");
+    arrow.dispatchEvent({ type: "pointerup" });
+    assert.equal(
+      card.classList.contains("expanded"),
+      false,
+      "pointerup on expand arrow should collapse",
+    );
+
+    // A real touch interaction can produce pointerup -> touchend -> click.
+    // It should toggle only once, not expand and immediately collapse again.
+    arrow.dispatchEvent({ type: "pointerup", pointerType: "touch" });
+    arrow.dispatchEvent({ type: "touchend" });
+    arrow.dispatchEvent({ type: "click" });
+    assert.equal(
+      card.classList.contains("expanded"),
+      true,
+      "combined pointer/touch/click sequence should toggle only once",
+    );
+
+    plannerBadge.dispatchEvent({ type: "pointerup", pointerType: "touch" });
+    plannerBadge.dispatchEvent({ type: "touchend" });
+    plannerBadge.dispatchEvent({ type: "click" });
+    assert.equal(
+      card.dataset.activeTab,
+      "planner",
+      "combined pointer/touch/click sequence on tab child should still switch once",
+    );
   } finally {
     harness.restoreGlobals();
   }
@@ -9239,6 +9410,7 @@ await testRecallCardBeautifiesInjectionPreviewSections();
 await testRecallCardWithRecallAndPlotShowsBothTabs();
 await testRecallCardWithPlotShowsRawUserInputOnly();
 await testRecallTabWithPlotUsesPlainInjectionPreview();
+await testRecallCardTabInteractionsSupportPointerAndChildTargets();
 await testRecallCardDefaultsToPlannerTabWhenPlotTextExists();
 await testRecallCardActiveTabClickExpandsCurrentPane();
 await testRecallCardCanSwitchToRecallTab();
