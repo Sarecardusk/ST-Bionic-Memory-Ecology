@@ -10,6 +10,10 @@ import { deriveVectorSpace } from "./vector-space.js";
 export const AUTHORITY_VECTOR_MODE = "authority";
 export const AUTHORITY_VECTOR_SOURCE = "authority-trivium";
 
+export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
+export const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
+export const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
+
 const DEFAULT_AUTHORITY_TRIVIUM_DATABASE = "st_bme_vectors";
 const DEFAULT_AUTHORITY_VECTOR_CHUNK_SIZE = 1000;
 const MAX_AUTHORITY_VECTOR_CHUNK_SIZE = 2000;
@@ -704,7 +708,47 @@ export class AuthorityTriviumHttpClient {
   }
 
   async bmeVectorApply(payload = {}) {
-    return await this.requestV06("/bme/vector-apply", payload);
+    // Phase C: call the BME companion module transaction via the generic DOA
+    // module host. The module host requires idempotencyKey on the request envelope when the manifest
+    // declares idempotency:required; requestModuleTransaction pulls the key
+    // from options.idempotencyKey OR input.idempotencyKey automatically.
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_VECTOR_APPLY_TRANSACTION,
+        input,
+        {
+          ...(input.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
+        },
+      );
+      // The module host returns { ok, moduleId, transaction, result, ... }.
+      // The BME adapter expects the inner result shape
+      // ({ ok, manifest, upsert, links, ... }). Unwrap it.
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      if (error instanceof AuthorityHttpError) {
+        // Enrich module load errors so the frontend can say "BME companion
+        // module not loaded" rather than showing an opaque code. The DOA
+        // module error code lives in `payload.details.code`; the top-level
+        // `payload.code` is the generic AuthorityErrorCode.
+        const moduleErrorCode = String(error.payload?.details?.code || error.payload?.code || error.code || "");
+        if (moduleErrorCode === "module_not_loaded" || moduleErrorCode === "module_load_error" || moduleErrorCode === "module_not_found") {
+          throw new AuthorityHttpError(
+            `BME companion module '${BME_AUTHORITY_MODULE_ID}' is not loaded: ${error.message}`,
+            {
+              status: error.status,
+              code: moduleErrorCode,
+              category: error.category,
+              payload: error.payload,
+              path: `/modules/${BME_AUTHORITY_MODULE_ID}/transactions/${BME_VECTOR_APPLY_TRANSACTION}`,
+              protocol: AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
+            },
+          );
+        }
+      }
+      throw error;
+    }
   }
 }
 

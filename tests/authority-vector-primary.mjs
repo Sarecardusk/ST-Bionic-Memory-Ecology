@@ -628,4 +628,120 @@ assert.equal(isAuthorityVectorConfig(config), true);
   }
 }
 
+// Phase C: bmeVectorApply posts to /modules/third-party.st-bme/transactions/vector.apply
+// (not /bme/vector-apply) when using a real AuthorityHttpClient with mock fetch.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-bme" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/vector.apply")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "vector.apply",
+            result: {
+              ok: true,
+              database: body.input?.database || "st_bme_vectors",
+              manifest: { database: body.input?.database || "st_bme_vectors", exists: true },
+              upsert: { successCount: body.input?.items?.length || 0, failureCount: 0 },
+              links: { successCount: body.input?.links?.length || 0, failureCount: 0 },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { AuthorityHttpClient, AuthorityHttpError } = await import("../runtime/authority-http-client.js");
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeVectorApply({
+    database: "st_bme_vectors",
+    items: [{ externalId: "node-a", vector: [1, 2, 3], payload: { text: "hello" } }],
+    links: [{ fromId: "node-a", toId: "node-b", label: "related" }],
+    idempotencyKey: "test-key-1",
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/vector-apply.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/vector.apply"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify idempotencyKey is on the envelope, not just inside input.
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, "test-key-1");
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.upsert.successCount, 1);
+  assert.equal(result.links.successCount, 1);
+}
+
+// Phase C: bmeVectorApply enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-err" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeVectorApply({ items: [{ externalId: "a", vector: [1, 2, 3] }] });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "error should say not loaded");
+}
+
 console.log("authority-vector-primary tests passed");

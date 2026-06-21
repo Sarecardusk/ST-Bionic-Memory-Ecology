@@ -100,4 +100,144 @@ function jsonResponse(status, payload) {
   );
 }
 
+// Phase C: requestModuleTransaction posts to /modules/:moduleId/transactions/:transactionName
+// with an envelope body { input, idempotencyKey, options } and session headers.
+{
+  const calls = [];
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-mod" });
+      }
+      if (url.includes("/modules/third-party.st-bme/transactions/vector.apply")) {
+        return jsonResponse(200, {
+          ok: true,
+          moduleId: "third-party.st-bme",
+          transaction: "vector.apply",
+          result: { ok: true, upsert: { successCount: 2 }, links: { successCount: 1 } },
+        });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  const input = { database: "st_bme_vectors", items: [{ externalId: "a", vector: [1, 2, 3] }] };
+  const response = await client.requestModuleTransaction("third-party.st-bme", "vector.apply", input, {
+    idempotencyKey: "idem-xyz",
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/vector-apply.
+  const modCall = calls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/vector.apply"));
+  assert.ok(!modCall.url.includes("/bme/"));
+
+  // Verify the body envelope has input + idempotencyKey at the top level.
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.input.items.length, 1);
+  assert.equal(body.idempotencyKey, "idem-xyz");
+  assert.ok(!body.input.idempotencyKey, "idempotencyKey should be on envelope, not input");
+
+  // Verify session header is present.
+  assert.equal(modCall.options.headers[AUTHORITY_SESSION_HEADER], "sess-mod");
+
+  // Verify the response is the full DOA payload (caller unwraps .result).
+  assert.equal(response.ok, true);
+  assert.equal(response.moduleId, "third-party.st-bme");
+  assert.equal(response.result.upsert.successCount, 2);
+}
+
+// Phase C: requestModuleTransaction pulls idempotencyKey from input when options.idempotencyKey is absent.
+{
+  const calls = [];
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-2" });
+      }
+      if (url.includes("/modules/")) {
+        return jsonResponse(200, { ok: true, result: { ok: true } });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  const input = { idempotencyKey: "from-input", items: [] };
+  await client.requestModuleTransaction("third-party.st-bme", "vector.apply", input);
+
+  const modCall = calls.find((c) => c.url.includes("/modules/"));
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, "from-input", "idempotencyKey should be pulled from input.idempotencyKey");
+}
+
+// Phase C: module load errors are surfaced with the DOA error payload.
+// (Enrichment to say "BME companion module not loaded" happens in
+// AuthorityTriviumHttpClient.bmeVectorApply, tested in the vector adapter
+// test file.)
+{
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url) => {
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-err" });
+      }
+      if (url.includes("/modules/")) {
+        return jsonResponse(409, {
+          error: "Module not loaded: third-party.st-bme",
+          code: "validation_error",
+          category: "validation",
+          details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+        });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  let caught = null;
+  try {
+    await client.requestModuleTransaction("third-party.st-bme", "vector.apply", { items: [] });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.equal(caught.status, 409);
+  assert.equal(caught.payload.details.code, "module_not_loaded");
+}
+
+// Phase C blocker fix: session init body includes module.execute declarations.
+{
+  let sessionInitBody = null;
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith("/session/init")) {
+        sessionInitBody = JSON.parse(options.body);
+        return jsonResponse(200, { sessionToken: "sess-perms" });
+      }
+      return jsonResponse(200, { ok: true });
+    },
+  });
+  await client.requestJson("/data", { session: true, body: {} });
+
+  assert.ok(sessionInitBody, "session init body should have been sent");
+  const perms = sessionInitBody.declaredPermissions;
+  assert.ok(perms, "declaredPermissions must be present");
+  assert.ok(perms.modules, "modules permission must be declared");
+  assert.ok(Array.isArray(perms.modules.execute), "modules.execute must be an array");
+  assert.ok(perms.modules.execute.includes("third-party.st-bme:vector.manifest"), "must declare vector.manifest execute");
+  assert.ok(perms.modules.execute.includes("third-party.st-bme:vector.apply"), "must declare vector.apply execute");
+  // Existing permissions preserved.
+  assert.equal(perms.storage.kv, true);
+  assert.equal(perms.storage.blob, true);
+  assert.equal(perms.fs.private, true);
+  assert.equal(perms.sql.private, true);
+  assert.equal(perms.trivium.private, true);
+  assert.equal(perms.jobs.background, true);
+  assert.equal(perms.events.channels, true);
+}
+
 console.log("authority-http-client tests passed");

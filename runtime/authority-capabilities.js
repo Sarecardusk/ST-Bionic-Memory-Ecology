@@ -128,6 +128,8 @@ function normalizeHeaderName(name = "") {
   return String(name || "").trim().toLowerCase();
 }
 
+const BME_AUTHORITY_MODULE_ID_LOCAL = "third-party.st-bme";
+
 function buildDefaultSessionInitConfig(source = {}) {
   const config = source && typeof source === "object" && !Array.isArray(source) ? source : {};
   return {
@@ -142,6 +144,12 @@ function buildDefaultSessionInitConfig(source = {}) {
       trivium: { private: true },
       jobs: { background: true },
       events: { channels: true },
+      modules: {
+        execute: [
+          `${BME_AUTHORITY_MODULE_ID_LOCAL}:vector.manifest`,
+          `${BME_AUTHORITY_MODULE_ID_LOCAL}:vector.apply`,
+        ],
+      },
     },
     ...(config.uiLabel ? { uiLabel: String(config.uiLabel) } : {}),
   };
@@ -282,6 +290,9 @@ async function verifyAuthorityDataPlane(baseUrl, fetchImpl, headers, settings = 
       reason: "ok",
       lastError: "",
       status: currentStatus,
+      // Internal: authenticated headers for downstream /modules fetch.
+      // Not exposed on the public capability state.
+      _sessionHeaders: sessionHeaders,
     };
   }
 
@@ -315,12 +326,93 @@ async function verifyAuthorityDataPlane(baseUrl, fetchImpl, headers, settings = 
     reason: permissionReady ? "ok" : "permission-not-ready",
     lastError: permissionReady ? "" : "required Authority permissions are not granted",
     status: permissionStatus || currentStatus,
+    // Internal: authenticated headers for downstream /modules fetch.
+    // Not exposed on the public capability state.
+    _sessionHeaders: sessionHeaders,
   };
+}
+
+/**
+ * Phase C: fetch the generic `/modules` list to derive companion module
+ * readiness. Uses the authenticated session headers from data-plane
+ * verification so the call carries `x-authority-session-token`. Non-fatal:
+ * callers catch failures and fall back to legacy feature-based readiness.
+ *
+ * Returns a `moduleReadiness` object suitable for
+ * `normalizeAuthorityCapabilityState({ moduleReadiness })`, or `null` if
+ * the fetch fails or the response is not ok.
+ */
+async function fetchModuleReadiness(baseUrl, fetchImpl, sessionHeaders = {}) {
+  const response = await fetchImpl(`${baseUrl}/modules`, {
+    method: "GET",
+    headers: withJsonHeaders(sessionHeaders),
+  });
+  if (!response?.ok) {
+    return null;
+  }
+  const payload = await readResponsePayload(response);
+  return deriveModuleReadiness(payload);
 }
 
 export function normalizeAuthorityBaseUrl(baseUrl = DEFAULT_AUTHORITY_BASE_URL) {
   const normalized = String(baseUrl || DEFAULT_AUTHORITY_BASE_URL).trim() || DEFAULT_AUTHORITY_BASE_URL;
   return normalized.replace(/\/+$/, "");
+}
+
+/**
+ * BME companion module id as shipped in `.authority/module.json`.
+ * Used to look up the module record in the generic `/modules` list.
+ */
+export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
+const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
+const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
+
+/**
+ * Derive module readiness from a generic DOA `/modules` response.
+ *
+ * The `/modules` response shape is:
+ *   { modules: AuthorityModuleManifest[], count, records?: AuthorityModuleRecord[], recordCount? }
+ *
+ * A record is "loaded" when `record.status === 'loaded'`. The `/modules`
+ * list also carries executable manifests in `modules[]`; if a manifest is
+ * present there, the module is executable regardless of record status
+ * (built-in compiled modules don't always have a discovery record).
+ *
+ * For the BME module specifically, we additionally check that the manifest
+ * declares `vector.manifest` and `vector.apply` transactions.
+ *
+ * Returns a readiness object with `modulesReady`, `bmeModuleReady`,
+ * `bmeVectorManifestReady`, `bmeVectorApplyReady`.
+ */
+export function deriveModuleReadiness(modulesPayload = {}) {
+  const source = modulesPayload && typeof modulesPayload === "object" && !Array.isArray(modulesPayload) ? modulesPayload : {};
+  const records = Array.isArray(source.records) ? source.records : [];
+  const manifests = Array.isArray(source.modules) ? source.modules : [];
+
+  const modulesReady = records.length > 0 || manifests.length > 0;
+
+  // Find the BME module record (by moduleId). Prefer `loaded` status;
+  // if no record exists but the manifest is in `modules[]`, treat as
+  // executable (built-in compiled module).
+  const bmeRecord = records.find((record) => record?.moduleId === BME_AUTHORITY_MODULE_ID);
+  const bmeManifest = manifests.find((manifest) => manifest?.id === BME_AUTHORITY_MODULE_ID);
+
+  const bmeModuleReady = bmeRecord
+    ? bmeRecord.status === "loaded"
+    : Boolean(bmeManifest);
+
+  // Check transaction declarations on the manifest (from record or modules list).
+  const manifestForTxCheck = bmeRecord?.manifest || bmeManifest;
+  const transactions = manifestForTxCheck?.transactions || {};
+  const hasVectorManifest = Boolean(transactions[BME_VECTOR_MANIFEST_TRANSACTION]);
+  const hasVectorApply = Boolean(transactions[BME_VECTOR_APPLY_TRANSACTION]);
+
+  return {
+    modulesReady,
+    bmeModuleReady,
+    bmeVectorManifestReady: bmeModuleReady && hasVectorManifest,
+    bmeVectorApplyReady: bmeModuleReady && hasVectorApply,
+  };
 }
 
 export function normalizeAuthoritySettings(settings = {}) {
@@ -446,6 +538,8 @@ export function createDefaultAuthorityCapabilityState(overrides = {}) {
     supportedJobTypes: [],
     supportedJobTypesKnown: false,
     blobReady: false,
+    modulesReady: false,
+    bmeModuleReady: false,
     bmeVectorManifestReady: false,
     bmeVectorApplyReady: false,
     bmeVectorApplyJobsReady: false,
@@ -484,8 +578,30 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
   const jobsReady = healthy && readiness.jobs;
   const blobReady = healthy && readiness.blob;
   const bmeProtocolVersion = normalizeBmeProtocolVersion(features, source);
-  const bmeVectorManifestReady = healthy && sessionReady && permissionReady && readiness.bmeVectorManifest;
-  const bmeVectorApplyReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApply;
+
+  // Phase C: derive module readiness from the generic DOA `/modules` list.
+  // `moduleReadiness` is computed by `deriveModuleReadiness()` (or passed in
+  // from `probeAuthorityCapabilities` after fetching `/modules`). If
+  // moduleReadiness is not provided, fall back to legacy `features.bme.*`
+  // signals so existing probes that don't fetch `/modules` still work.
+  const moduleReadiness = source.moduleReadiness || {};
+  const modulesReady = Boolean(moduleReadiness.modulesReady);
+  const bmeModuleReady = Boolean(moduleReadiness.bmeModuleReady);
+  const bmeModuleVectorManifestReady = Boolean(moduleReadiness.bmeVectorManifestReady);
+  const bmeModuleVectorApplyReady = Boolean(moduleReadiness.bmeVectorApplyReady);
+
+  // Legacy: if module readiness is not available, fall back to features.
+  const legacyBmeVectorManifestReady = healthy && sessionReady && permissionReady && readiness.bmeVectorManifest;
+  const legacyBmeVectorApplyReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApply;
+
+  // Primary readiness: module-based if available, otherwise legacy.
+  const bmeVectorManifestReady = moduleReadiness.modulesReady
+    ? (bmeModuleReady && bmeModuleVectorManifestReady)
+    : legacyBmeVectorManifestReady;
+  const bmeVectorApplyReady = moduleReadiness.modulesReady
+    ? (bmeModuleReady && bmeModuleVectorApplyReady)
+    : legacyBmeVectorApplyReady;
+
   const bmeVectorApplyJobsReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApplyJobs;
   const bmeServerEmbeddingProbeReady = healthy && sessionReady && permissionReady && readiness.bmeServerEmbeddingProbe;
   const bmeCandidateSearchReady = healthy && sessionReady && permissionReady && readiness.bmeCandidateSearch;
@@ -511,6 +627,8 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
     supportedJobTypes: supportedJobs.supportedJobTypes,
     supportedJobTypesKnown: supportedJobs.supportedJobTypesKnown,
     blobReady,
+    modulesReady,
+    bmeModuleReady,
     bmeVectorManifestReady,
     bmeVectorApplyReady,
     bmeVectorApplyJobsReady,
@@ -677,6 +795,7 @@ export async function probeAuthorityCapabilities(options = {}) {
       let dataPlaneStatus = status;
       let dataPlaneErrorCategory = "";
       let dataPlaneErrorDomain = "";
+      let verifiedSessionHeaders = null;
       if (healthy) {
         const verified = await verifyAuthorityDataPlane(settings.baseUrl, fetchImpl, headers, settings, readiness, options);
         sessionReady = verified.sessionReady;
@@ -687,6 +806,20 @@ export async function probeAuthorityCapabilities(options = {}) {
         dataPlaneErrorDomain = String(verified.errorDomain || "");
         if (verified.reason && verified.reason !== "ok") {
           reason = verified.reason;
+        }
+        // Internal: capture authenticated session headers for /modules fetch.
+        verifiedSessionHeaders = verified._sessionHeaders || null;
+      }
+      // Phase C: fetch the generic /modules list to derive BME companion
+      // module readiness. This is non-fatal — if the fetch fails, we fall
+      // back to legacy features.bme.* readiness. Only attempt when the
+      // data-plane session is healthy so we have valid session headers.
+      let moduleReadiness = null;
+      if (healthy && sessionReady && permissionReady && verifiedSessionHeaders) {
+        try {
+          moduleReadiness = await fetchModuleReadiness(settings.baseUrl, fetchImpl, verifiedSessionHeaders);
+        } catch {
+          // Non-fatal: legacy readiness from features still applies.
         }
       }
       return normalizeAuthorityCapabilityState(
@@ -708,6 +841,7 @@ export async function probeAuthorityCapabilities(options = {}) {
           latencyMs: normalizeLatencyMs(startedAt, finishedAt),
           lastProbeAt: nowMs,
           updatedAt: new Date(nowMs).toISOString(),
+          ...(moduleReadiness ? { moduleReadiness } : {}),
         },
         settings,
       );
