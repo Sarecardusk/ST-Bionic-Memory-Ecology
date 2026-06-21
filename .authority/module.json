@@ -32,6 +32,19 @@
       "timeoutMs": 120000,
       "maxRequestBytes": 67108864,
       "maxResponseBytes": 67108864
+    },
+    "recall.candidates": {
+      "name": "recall.candidates",
+      "version": "1",
+      "title": "BME recall candidates",
+      "description": "Returns candidate node references for BME recall in a single server-side call (search + expand). Read-only; returns only externalId/internalId/namespace/score.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "trivium.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
     }
   }
 }

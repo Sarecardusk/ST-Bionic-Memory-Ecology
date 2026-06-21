@@ -148,6 +148,7 @@ function buildDefaultSessionInitConfig(source = {}) {
         execute: [
           `${BME_AUTHORITY_MODULE_ID_LOCAL}:vector.manifest`,
           `${BME_AUTHORITY_MODULE_ID_LOCAL}:vector.apply`,
+          `${BME_AUTHORITY_MODULE_ID_LOCAL}:recall.candidates`,
         ],
       },
     },
@@ -366,6 +367,7 @@ export function normalizeAuthorityBaseUrl(baseUrl = DEFAULT_AUTHORITY_BASE_URL) 
 export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
 const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
 const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
+const BME_RECALL_CANDIDATES_TRANSACTION = "recall.candidates";
 
 /**
  * Derive module readiness from a generic DOA `/modules` response.
@@ -406,12 +408,14 @@ export function deriveModuleReadiness(modulesPayload = {}) {
   const transactions = manifestForTxCheck?.transactions || {};
   const hasVectorManifest = Boolean(transactions[BME_VECTOR_MANIFEST_TRANSACTION]);
   const hasVectorApply = Boolean(transactions[BME_VECTOR_APPLY_TRANSACTION]);
+  const hasRecallCandidates = Boolean(transactions[BME_RECALL_CANDIDATES_TRANSACTION]);
 
   return {
     modulesReady,
     bmeModuleReady,
     bmeVectorManifestReady: bmeModuleReady && hasVectorManifest,
     bmeVectorApplyReady: bmeModuleReady && hasVectorApply,
+    bmeCandidateSearchReady: bmeModuleReady && hasRecallCandidates,
   };
 }
 
@@ -589,10 +593,12 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
   const bmeModuleReady = Boolean(moduleReadiness.bmeModuleReady);
   const bmeModuleVectorManifestReady = Boolean(moduleReadiness.bmeVectorManifestReady);
   const bmeModuleVectorApplyReady = Boolean(moduleReadiness.bmeVectorApplyReady);
+  const bmeModuleCandidateSearchReady = Boolean(moduleReadiness.bmeCandidateSearchReady);
 
   // Legacy: if module readiness is not available, fall back to features.
   const legacyBmeVectorManifestReady = healthy && sessionReady && permissionReady && readiness.bmeVectorManifest;
   const legacyBmeVectorApplyReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApply;
+  const legacyBmeCandidateSearchReady = healthy && sessionReady && permissionReady && readiness.bmeCandidateSearch;
 
   // Primary readiness: module-based if available, otherwise legacy.
   const bmeVectorManifestReady = moduleReadiness.modulesReady
@@ -601,10 +607,12 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
   const bmeVectorApplyReady = moduleReadiness.modulesReady
     ? (bmeModuleReady && bmeModuleVectorApplyReady)
     : legacyBmeVectorApplyReady;
+  const bmeCandidateSearchReady = moduleReadiness.modulesReady
+    ? (bmeModuleReady && bmeModuleCandidateSearchReady)
+    : legacyBmeCandidateSearchReady;
 
   const bmeVectorApplyJobsReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApplyJobs;
   const bmeServerEmbeddingProbeReady = healthy && sessionReady && permissionReady && readiness.bmeServerEmbeddingProbe;
-  const bmeCandidateSearchReady = healthy && sessionReady && permissionReady && readiness.bmeCandidateSearch;
   const minimumFeatureSetReady = storagePrimaryReady && triviumPrimaryReady && jobsReady && blobReady;
   const serverPrimaryRequested =
     normalizedSettings.enabled &&

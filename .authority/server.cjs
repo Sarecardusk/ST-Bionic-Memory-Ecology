@@ -37,10 +37,24 @@
 const DEFAULT_BME_DATABASE = 'st_bme_vectors';
 const DEFAULT_NAMESPACE = 'default';
 
+// Server-side caps for recall.candidates. Mirrors the DOA companion
+// trivium wrapper caps (MAX_SEARCH_TOP_K / MAX_SEARCH_EXPAND_DEPTH) so the
+// handler clamps client requests before delegating to txCtx.trivium.
+const MAX_SEARCH_TOP_K = 200;
+const MAX_SEARCH_EXPAND_DEPTH = 5;
+const DEFAULT_SEARCH_TOP_K = 10;
+const DEFAULT_SEARCH_EXPAND_DEPTH = 0;
+
 // --- helpers ---
 
 function toArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function clampInteger(value, fallback, min, max) {
+  var parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }
 
 function normalizeString(value, fallback) {
@@ -176,6 +190,75 @@ function buildManifestFromStat(statResult, input) {
   };
 }
 
+// --- recall.candidates helpers ---
+
+// HARD OUTPUT BOUNDARY: sanitize a searchHybrid hit so only candidate node
+// reference fields are returned. NEVER include payload/text/content/messages/
+// prompt. The handler returns ONLY externalId/internalId/namespace/score.
+function sanitizeSearchHit(hit) {
+  if (!hit || typeof hit !== 'object') return null;
+  var externalId = normalizeRecordId(hit.externalId || hit.nodeId || hit.id);
+  if (!externalId) return null;
+  var internalId = Number(hit.id != null ? hit.id : hit.internalId);
+  var namespace = normalizeString(hit.namespace, '');
+  var score = Math.max(0, Number(hit.score != null ? hit.score : hit.similarity) || 0);
+  var sanitized = {
+    externalId: externalId,
+    score: score,
+    source: 'search',
+  };
+  if (Number.isFinite(internalId) && internalId > 0) {
+    sanitized.internalId = internalId;
+  }
+  if (namespace) {
+    sanitized.namespace = namespace;
+  }
+  return sanitized;
+}
+
+function sanitizeNeighborNode(node) {
+  if (!node || typeof node !== 'object') return null;
+  var externalId = normalizeRecordId(node.externalId || node.nodeId || node.id);
+  if (!externalId) return null;
+  var internalId = Number(node.id != null ? node.id : node.internalId);
+  var namespace = normalizeString(node.namespace, '');
+  var sanitized = {
+    externalId: externalId,
+    score: 0,
+    source: 'expand',
+  };
+  if (Number.isFinite(internalId) && internalId > 0) {
+    sanitized.internalId = internalId;
+  }
+  if (namespace) {
+    sanitized.namespace = namespace;
+  }
+  return sanitized;
+}
+
+// Validate the recall.candidates input shape before delegating to the DOA
+// trivium wrapper. Throws on validation errors.
+function validateRecallCandidatesInput(input, observedDim) {
+  var queryTexts = toArray(input && input.queryTexts)
+    .filter(function (t) { return typeof t === 'string' && t.trim().length > 0; });
+  var queryVectors = toArray(input && input.queryVectors);
+  if (queryTexts.length === 0 && queryVectors.length === 0) {
+    throw new Error('BME recall.candidates requires at least one of queryTexts or queryVectors');
+  }
+  for (var i = 0; i < queryVectors.length; i++) {
+    var vec = queryVectors[i];
+    if (!Array.isArray(vec) || vec.length === 0) {
+      throw new Error('BME recall.candidates queryVectors[' + i + '] must be a non-empty array');
+    }
+    if (observedDim && Number(observedDim) > 0 && Number(observedDim) !== vec.length) {
+      throw new Error(
+        'BME recall.candidates queryVectors[' + i + '] length (' + vec.length +
+        ') does not match observedDim (' + observedDim + ')'
+      );
+    }
+  }
+}
+
 // --- activate ---
 
 module.exports.activate = async function activate(ctx) {
@@ -290,6 +373,144 @@ module.exports.activate = async function activate(ctx) {
     },
   });
 
+  ctx.registerTransaction('recall.candidates', {
+    handler: async function (txCtx, input) {
+      input = input || {};
+      var database = resolveDatabase(input);
+      var collectionId = normalizeString(input.collectionId, '');
+      var chatId = normalizeString(input.chatId, '');
+      var namespace = resolveNamespace(input);
+      var graphRevision = Math.max(0, Math.floor(Number(input.graphRevision) || 0));
+      var modelScope = normalizeString(input.modelScope, '');
+      var vectorSpaceId = normalizeString(input.vectorSpaceId, '');
+      var observedDim = Math.max(0, Math.floor(Number(input.observedDim) || 0));
+
+      // Validate input shape. Throws on missing queries or observedDim mismatch.
+      validateRecallCandidatesInput(input, observedDim);
+
+      var queryTexts = toArray(input.queryTexts)
+        .filter(function (t) { return typeof t === 'string' && t.trim().length > 0; });
+      var queryVectors = toArray(input.queryVectors);
+      var topK = clampInteger(input.topK, DEFAULT_SEARCH_TOP_K, 1, MAX_SEARCH_TOP_K);
+      var expandDepth = clampInteger(input.expandDepth, DEFAULT_SEARCH_EXPAND_DEPTH, 0, MAX_SEARCH_EXPAND_DEPTH);
+      var minScore = Number.isFinite(Number(input.minScore)) ? Number(input.minScore) : undefined;
+      var hybridAlpha = Number.isFinite(Number(input.hybridAlpha)) ? Number(input.hybridAlpha) : undefined;
+      var payloadFilter = (input.payloadFilter && typeof input.payloadFilter === 'object' && !Array.isArray(input.payloadFilter))
+        ? input.payloadFilter
+        : undefined;
+      var filters = (input.filters && typeof input.filters === 'object' && !Array.isArray(input.filters))
+        ? input.filters
+        : undefined;
+
+      // Pair queryTexts[i] and queryVectors[i] if both arrays; iterate the
+      // longer one. Skip indices where neither is present.
+      var queryCount = Math.max(queryTexts.length, queryVectors.length);
+      var candidates = [];
+      var seenExternalIds = new Set();
+
+      for (var q = 0; q < queryCount; q++) {
+        var queryText = queryTexts[q];
+        var vector = queryVectors[q];
+        var hasQueryText = typeof queryText === 'string' && queryText.trim().length > 0;
+        var hasVector = Array.isArray(vector) && vector.length > 0;
+        if (!hasQueryText && !hasVector) continue;
+
+        var searchReq = {
+          database: database,
+          vector: vector,
+          topK: topK,
+          // Expansion is done below via resolveMany + neighbors so the
+          // candidate set is fully under our control (sanitized).
+          expandDepth: 0,
+        };
+        if (hasQueryText) searchReq.queryText = queryText;
+        if (minScore !== undefined) searchReq.minScore = minScore;
+        if (hybridAlpha !== undefined) searchReq.hybridAlpha = hybridAlpha;
+        if (payloadFilter !== undefined) searchReq.payloadFilter = payloadFilter;
+        if (filters !== undefined) searchReq.filters = filters;
+
+        var hits = await txCtx.trivium.searchHybrid(searchReq);
+        hits = toArray(hits);
+
+        for (var h = 0; h < hits.length; h++) {
+          var sanitized = sanitizeSearchHit(hits[h]);
+          if (!sanitized) continue;
+          if (seenExternalIds.has(sanitized.externalId)) continue;
+          seenExternalIds.add(sanitized.externalId);
+          candidates.push(sanitized);
+        }
+      }
+
+      // If expandDepth > 0 and hits found, optionally call resolveMany then
+      // neighbors to expand the candidate set. Best-effort: failures are
+      // logged but do NOT fail the request.
+      if (expandDepth > 0 && candidates.length > 0) {
+        var topHits = candidates.slice(0, Math.min(candidates.length, topK));
+        try {
+          var resolved = await txCtx.trivium.resolveMany({
+            database: database,
+            items: topHits.map(function (h) {
+              var ref = { externalId: h.externalId };
+              if (h.namespace) ref.namespace = h.namespace;
+              return ref;
+            }),
+          });
+          var resolvedItems = toArray(resolved && resolved.items);
+          for (var r = 0; r < resolvedItems.length; r++) {
+            var item = resolvedItems[r];
+            var internalId = Number(item && item.id);
+            if (!Number.isFinite(internalId) || internalId <= 0) continue;
+
+            // Attach internalId to the existing candidate.
+            for (var c = 0; c < candidates.length; c++) {
+              if (candidates[c].externalId === (item && item.externalId)) {
+                candidates[c].internalId = internalId;
+                break;
+              }
+            }
+
+            var neighborResult = await txCtx.trivium.neighbors({
+              database: database,
+              id: internalId,
+              depth: expandDepth,
+            });
+            var neighborNodes = toArray(
+              neighborResult && (neighborResult.nodes || neighborResult.neighbors)
+            );
+            for (var n = 0; n < neighborNodes.length; n++) {
+              var sanitizedNeighbor = sanitizeNeighborNode(neighborNodes[n]);
+              if (!sanitizedNeighbor) continue;
+              if (seenExternalIds.has(sanitizedNeighbor.externalId)) continue;
+              seenExternalIds.add(sanitizedNeighbor.externalId);
+              candidates.push(sanitizedNeighbor);
+            }
+          }
+        } catch (expandError) {
+          // Expansion is best-effort; return search results without expansion.
+          if (logger.warn) {
+            logger.warn('[st-bme] recall.candidates expand failed:', expandError && expandError.message);
+          }
+        }
+      }
+
+      return {
+        result: {
+          ok: true,
+          database: database,
+          collectionId: collectionId,
+          chatId: chatId,
+          graphRevision: graphRevision,
+          modelScope: modelScope,
+          vectorSpaceId: vectorSpaceId,
+          observedDim: observedDim,
+          candidates: candidates,
+          queryCount: queryCount,
+          searchedAt: new Date().toISOString(),
+        },
+      };
+    },
+  });
+
   if (logger.info) {
     logger.info('[st-bme] Companion authority module activated: third-party.st-bme');
   }
@@ -303,3 +524,8 @@ module.exports._buildLinkItems = buildLinkItems;
 module.exports._buildManifestFromStat = buildManifestFromStat;
 module.exports._resolveDatabase = resolveDatabase;
 module.exports._resolveNamespace = resolveNamespace;
+module.exports._validateRecallCandidatesInput = validateRecallCandidatesInput;
+module.exports._sanitizeSearchHit = sanitizeSearchHit;
+module.exports._sanitizeNeighborNode = sanitizeNeighborNode;
+module.exports.MAX_SEARCH_TOP_K = MAX_SEARCH_TOP_K;
+module.exports.MAX_SEARCH_EXPAND_DEPTH = MAX_SEARCH_EXPAND_DEPTH;

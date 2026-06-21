@@ -13,6 +13,7 @@ export const AUTHORITY_VECTOR_SOURCE = "authority-trivium";
 export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
 export const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
 export const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
+export const BME_RECALL_CANDIDATES_TRANSACTION = "recall.candidates";
 
 const DEFAULT_AUTHORITY_TRIVIUM_DATABASE = "st_bme_vectors";
 const DEFAULT_AUTHORITY_VECTOR_CHUNK_SIZE = 1000;
@@ -422,6 +423,7 @@ export function normalizeAuthorityVectorConfig(settings = {}, overrides = {}) {
     failOpen: source.authorityVectorFailOpen !== false && source.failOpen !== false,
     bmeVectorApplyReady: Boolean(source.bmeVectorApplyReady ?? source.authorityBmeVectorApplyReady),
     bmeVectorManifestReady: Boolean(source.bmeVectorManifestReady ?? source.authorityBmeVectorManifestReady),
+    bmeCandidateSearchReady: Boolean(source.bmeCandidateSearchReady ?? source.authorityBmeCandidateSearchReady),
     bmeProtocolVersion: Math.max(0, Number(source.bmeProtocolVersion ?? source.authorityBmeProtocolVersion) || 0),
     ...overrides,
   };
@@ -750,6 +752,41 @@ export class AuthorityTriviumHttpClient {
       return response?.result ?? response ?? {};
     } catch (error) {
       throw enrichBmeModuleError(error, BME_VECTOR_MANIFEST_TRANSACTION);
+    }
+  }
+
+  async bmeRecallCandidates(payload = {}, options = {}) {
+    // Phase 3 (recall.candidates fast path): call the BME companion module
+    // transaction via the generic DOA module host. The recall.candidates
+    // transaction is read-only with idempotency: "none" in
+    // .authority/module.json, so we pass only { input: payload } with no
+    // idempotencyKey on the envelope. The DOA module host returns
+    // { ok, moduleId, transaction, result, ... }; the candidate-provider
+    // wants the inner result shape ({ ok, candidates, ... }). Unwrap it.
+    // Throws on non-AbortError errors so the caller can implement failOpen
+    // / failClosed semantics (matching bmeVectorApply/bmeVectorManifest).
+    //
+    // `options.signal` (and `options.timeoutMs`) MUST be forwarded through
+    // requestModuleTransaction → requestJson → fetch, so a caller-side
+    // abort actually cancels the production HTTP request. Without this,
+    // the fast-path abort in retrieval/authority-candidate-provider.js
+    // would only stop awaiting the promise but leave the server request
+    // running, and any wrapped AuthorityHttpError { category: "aborted" }
+    // could be misclassified as a normal server failure.
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_RECALL_CANDIDATES_TRANSACTION,
+        input,
+        {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_RECALL_CANDIDATES_TRANSACTION);
     }
   }
 }

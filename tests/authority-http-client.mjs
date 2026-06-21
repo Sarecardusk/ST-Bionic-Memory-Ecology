@@ -316,6 +316,7 @@ function jsonResponse(status, payload) {
   assert.ok(Array.isArray(perms.modules.execute), "modules.execute must be an array");
   assert.ok(perms.modules.execute.includes("third-party.st-bme:vector.manifest"), "must declare vector.manifest execute");
   assert.ok(perms.modules.execute.includes("third-party.st-bme:vector.apply"), "must declare vector.apply execute");
+  assert.ok(perms.modules.execute.includes("third-party.st-bme:recall.candidates"), "must declare recall.candidates execute");
   // Existing permissions preserved.
   assert.equal(perms.storage.kv, true);
   assert.equal(perms.storage.blob, true);
@@ -324,6 +325,86 @@ function jsonResponse(status, payload) {
   assert.equal(perms.trivium.private, true);
   assert.equal(perms.jobs.background, true);
   assert.equal(perms.events.channels, true);
+}
+
+// Phase 3: requestModuleTransaction posts to /modules/third-party.st-bme/transactions/recall.candidates
+// with envelope { input } only (no idempotencyKey, since recall.candidates has idempotency: "none").
+// The DOA module host returns { ok, moduleId, transaction, result, ... }; the BME adapter
+// unwraps response.result.
+{
+  const calls = [];
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-recall" });
+      }
+      if (url.includes("/modules/third-party.st-bme/transactions/recall.candidates")) {
+        const body = JSON.parse(options.body);
+        return jsonResponse(200, {
+          ok: true,
+          moduleId: "third-party.st-bme",
+          transaction: "recall.candidates",
+          result: {
+            ok: true,
+            database: body.input?.database || "st_bme_vectors",
+            collectionId: body.input?.collectionId || "",
+            chatId: body.input?.chatId || "",
+            graphRevision: Number(body.input?.graphRevision) || 0,
+            modelScope: body.input?.modelScope || "",
+            vectorSpaceId: body.input?.vectorSpaceId || "",
+            observedDim: Number(body.input?.observedDim) || 0,
+            candidates: [
+              { externalId: "node-a", internalId: 1, namespace: "ns-1", score: 0.92, source: "search" },
+              { externalId: "node-b", internalId: 2, namespace: "ns-1", score: 0.0, source: "expand" },
+            ],
+            queryCount: 1,
+            searchedAt: "2024-01-01T00:00:00.000Z",
+          },
+        });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  const input = {
+    database: "st_bme_vectors",
+    collectionId: "col-1",
+    chatId: "chat-1",
+    graphRevision: 5,
+    modelScope: "gpt-4",
+    vectorSpaceId: "vs-1",
+    observedDim: 3,
+    queryTexts: ["hello"],
+    queryVectors: [[1, 2, 3]],
+    topK: 10,
+    expandDepth: 2,
+  };
+  const response = await client.requestModuleTransaction("third-party.st-bme", "recall.candidates", input);
+
+  // Verify the URL is the recall.candidates module transaction route.
+  const modCall = calls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/recall.candidates"));
+  assert.ok(modCall, "should have called /modules/third-party.st-bme/transactions/recall.candidates");
+  assert.ok(!modCall.url.includes("/bme/"), "should NOT call /bme/ route");
+
+  // Verify the body envelope has input but NO idempotencyKey (recall.candidates
+  // is not idempotency-required in .authority/module.json).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.input.collectionId, "col-1");
+  assert.equal(body.input.vectorSpaceId, "vs-1");
+  assert.equal(body.input.observedDim, 3);
+  assert.equal(body.idempotencyKey, undefined, "recall.candidates envelope must NOT carry idempotencyKey");
+
+  // Verify session header is present.
+  assert.equal(modCall.options.headers[AUTHORITY_SESSION_HEADER], "sess-recall");
+
+  // Verify the response is the full DOA payload (caller unwraps .result).
+  assert.equal(response.ok, true);
+  assert.equal(response.moduleId, "third-party.st-bme");
+  assert.equal(response.transaction, "recall.candidates");
+  assert.equal(response.result.candidates.length, 2);
+  assert.equal(response.result.candidates[0].externalId, "node-a");
 }
 
 console.log("authority-http-client tests passed");

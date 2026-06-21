@@ -17,6 +17,9 @@ function createMockTxCtx() {
     bulkUpsert: [],
     bulkLink: [],
     stat: [],
+    searchHybrid: [],
+    resolveMany: [],
+    neighbors: [],
   };
   const trivium = {
     listDatabases: async () => ({ databases: [] }),
@@ -51,6 +54,34 @@ function createMockTxCtx() {
         successCount: req.items.length,
         failureCount: 0,
         failures: [],
+      };
+    },
+    searchHybrid: async (req) => {
+      calls.searchHybrid.push(req);
+      return [
+        { id: 1, externalId: 'node-a', namespace: 'ns-1', score: 0.92, payload: { text: 'secret', content: 'should-strip' } },
+        { id: 2, externalId: 'node-b', namespace: 'ns-1', score: 0.85, payload: { text: 'hidden', messages: ['no'] } },
+      ];
+    },
+    resolveMany: async (req) => {
+      calls.resolveMany.push(req);
+      return {
+        items: (req.items || []).map((item, i) => ({
+          index: i,
+          id: i + 1,
+          externalId: item.externalId,
+          namespace: item.namespace || null,
+        })),
+      };
+    },
+    neighbors: async (req) => {
+      calls.neighbors.push(req);
+      return {
+        ids: [10, 11],
+        nodes: [
+          { id: 10, externalId: 'node-c', namespace: 'ns-1' },
+          { id: 11, externalId: 'node-d', namespace: 'ns-1' },
+        ],
       };
     },
   };
@@ -94,9 +125,10 @@ async function run() {
     };
     await mod.activate(ctx);
     const keys = Object.keys(registered).sort();
-    assert.deepStrictEqual(keys, ['vector.apply', 'vector.manifest'], 'must register exactly vector.manifest and vector.apply');
+    assert.deepStrictEqual(keys, ['recall.candidates', 'vector.apply', 'vector.manifest'], 'must register exactly vector.manifest, vector.apply, and recall.candidates');
     assert.strictEqual(typeof registered['vector.manifest'].handler, 'function', 'vector.manifest handler must be a function');
     assert.strictEqual(typeof registered['vector.apply'].handler, 'function', 'vector.apply handler must be a function');
+    assert.strictEqual(typeof registered['recall.candidates'].handler, 'function', 'recall.candidates handler must be a function');
   }
 
   // --- vector.apply calls bulkUpsert and bulkLink with correct payload ---
@@ -278,11 +310,20 @@ async function run() {
     assert.strictEqual(manifest.protocolVersion, 1, 'protocolVersion must be 1');
     assert.ok(manifest.transactions['vector.manifest'], 'must declare vector.manifest');
     assert.ok(manifest.transactions['vector.apply'], 'must declare vector.apply');
+    assert.ok(manifest.transactions['recall.candidates'], 'must declare recall.candidates');
     assert.strictEqual(manifest.transactions['vector.apply'].idempotency, 'required', 'vector.apply idempotency must be required');
+    assert.strictEqual(manifest.transactions['recall.candidates'].idempotency, 'none', 'recall.candidates idempotency must be none');
+    assert.strictEqual(manifest.transactions['recall.candidates'].riskLevel, 'low', 'recall.candidates riskLevel must be low');
+    assert.strictEqual(manifest.transactions['recall.candidates'].version, '1', 'recall.candidates version must be "1"');
+    assert.strictEqual(manifest.transactions['recall.candidates'].timeoutMs, 120000, 'recall.candidates timeoutMs must be 120000');
+    assert.strictEqual(manifest.transactions['recall.candidates'].maxRequestBytes, 67108864, 'recall.candidates maxRequestBytes must be 64 MiB');
+    assert.strictEqual(manifest.transactions['recall.candidates'].maxResponseBytes, 67108864, 'recall.candidates maxResponseBytes must be 64 MiB');
     assert.ok(manifest.transactions['vector.manifest'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'vector.manifest must require trivium.private');
     assert.ok(manifest.transactions['vector.apply'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'vector.apply must require trivium.private');
+    assert.ok(manifest.transactions['recall.candidates'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'recall.candidates must require trivium.private');
     assert.ok(manifest.transactions['vector.manifest'].requiredResources.every(function (r) { return r.target === undefined; }), 'vector.manifest must not pin a static database target');
     assert.ok(manifest.transactions['vector.apply'].requiredResources.every(function (r) { return r.target === undefined; }), 'vector.apply must not pin a static database target');
+    assert.ok(manifest.transactions['recall.candidates'].requiredResources.every(function (r) { return r.target === undefined; }), 'recall.candidates must not pin a static database target');
     assert.strictEqual(manifest.transactions['vector.apply'].maxRequestBytes, 67108864, 'vector.apply maxRequestBytes should be 64 MiB');
     assert.strictEqual(manifest.transactions['vector.apply'].timeoutMs, 120000, 'vector.apply timeoutMs should be 120000');
   }
@@ -324,6 +365,235 @@ async function run() {
     assert.strictEqual(result.result.manifest.modelScope, 'gpt-4');
     assert.strictEqual(result.result.manifest.graphRevision, 7);
     assert.strictEqual(result.result.manifest.vectorSpaceId, 'vs-1');
+  }
+
+  // --- recall.candidates handler returns candidates with externalId/internalId/namespace/score only ---
+  console.log('[test:authority-companion-module] testing recall.candidates returns sanitized candidates');
+  {
+    const { calls, ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      namespace: 'test-ns',
+      collectionId: 'col-1',
+      chatId: 'chat-1',
+      graphRevision: 5,
+      modelScope: 'gpt-4',
+      vectorSpaceId: 'vs-1',
+      observedDim: 3,
+      queryTexts: ['hello world'],
+      queryVectors: [[1, 2, 3]],
+      topK: 10,
+      expandDepth: 2,
+    };
+    const result = await (await getHandler(mod, 'recall.candidates'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true, 'recall.candidates should return ok: true');
+    assert.strictEqual(result.result.database, 'st_bme_vectors');
+    assert.strictEqual(result.result.collectionId, 'col-1');
+    assert.strictEqual(result.result.chatId, 'chat-1');
+    assert.strictEqual(result.result.graphRevision, 5);
+    assert.strictEqual(result.result.modelScope, 'gpt-4');
+    assert.strictEqual(result.result.vectorSpaceId, 'vs-1');
+    assert.strictEqual(result.result.observedDim, 3);
+    assert.strictEqual(result.result.queryCount, 1, 'queryCount should be 1');
+    assert.ok(Array.isArray(result.result.candidates), 'candidates must be an array');
+    assert.ok(result.result.candidates.length > 0, 'candidates must be non-empty');
+
+    // HARD OUTPUT BOUNDARY: no text/payload/prompt/messages fields in result.
+    const candidateKeys = new Set();
+    for (const candidate of result.result.candidates) {
+      for (const key of Object.keys(candidate)) candidateKeys.add(key);
+    }
+    assert.ok(!candidateKeys.has('text'), 'candidates must NOT include text');
+    assert.ok(!candidateKeys.has('payload'), 'candidates must NOT include payload');
+    assert.ok(!candidateKeys.has('prompt'), 'candidates must NOT include prompt');
+    assert.ok(!candidateKeys.has('messages'), 'candidates must NOT include messages');
+    assert.ok(!candidateKeys.has('content'), 'candidates must NOT include content');
+
+    // Each candidate has only the allowed fields.
+    const allowedFields = new Set(['externalId', 'internalId', 'namespace', 'score', 'source']);
+    for (const candidate of result.result.candidates) {
+      for (const key of Object.keys(candidate)) {
+        assert.ok(allowedFields.has(key), `unexpected candidate field: ${key}`);
+      }
+      assert.ok(candidate.externalId, 'candidate must have externalId');
+      assert.strictEqual(typeof candidate.score, 'number');
+      assert.ok(candidate.source === 'search' || candidate.source === 'expand', `unexpected source: ${candidate.source}`);
+    }
+
+    // searchHybrid was called once per query.
+    assert.strictEqual(calls.searchHybrid.length, 1, 'searchHybrid should be called once');
+    // resolveMany + neighbors called because expandDepth > 0.
+    assert.strictEqual(calls.resolveMany.length, 1, 'resolveMany should be called once when expandDepth > 0');
+    assert.ok(calls.neighbors.length > 0, 'neighbors should be called when expandDepth > 0');
+
+    // No payload content anywhere in the response.
+    const responseJson = JSON.stringify(result.result);
+    assert.ok(!responseJson.includes('secret'), 'response must not include search hit payload text');
+    assert.ok(!responseJson.includes('hidden'), 'response must not include search hit payload text');
+    assert.ok(!responseJson.includes('should-strip'), 'response must not include search hit payload content');
+  }
+
+  // --- recall.candidates rejects empty queryTexts/queryVectors ---
+  console.log('[test:authority-companion-module] testing recall.candidates rejects empty queries');
+  {
+    const { ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      observedDim: 3,
+      queryTexts: [],
+      queryVectors: [],
+    };
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'recall.candidates'))(ctx, input, {}),
+      /requires at least one of queryTexts or queryVectors/,
+      'should reject empty queryTexts and queryVectors',
+    );
+  }
+
+  // --- recall.candidates rejects observedDim mismatch ---
+  console.log('[test:authority-companion-module] testing recall.candidates rejects observedDim mismatch');
+  {
+    const { ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      observedDim: 128,
+      queryTexts: ['hello'],
+      queryVectors: [[1, 2, 3]],
+    };
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'recall.candidates'))(ctx, input, {}),
+      /does not match observedDim/,
+      'should reject observedDim mismatch',
+    );
+  }
+
+  // --- recall.candidates rejects non-array queryVector ---
+  console.log('[test:authority-companion-module] testing recall.candidates rejects malformed queryVector');
+  {
+    const { ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      queryVectors: [[1, 2, 3], 'not-an-array'],
+    };
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'recall.candidates'))(ctx, input, {}),
+      /must be a non-empty array/,
+      'should reject non-array queryVector',
+    );
+  }
+
+  // --- recall.candidates returns empty candidates when searchHybrid returns no hits ---
+  console.log('[test:authority-companion-module] testing recall.candidates empty search result');
+  {
+    const { calls, ctx } = createMockTxCtx();
+    // Override searchHybrid to return empty array.
+    ctx.trivium.searchHybrid = async () => [];
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      observedDim: 3,
+      queryTexts: ['nothing matches'],
+      queryVectors: [[1, 2, 3]],
+      topK: 5,
+      expandDepth: 0,
+    };
+    const result = await (await getHandler(mod, 'recall.candidates'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true, 'empty result is NOT an error');
+    assert.deepStrictEqual(result.result.candidates, [], 'candidates should be empty array');
+    assert.strictEqual(result.result.queryCount, 1);
+    // resolveMany should NOT be called when there are no hits.
+    assert.strictEqual(calls.resolveMany.length, 0);
+    assert.strictEqual(calls.neighbors.length, 0);
+  }
+
+  // --- recall.candidates echoes all metadata fields ---
+  console.log('[test:authority-companion-module] testing recall.candidates metadata echo');
+  {
+    const { ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      collectionId: 'col-echo',
+      chatId: 'chat-echo',
+      graphRevision: 9,
+      modelScope: 'echo-model',
+      vectorSpaceId: 'vs-echo',
+      observedDim: 3,
+      queryTexts: ['echo'],
+      queryVectors: [[1, 2, 3]],
+      topK: 5,
+      expandDepth: 0,
+    };
+    const result = await (await getHandler(mod, 'recall.candidates'))(ctx, input, {});
+    assert.strictEqual(result.result.database, 'st_bme_vectors');
+    assert.strictEqual(result.result.collectionId, 'col-echo');
+    assert.strictEqual(result.result.chatId, 'chat-echo');
+    assert.strictEqual(result.result.graphRevision, 9);
+    assert.strictEqual(result.result.modelScope, 'echo-model');
+    assert.strictEqual(result.result.vectorSpaceId, 'vs-echo');
+    assert.strictEqual(result.result.observedDim, 3);
+    assert.ok(result.result.searchedAt, 'searchedAt should be set');
+  }
+
+  // --- recall.candidates works with queryTexts only (no queryVectors) ---
+  console.log('[test:authority-companion-module] testing recall.candidates with queryTexts only');
+  {
+    const { calls, ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      queryTexts: ['text-only-query'],
+      topK: 5,
+      expandDepth: 0,
+    };
+    const result = await (await getHandler(mod, 'recall.candidates'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.queryCount, 1);
+    assert.strictEqual(calls.searchHybrid.length, 1);
+    assert.strictEqual(calls.searchHybrid[0].queryText, 'text-only-query');
+    // vector should be undefined since we only passed queryTexts.
+    assert.strictEqual(calls.searchHybrid[0].vector, undefined);
+  }
+
+  // --- recall.candidates works with queryVectors only (no queryTexts) ---
+  console.log('[test:authority-companion-module] testing recall.candidates with queryVectors only');
+  {
+    const { calls, ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      observedDim: 3,
+      queryVectors: [[1, 2, 3]],
+      topK: 5,
+      expandDepth: 0,
+    };
+    const result = await (await getHandler(mod, 'recall.candidates'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.queryCount, 1);
+    assert.strictEqual(calls.searchHybrid.length, 1);
+    assert.deepStrictEqual(calls.searchHybrid[0].vector, [1, 2, 3]);
+  }
+
+  // --- recall.candidates clamps topK and expandDepth to server caps ---
+  console.log('[test:authority-companion-module] testing recall.candidates clamps topK/expandDepth');
+  {
+    const { calls, ctx } = createMockTxCtx();
+    ctx.transactionName = 'recall.candidates';
+    const input = {
+      database: 'st_bme_vectors',
+      queryTexts: ['clamp-test'],
+      topK: 99999,
+      expandDepth: 99999,
+    };
+    const result = await (await getHandler(mod, 'recall.candidates'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(calls.searchHybrid[0].topK, mod.MAX_SEARCH_TOP_K, 'topK should be clamped to MAX_SEARCH_TOP_K');
+    // neighbors depth should be clamped to MAX_SEARCH_EXPAND_DEPTH.
+    assert.strictEqual(calls.neighbors[0].depth, mod.MAX_SEARCH_EXPAND_DEPTH, 'expandDepth should be clamped to MAX_SEARCH_EXPAND_DEPTH');
   }
 
   console.log('[test:authority-companion-module] all tests passed');

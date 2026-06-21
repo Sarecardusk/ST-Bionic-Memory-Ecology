@@ -4,6 +4,7 @@ import {
   clampPositiveInt,
 } from "./shared-ranking.js";
 import {
+  createAuthorityTriviumClient,
   filterAuthorityTriviumNodes,
   isAuthorityVectorConfig,
   queryAuthorityTriviumNeighbors,
@@ -43,8 +44,19 @@ function uniqueIds(values = []) {
   return result;
 }
 
+// Detects aborts from both raw AbortError (DOMException/AbortController)
+// AND AuthorityHttpError-wrapped aborts from runtime/authority-http-client.js
+// (which sets `category === "aborted"` and/or `code === "aborted"` with
+// `name === "AuthorityHttpError"`). A real HTTP abort must ALWAYS rethrow,
+// regardless of failOpen — otherwise an in-flight abort could be swallowed
+// by failOpen fallback and surface as a stale/empty result.
 function isAbortError(error) {
-  return error?.name === "AbortError";
+  if (!error) return false;
+  if (error.name === "AbortError") return true;
+  if (error.category === "aborted") return true;
+  if (error.code === "aborted") return true;
+  if (error.signal?.aborted === true) return true;
+  return false;
 }
 
 function buildAuthorityCandidateQueryPlan(userMessage, recentMessages = [], options = {}) {
@@ -147,12 +159,14 @@ export async function resolveAuthorityRecallCandidates({
     neighborCount: 0,
     queryTexts: [],
     fallbackReason: "",
+    bmeFastPathUsed: false,
     timings: {
       total: 0,
       embed: 0,
       filter: 0,
       search: 0,
       neighbors: 0,
+      bmeFastPath: 0,
     },
   };
   const candidateNodes = toArray(availableNodes).filter((node) => node && !node.archived);
@@ -219,29 +233,123 @@ export async function resolveAuthorityRecallCandidates({
   const queryPlan = buildAuthorityCandidateQueryPlan(userMessage, recentMessages, options);
   diagnostics.queryTexts = queryPlan.queries.map((entry) => entry.text);
 
+  // === Phase 3 fast path: BME companion module recall.candidates ===
+  // When the DOA + BME companion module are available and the
+  // `recall.candidates` transaction is loaded, BME recall can use ONE
+  // server-side candidate search instead of the existing 3-round-trip
+  // path (filterAuthorityTriviumNodes -> searchAuthorityTriviumNodes ->
+  // queryAuthorityTriviumNeighbors). Local fallback must remain; failOpen
+  // semantics must match existing patterns.
+  let bmeFastPathActive = false;
+  let bmeFastPathCandidates = [];
+  const bmeFastPathStartedAt = nowMs();
+  if (embeddingConfig.bmeCandidateSearchReady === true && queryPlan.queries.length > 0) {
+    const queryTexts = queryPlan.queries.map((entry) => entry.text);
+    const queryVectors = [];
+    let embedMs2 = 0;
+    let embedOk = true;
+    for (const queryEntry of queryPlan.queries) {
+      const embedStartedAt = nowMs();
+      let queryVec = null;
+      try {
+        queryVec = await embedText(queryEntry.text, embeddingConfig, {
+          signal,
+          isQuery: true,
+        });
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+      }
+      embedMs2 += nowMs() - embedStartedAt;
+      if (!queryVec || queryVec.length === 0) {
+        embedOk = false;
+        queryVectors.push(null);
+      } else {
+        queryVectors.push(Array.from(queryVec));
+      }
+    }
+    diagnostics.timings.embed = roundMs(embedMs2);
+    if (!embedOk) {
+      diagnostics.fallbackReason ||= "authority-candidate-query-embed-empty";
+    }
+
+    if (embedOk) {
+      const bmePayload = {
+        database: embeddingConfig.database,
+        namespace: collectionId,
+        collectionId,
+        chatId,
+        graphRevision: Math.max(0, Math.floor(Number(options.graphRevision ?? options.revision) || 0)),
+        modelScope: String(options.modelScope || ""),
+        vectorSpaceId: String(embeddingConfig.vectorSpaceId || options.vectorSpaceId || ""),
+        observedDim: Math.max(0, Math.floor(Number(embeddingConfig.dim) || Number(options.observedDim) || 0)),
+        queryTexts,
+        queryVectors,
+        topK: limit,
+        expandDepth: neighborLimit,
+        payloadFilter: filterPayload,
+        filters: filterPayload,
+      };
+
+      try {
+        const client = createAuthorityTriviumClient(embeddingConfig, { signal });
+        if (typeof client?.bmeRecallCandidates !== "function") {
+          // Client does not support recall.candidates (e.g. an older mock or
+          // a third-party client). Fall back to the 3-round path.
+          diagnostics.fallbackReason ||= "authority-candidate-bme-unavailable";
+        } else {
+          const response = await client.bmeRecallCandidates(bmePayload, { signal });
+          const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
+          if (candidates.length > 0) {
+            bmeFastPathActive = true;
+            bmeFastPathCandidates = candidates;
+            diagnostics.bmeFastPathUsed = true;
+          } else {
+            // Empty result is NOT an error - fall back to 3-round path when
+            // failOpen is the default.
+            diagnostics.fallbackReason ||= "authority-candidate-bme-empty";
+          }
+        }
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        diagnostics.fallbackReason ||= "authority-candidate-bme-failed";
+        if (embeddingConfig?.failOpen === false) {
+          throw error;
+        }
+        // failOpen default: fall back to 3-round path; log at warn level.
+        console.warn(
+          "[ST-BME] BME recall.candidates 快速路径失败，回退 3-round 路径:",
+          error?.message || error,
+        );
+      }
+    }
+  }
+  diagnostics.timings.bmeFastPath = roundMs(nowMs() - bmeFastPathStartedAt);
+
   let filteredIds = [];
   const filterStartedAt = nowMs();
-  try {
-    filteredIds = (await filterAuthorityTriviumNodes(embeddingConfig, {
-      namespace: collectionId,
-      collectionId,
-      chatId,
-      limit,
-      topK: limit,
-      filters: filterPayload,
-      filter: filterPayload,
-      where: filterPayload,
-      searchText: queryPlan.queries[0]?.text || String(userMessage || "").trim(),
-      signal,
-    }))
-      .filter((nodeId) => allowedIds.has(normalizeRecordId(nodeId)))
-      .slice(0, limit);
-    diagnostics.filteredCount = filteredIds.length;
-  } catch (error) {
-    if (isAbortError(error)) throw error;
-    diagnostics.fallbackReason = "authority-candidate-filter-failed";
-    if (embeddingConfig?.failOpen === false) {
-      throw error;
+  if (!bmeFastPathActive) {
+    try {
+      filteredIds = (await filterAuthorityTriviumNodes(embeddingConfig, {
+        namespace: collectionId,
+        collectionId,
+        chatId,
+        limit,
+        topK: limit,
+        filters: filterPayload,
+        filter: filterPayload,
+        where: filterPayload,
+        searchText: queryPlan.queries[0]?.text || String(userMessage || "").trim(),
+        signal,
+      }))
+        .filter((nodeId) => allowedIds.has(normalizeRecordId(nodeId)))
+        .slice(0, limit);
+      diagnostics.filteredCount = filteredIds.length;
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      diagnostics.fallbackReason = "authority-candidate-filter-failed";
+      if (embeddingConfig?.failOpen === false) {
+        throw error;
+      }
     }
   }
   diagnostics.timings.filter = roundMs(nowMs() - filterStartedAt);
@@ -249,69 +357,86 @@ export async function resolveAuthorityRecallCandidates({
   const searchScores = new Map();
   let embedMs = 0;
   const searchStartedAt = nowMs();
-  const searchResultsByQuery = await runLimited(
-    queryPlan.queries,
-    async (queryEntry) => {
-      const embedStartedAt = nowMs();
-      const queryVec = await embedText(queryEntry.text, embeddingConfig, {
-        signal,
-        isQuery: true,
-      });
-      embedMs += nowMs() - embedStartedAt;
-      if (!queryVec) {
-        diagnostics.fallbackReason ||= "authority-candidate-query-embed-empty";
-        return [];
-      }
-      const searchResults = await searchAuthorityTriviumNodes(
-        graph,
-        queryEntry.text,
-        embeddingConfig,
-        {
-          namespace: collectionId,
-          collectionId,
-          chatId,
-          topK: limit,
-          candidateIds: filteredIds.length > 0 ? filteredIds : undefined,
-          queryVector: Array.from(queryVec),
-          signal,
-        },
-      );
-      return searchResults.map((result) => ({ ...result, queryWeight: queryEntry.weight }));
-    },
-    {
-      concurrency: Math.max(1, Math.floor(Number(options.queryConcurrency || 1)) || 1),
-      signal,
-      failFast: false,
-    },
-  );
-  diagnostics.timings.embed = roundMs(embedMs);
-  for (const searchResults of searchResultsByQuery) {
-    if (searchResults?.error) {
-      diagnostics.fallbackReason ||= "authority-candidate-search-failed";
-      if (embeddingConfig?.failOpen === false) {
-        throw searchResults.error;
-      }
-      continue;
-    }
-    for (const result of searchResults || []) {
-      const nodeId = normalizeRecordId(result?.nodeId);
+  if (bmeFastPathActive) {
+    // Map candidates returned by recall.candidates directly to searchScores.
+    // The server already ran filter+search+expand; skip the 3-round path.
+    const fallbackQueryWeight = queryPlan.queries[0]?.weight || 0.1;
+    for (const candidate of bmeFastPathCandidates) {
+      const nodeId = normalizeRecordId(candidate?.externalId || candidate?.internalId);
       if (!nodeId || !allowedIds.has(nodeId)) continue;
-      const weightedScore =
-        Math.max(0.001, Number(result?.score || 0) || 0) *
-        Math.max(0.05, Number(result?.queryWeight || 0) || 0.05);
+      const baseScore = Math.max(0.001, Number(candidate?.score || 0) || 0.001);
+      const weightedScore = baseScore * Math.max(0.05, fallbackQueryWeight);
       const previous = Number(searchScores.get(nodeId) || 0) || 0;
       if (weightedScore > previous) {
         searchScores.set(nodeId, weightedScore);
       }
     }
-  }
-  for (const item of searchResultsByQuery) {
-    if (item?.error) {
-      const error = item.error;
-      if (isAbortError(error)) throw error;
-      diagnostics.fallbackReason ||= "authority-candidate-search-failed";
-      if (embeddingConfig?.failOpen === false) {
-        throw error;
+    diagnostics.searchHits = searchScores.size;
+  } else {
+    const searchResultsByQuery = await runLimited(
+      queryPlan.queries,
+      async (queryEntry) => {
+        const embedStartedAt = nowMs();
+        const queryVec = await embedText(queryEntry.text, embeddingConfig, {
+          signal,
+          isQuery: true,
+        });
+        embedMs += nowMs() - embedStartedAt;
+        if (!queryVec) {
+          diagnostics.fallbackReason ||= "authority-candidate-query-embed-empty";
+          return [];
+        }
+        const searchResults = await searchAuthorityTriviumNodes(
+          graph,
+          queryEntry.text,
+          embeddingConfig,
+          {
+            namespace: collectionId,
+            collectionId,
+            chatId,
+            topK: limit,
+            candidateIds: filteredIds.length > 0 ? filteredIds : undefined,
+            queryVector: Array.from(queryVec),
+            signal,
+          },
+        );
+        return searchResults.map((result) => ({ ...result, queryWeight: queryEntry.weight }));
+      },
+      {
+        concurrency: Math.max(1, Math.floor(Number(options.queryConcurrency || 1)) || 1),
+        signal,
+        failFast: false,
+      },
+    );
+    diagnostics.timings.embed = roundMs(embedMs);
+    for (const searchResults of searchResultsByQuery) {
+      if (searchResults?.error) {
+        diagnostics.fallbackReason ||= "authority-candidate-search-failed";
+        if (embeddingConfig?.failOpen === false) {
+          throw searchResults.error;
+        }
+        continue;
+      }
+      for (const result of searchResults || []) {
+        const nodeId = normalizeRecordId(result?.nodeId);
+        if (!nodeId || !allowedIds.has(nodeId)) continue;
+        const weightedScore =
+          Math.max(0.001, Number(result?.score || 0) || 0) *
+          Math.max(0.05, Number(result?.queryWeight || 0) || 0.05);
+        const previous = Number(searchScores.get(nodeId) || 0) || 0;
+        if (weightedScore > previous) {
+          searchScores.set(nodeId, weightedScore);
+        }
+      }
+    }
+    for (const item of searchResultsByQuery) {
+      if (item?.error) {
+        const error = item.error;
+        if (isAbortError(error)) throw error;
+        diagnostics.fallbackReason ||= "authority-candidate-search-failed";
+        if (embeddingConfig?.failOpen === false) {
+          throw error;
+        }
       }
     }
   }
@@ -325,7 +450,21 @@ export async function resolveAuthorityRecallCandidates({
 
   let neighborIds = [];
   const neighborsStartedAt = nowMs();
-  if (seedIds.length > 0) {
+  if (bmeFastPathActive) {
+    // Neighbors already expanded server-side (source: "expand"); pull them
+    // from the candidates directly and skip the queryAuthorityTriviumNeighbors
+    // round trip.
+    const seen = new Set(seedIds);
+    for (const candidate of bmeFastPathCandidates) {
+      if (candidate?.source !== "expand") continue;
+      const nodeId = normalizeRecordId(candidate?.externalId || candidate?.internalId);
+      if (!nodeId || !allowedIds.has(nodeId) || seen.has(nodeId)) continue;
+      seen.add(nodeId);
+      neighborIds.push(nodeId);
+      if (neighborIds.length >= neighborLimit) break;
+    }
+    diagnostics.neighborCount = neighborIds.length;
+  } else if (seedIds.length > 0) {
     try {
       neighborIds = (await queryAuthorityTriviumNeighbors(embeddingConfig, seedIds, {
         namespace: collectionId,

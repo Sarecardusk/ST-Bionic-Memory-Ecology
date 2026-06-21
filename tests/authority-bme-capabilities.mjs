@@ -57,12 +57,14 @@ assert.equal(legacy.bmeProtocolVersion, 0);
       bmeModuleReady: true,
       bmeVectorManifestReady: true,
       bmeVectorApplyReady: true,
+      bmeCandidateSearchReady: true,
     },
   });
   assert.equal(state.modulesReady, true);
   assert.equal(state.bmeModuleReady, true);
   assert.equal(state.bmeVectorManifestReady, true);
   assert.equal(state.bmeVectorApplyReady, true);
+  assert.equal(state.bmeCandidateSearchReady, true);
 }
 
 // Phase C: load_error record does not set bmeVectorApplyReady.
@@ -78,11 +80,13 @@ assert.equal(legacy.bmeProtocolVersion, 0);
       bmeModuleReady: false, // load_error
       bmeVectorManifestReady: false,
       bmeVectorApplyReady: false,
+      bmeCandidateSearchReady: false,
     },
   });
   assert.equal(state.bmeModuleReady, false);
   assert.equal(state.bmeVectorApplyReady, false);
   assert.equal(state.bmeVectorManifestReady, false);
+  assert.equal(state.bmeCandidateSearchReady, false);
 }
 
 // Phase C: missing transaction in manifest does not set readiness.
@@ -114,6 +118,7 @@ assert.equal(legacy.bmeProtocolVersion, 0);
         transactions: {
           "vector.manifest": { name: "vector.manifest" },
           "vector.apply": { name: "vector.apply" },
+          "recall.candidates": { name: "recall.candidates" },
         },
       },
     ],
@@ -126,6 +131,7 @@ assert.equal(legacy.bmeProtocolVersion, 0);
           transactions: {
             "vector.manifest": { name: "vector.manifest" },
             "vector.apply": { name: "vector.apply" },
+            "recall.candidates": { name: "recall.candidates" },
           },
         },
       },
@@ -135,6 +141,7 @@ assert.equal(legacy.bmeProtocolVersion, 0);
   assert.equal(readiness.bmeModuleReady, true);
   assert.equal(readiness.bmeVectorManifestReady, true);
   assert.equal(readiness.bmeVectorApplyReady, true);
+  assert.equal(readiness.bmeCandidateSearchReady, true, "deriveModuleReadiness must set bmeCandidateSearchReady when recall.candidates is declared and module is loaded");
 }
 
 // Phase C: deriveModuleReadiness with load_error record.
@@ -175,6 +182,126 @@ assert.equal(legacy.bmeProtocolVersion, 0);
   const readiness = deriveModuleReadiness({ modules: [], records: [] });
   assert.equal(readiness.modulesReady, false);
   assert.equal(readiness.bmeModuleReady, false);
+  assert.equal(readiness.bmeCandidateSearchReady, false, "bmeCandidateSearchReady must be false when no records");
+}
+
+// Phase 3: deriveModuleReadiness missing recall.candidates transaction does NOT set bmeCandidateSearchReady.
+{
+  const readiness = deriveModuleReadiness({
+    modules: [],
+    records: [
+      {
+        moduleId: BME_AUTHORITY_MODULE_ID,
+        status: "loaded",
+        manifest: {
+          id: BME_AUTHORITY_MODULE_ID,
+          transactions: {
+            "vector.manifest": { name: "vector.manifest" },
+            "vector.apply": { name: "vector.apply" },
+            // recall.candidates deliberately MISSING
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(readiness.bmeModuleReady, true, "module should be loaded");
+  assert.equal(readiness.bmeVectorApplyReady, true, "vector.apply should be ready");
+  assert.equal(readiness.bmeCandidateSearchReady, false, "bmeCandidateSearchReady must be false when recall.candidates transaction is missing");
+}
+
+// Phase 3: deriveModuleReadiness with load_error record does NOT set bmeCandidateSearchReady.
+{
+  const readiness = deriveModuleReadiness({
+    modules: [],
+    records: [
+      {
+        moduleId: BME_AUTHORITY_MODULE_ID,
+        status: "load_error",
+        manifest: {
+          id: BME_AUTHORITY_MODULE_ID,
+          transactions: {
+            "recall.candidates": { name: "recall.candidates" },
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(readiness.bmeModuleReady, false, "load_error record does not mark module ready");
+  assert.equal(readiness.bmeCandidateSearchReady, false, "bmeCandidateSearchReady must be false on load_error");
+}
+
+// Phase 3: module readiness takes priority over legacy features for bmeCandidateSearchReady.
+// features.bme.candidateSearch is present but the module record is NOT loaded;
+// the result should be false because module readiness takes priority.
+{
+  const state = normalizeAuthorityCapabilityState({
+    installed: true,
+    healthy: true,
+    sessionReady: true,
+    permissionReady: true,
+    features: ["bme.candidate.search", "bme.vectormanifest", "sql.query", "sql.mutation", "trivium.search", "jobs", "storage.blob"],
+    moduleReadiness: {
+      modulesReady: true,
+      bmeModuleReady: false, // module not loaded
+      bmeVectorManifestReady: false,
+      bmeVectorApplyReady: false,
+      bmeCandidateSearchReady: false,
+    },
+  });
+  assert.equal(state.bmeCandidateSearchReady, false, "module readiness should take priority over legacy features for bmeCandidateSearchReady");
+}
+
+// Phase 3: legacy features set bmeCandidateSearchReady when module readiness is unavailable.
+{
+  const state = normalizeAuthorityCapabilityState({
+    installed: true,
+    healthy: true,
+    sessionReady: true,
+    permissionReady: true,
+    features: ["bme.candidate.search", "sql.query", "sql.mutation", "trivium.search", "jobs", "storage.blob"],
+    // No moduleReadiness: legacy features.bme.candidate.search should apply.
+  });
+  assert.equal(state.bmeCandidateSearchReady, true, "legacy features.bme.candidate.search should set bmeCandidateSearchReady when module readiness is unavailable");
+}
+
+// Phase 3: session init body includes recall.candidates in modules.execute declarations.
+{
+  let sessionInitBody = null;
+  const fetchImpl = async (url, options = {}) => {
+    if (String(url).endsWith("/session/init")) {
+      sessionInitBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-cap" }; },
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true }; },
+    };
+  };
+
+  const state = await probeAuthorityCapabilities({
+    settings: { authorityEnabled: true, authorityBaseUrl: "https://authority.test" },
+    fetchImpl,
+    allowRelativeUrl: true,
+  });
+
+  assert.ok(sessionInitBody, "session init body should have been sent");
+  const perms = sessionInitBody.declaredPermissions;
+  assert.ok(perms, "declaredPermissions must be present");
+  assert.ok(perms.modules, "modules permission must be declared");
+  assert.ok(Array.isArray(perms.modules.execute), "modules.execute must be an array");
+  assert.ok(
+    perms.modules.execute.includes("third-party.st-bme:recall.candidates"),
+    "session init must declare recall.candidates execute",
+  );
+  // Sanity: state itself is normalized (not asserting probe details here).
+  assert.ok(typeof state === "object");
 }
 
 // Phase C: module readiness takes priority over legacy features when present.
@@ -278,6 +405,7 @@ assert.equal(legacy.bmeProtocolVersion, 0);
                   transactions: {
                     "vector.manifest": { name: "vector.manifest" },
                     "vector.apply": { name: "vector.apply" },
+                    "recall.candidates": { name: "recall.candidates" },
                   },
                 },
               },
@@ -312,6 +440,7 @@ assert.equal(legacy.bmeProtocolVersion, 0);
   assert.equal(state.bmeModuleReady, true);
   assert.equal(state.bmeVectorManifestReady, true);
   assert.equal(state.bmeVectorApplyReady, true);
+  assert.equal(state.bmeCandidateSearchReady, true, "state should derive bmeCandidateSearchReady from /modules when recall.candidates is declared");
 
   // The session token must NOT leak into the public capability state.
   const stateJson = JSON.stringify(state);

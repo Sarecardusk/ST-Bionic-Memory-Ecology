@@ -989,4 +989,260 @@ assert.equal(isAuthorityVectorConfig(config), true);
   assert.equal(manifestCall.observedDim, 3);
 }
 
+// Phase 3: bmeRecallCandidates posts to /modules/third-party.st-bme/transactions/recall.candidates
+// (not /bme/recall-candidates) when using a real AuthorityHttpClient with mock fetch.
+// recall.candidates is NOT idempotency-required, so the envelope must NOT carry idempotencyKey.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-recall" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/recall.candidates")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "recall.candidates",
+            result: {
+              ok: true,
+              database: body.input?.database || "st_bme_vectors",
+              collectionId: body.input?.collectionId || "",
+              chatId: body.input?.chatId || "",
+              graphRevision: Number(body.input?.graphRevision) || 0,
+              modelScope: body.input?.modelScope || "",
+              vectorSpaceId: body.input?.vectorSpaceId || "",
+              observedDim: Number(body.input?.observedDim) || 0,
+              candidates: [
+                { externalId: "node-a", internalId: 1, namespace: "ns-1", score: 0.92, source: "search" },
+                { externalId: "node-b", internalId: 2, namespace: "ns-1", score: 0.0, source: "expand" },
+              ],
+              queryCount: Number(body.input?.queryTexts?.length) || 0,
+              searchedAt: "2024-01-01T00:00:00.000Z",
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeRecallCandidates({
+    database: "st_bme_vectors",
+    collectionId: "col-1",
+    chatId: "chat-1",
+    graphRevision: 5,
+    modelScope: "gpt-4",
+    vectorSpaceId: "vs-1",
+    observedDim: 3,
+    queryTexts: ["hello"],
+    queryVectors: [[1, 2, 3]],
+    topK: 10,
+    expandDepth: 2,
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/recall.candidates"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify NO idempotencyKey on the envelope (recall.candidates is not idempotency-required).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "recall.candidates envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.collectionId, "col-1");
+  assert.equal(body.input.vectorSpaceId, "vs-1");
+  assert.equal(body.input.observedDim, 3);
+  assert.deepEqual(body.input.queryTexts, ["hello"]);
+  assert.deepEqual(body.input.queryVectors, [[1, 2, 3]]);
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.candidates.length, 2);
+  assert.equal(result.candidates[0].externalId, "node-a");
+  assert.equal(result.candidates[1].source, "expand");
+}
+
+// Phase 3: bmeRecallCandidates enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-err-recall" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeRecallCandidates({ queryTexts: ["hello"] });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "recall error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "recall error should say not loaded");
+  assert.ok(
+    caught.path === "/modules/third-party.st-bme/transactions/recall.candidates",
+    "recall error path should reference recall.candidates transaction route",
+  );
+}
+
+// Phase 3: bmeRecallCandidates forwards the caller's signal through to
+// requestModuleTransaction → requestJson → fetch, so a caller-side abort
+// actually cancels the production HTTP request (not just the awaiting).
+// This is the production-abort-wiring blocker: bmeRecallCandidates(payload, { signal })
+// must thread `signal` into requestModuleTransaction options, which
+// requestJson forwards into fetch via createRequestSignal.
+//
+// We spy directly on requestModuleTransaction (rather than checking the
+// fetch-level signal) because createRequestSignal wraps the caller's
+// signal in a fresh AbortController — the fetch-level signal is a
+// different object linked via an abort listener, not the caller's signal.
+{
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true, result: { ok: true, candidates: [] } }; },
+    }),
+  });
+
+  let capturedModuleId = null;
+  let capturedTransactionName = null;
+  let capturedInput = null;
+  let capturedOptions = null;
+  let callCount = 0;
+  // Replace requestModuleTransaction with a spy that records the options.
+  client.http.requestModuleTransaction = async (moduleId, transactionName, input, options) => {
+    callCount += 1;
+    capturedModuleId = moduleId;
+    capturedTransactionName = transactionName;
+    capturedInput = input;
+    capturedOptions = options;
+    return { ok: true, result: { ok: true, candidates: [] } };
+  };
+
+  const controller = new AbortController();
+  const callerSignal = controller.signal;
+  await client.bmeRecallCandidates(
+    { database: "st_bme_vectors", queryTexts: ["hello"], queryVectors: [[1, 2, 3]] },
+    { signal: callerSignal, timeoutMs: 5000 },
+  );
+
+  assert.equal(callCount, 1, "bmeRecallCandidates should call requestModuleTransaction exactly once");
+  assert.equal(capturedModuleId, "third-party.st-bme");
+  assert.equal(capturedTransactionName, "recall.candidates");
+  assert.equal(capturedInput.queryTexts[0], "hello");
+  assert.ok(capturedOptions, "requestModuleTransaction should receive an options argument");
+  assert.equal(
+    capturedOptions.signal,
+    callerSignal,
+    "bmeRecallCandidates options.signal must be forwarded to requestModuleTransaction options.signal",
+  );
+  assert.equal(
+    capturedOptions.timeoutMs,
+    5000,
+    "bmeRecallCandidates options.timeoutMs must be forwarded to requestModuleTransaction options.timeoutMs",
+  );
+}
+
+// Phase 3: bmeRecallCandidates without an options argument still works
+// (default behavior — no signal, no timeoutMs forwarded).
+{
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true, result: { ok: true, candidates: [] } }; },
+    }),
+  });
+
+  let capturedOptions = "not-called";
+  client.http.requestModuleTransaction = async (moduleId, transactionName, input, options) => {
+    capturedOptions = options;
+    return { ok: true, result: { ok: true, candidates: [] } };
+  };
+
+  const result = await client.bmeRecallCandidates({ database: "st_bme_vectors", queryTexts: ["hello"], queryVectors: [[1, 2, 3]] });
+  assert.equal(result.ok, true);
+  assert.ok(capturedOptions, "requestModuleTransaction should receive an options argument even when bmeRecallCandidates is called without one");
+  assert.equal(capturedOptions.signal, undefined, "no signal should be forwarded when bmeRecallCandidates is called without options");
+  assert.equal(capturedOptions.timeoutMs, undefined, "no timeoutMs should be forwarded when bmeRecallCandidates is called without options");
+}
+
+// Phase 3: normalizeAuthorityVectorConfig surfaces bmeCandidateSearchReady.
+{
+  const cfg = normalizeAuthorityVectorConfig({
+    authorityBaseUrl: "/api/plugins/authority",
+    authorityEmbeddingApiUrl: "https://example.com/v1",
+    authorityEmbeddingModel: "test-embedding",
+    bmeCandidateSearchReady: true,
+  });
+  assert.equal(cfg.bmeCandidateSearchReady, true, "normalizeAuthorityVectorConfig must surface bmeCandidateSearchReady from source");
+
+  const cfg2 = normalizeAuthorityVectorConfig({
+    authorityBaseUrl: "/api/plugins/authority",
+    authorityEmbeddingApiUrl: "https://example.com/v1",
+    authorityEmbeddingModel: "test-embedding",
+    authorityBmeCandidateSearchReady: true,
+  });
+  assert.equal(cfg2.bmeCandidateSearchReady, true, "normalizeAuthorityVectorConfig must surface authorityBmeCandidateSearchReady alias");
+
+  const cfg3 = normalizeAuthorityVectorConfig({
+    authorityBaseUrl: "/api/plugins/authority",
+    authorityEmbeddingApiUrl: "https://example.com/v1",
+    authorityEmbeddingModel: "test-embedding",
+  });
+  assert.equal(cfg3.bmeCandidateSearchReady, false, "normalizeAuthorityVectorConfig defaults bmeCandidateSearchReady to false");
+}
+
 console.log("authority-vector-primary tests passed");

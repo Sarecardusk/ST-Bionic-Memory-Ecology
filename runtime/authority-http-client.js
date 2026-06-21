@@ -64,6 +64,7 @@ function buildDefaultSessionInitConfig(source = {}) {
         execute: [
           `${BME_AUTHORITY_MODULE_ID}:vector.manifest`,
           `${BME_AUTHORITY_MODULE_ID}:vector.apply`,
+          `${BME_AUTHORITY_MODULE_ID}:recall.candidates`,
         ],
       },
     },
