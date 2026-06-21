@@ -727,29 +727,61 @@ export class AuthorityTriviumHttpClient {
       // ({ ok, manifest, upsert, links, ... }). Unwrap it.
       return response?.result ?? response ?? {};
     } catch (error) {
-      if (error instanceof AuthorityHttpError) {
-        // Enrich module load errors so the frontend can say "BME companion
-        // module not loaded" rather than showing an opaque code. The DOA
-        // module error code lives in `payload.details.code`; the top-level
-        // `payload.code` is the generic AuthorityErrorCode.
-        const moduleErrorCode = String(error.payload?.details?.code || error.payload?.code || error.code || "");
-        if (moduleErrorCode === "module_not_loaded" || moduleErrorCode === "module_load_error" || moduleErrorCode === "module_not_found") {
-          throw new AuthorityHttpError(
-            `BME companion module '${BME_AUTHORITY_MODULE_ID}' is not loaded: ${error.message}`,
-            {
-              status: error.status,
-              code: moduleErrorCode,
-              category: error.category,
-              payload: error.payload,
-              path: `/modules/${BME_AUTHORITY_MODULE_ID}/transactions/${BME_VECTOR_APPLY_TRANSACTION}`,
-              protocol: AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
-            },
-          );
-        }
-      }
-      throw error;
+      throw enrichBmeModuleError(error, BME_VECTOR_APPLY_TRANSACTION);
     }
   }
+
+  async bmeVectorManifest(payload = {}) {
+    // Phase 1 (vector.manifest as non-fatal health probe): call the BME
+    // companion module transaction via the generic DOA module host. The
+    // vector.manifest transaction is NOT idempotency-required in
+    // .authority/module.json, so we pass only { input: payload } with no
+    // idempotencyKey on the envelope. The DOA module host returns
+    // { ok, moduleId, transaction, result, ... }; callers (the higher-level
+    // fetchAuthorityBmeVectorManifest wrapper) want the inner result shape
+    // ({ ok, manifest, ... }). Unwrap it.
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_VECTOR_MANIFEST_TRANSACTION,
+        input,
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_VECTOR_MANIFEST_TRANSACTION);
+    }
+  }
+}
+
+// Enriches module load errors so the frontend can say "BME companion
+// module not loaded" rather than showing an opaque code. The DOA module
+// error code lives in `error.payload.details.code`; the top-level
+// `payload.code` is the generic AuthorityErrorCode. Shared by
+// bmeVectorApply and bmeVectorManifest.
+function enrichBmeModuleError(error, transactionName) {
+  if (!(error instanceof AuthorityHttpError)) {
+    return error;
+  }
+  const moduleErrorCode = String(error.payload?.details?.code || error.payload?.code || error.code || "");
+  if (
+    moduleErrorCode === "module_not_loaded" ||
+    moduleErrorCode === "module_load_error" ||
+    moduleErrorCode === "module_not_found"
+  ) {
+    return new AuthorityHttpError(
+      `BME companion module '${BME_AUTHORITY_MODULE_ID}' is not loaded: ${error.message}`,
+      {
+        status: error.status,
+        code: moduleErrorCode,
+        category: error.category,
+        payload: error.payload,
+        path: `/modules/${BME_AUTHORITY_MODULE_ID}/transactions/${transactionName}`,
+        protocol: AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
+      },
+    );
+  }
+  return error;
 }
 
 export function createAuthorityTriviumClient(config = {}, options = {}) {
@@ -1034,6 +1066,50 @@ export async function applyAuthorityBmeVectorManifest(graph, config = {}, entrie
       totalMs: roundMs(nowMs() - startedAt),
     },
   };
+}
+
+export async function fetchAuthorityBmeVectorManifest(config = {}, options = {}) {
+  // Phase 1: non-fatal BME vector.manifest health probe. Gates on
+  // `config.bmeVectorManifestReady === true` AND `isAuthorityVectorConfig(config)`.
+  // Swallows failures (returns null on error, logs diagnostic) so callers can
+  // never see a throw from this path. MUST NOT set `state.dirty`.
+  if (config.bmeVectorManifestReady !== true || !isAuthorityVectorConfig(config)) {
+    return null;
+  }
+  const startedAt = nowMs();
+  try {
+    const client = createAuthorityTriviumClient(config, options);
+    const payload = {
+      ...buildOpenOptions(config, options),
+      database: config.database,
+      namespace: options.namespace,
+      collectionId: options.collectionId,
+      chatId: options.chatId,
+      graphRevision: Math.max(0, Math.floor(Number(options.revision) || 0)),
+      modelScope: String(options.modelScope || ""),
+      includeMappingIntegrity: Boolean(options.includeMappingIntegrity),
+      ...(options.vectorSpaceId ? { vectorSpaceId: String(options.vectorSpaceId) } : {}),
+      ...(Number(options.observedDim) > 0 ? { observedDim: Number(options.observedDim) } : {}),
+    };
+    const result = await callClient(
+      client,
+      ["bmeVectorManifest", "fetchBmeVectorManifest", "vectorManifest"],
+      "bmeVectorManifest",
+      payload,
+    );
+    const manifest = result?.manifest || result || null;
+    return {
+      ...(manifest && typeof manifest === "object" ? manifest : {}),
+      diagnostics: {
+        operation: "bmeVectorManifest",
+        ok: Boolean(result?.ok),
+        totalMs: roundMs(nowMs() - startedAt),
+      },
+    };
+  } catch (error) {
+    console.warn("[ST-BME] BME vector.manifest 健康探针失败:", error?.message || error);
+    return null;
+  }
 }
 
 export async function syncAuthorityTriviumLinks(graph, config = {}, options = {}) {

@@ -149,6 +149,92 @@ function jsonResponse(status, payload) {
   assert.equal(response.result.upsert.successCount, 2);
 }
 
+// Phase 1: requestModuleTransaction also covers vector.manifest (no
+// idempotencyKey required since vector.manifest has idempotency: "none").
+// The DOA module host still returns { ok, moduleId, transaction, result, ... };
+// the BME adapter unwraps response.result.
+{
+  const calls = [];
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-manifest" });
+      }
+      if (url.includes("/modules/third-party.st-bme/transactions/vector.manifest")) {
+        const body = JSON.parse(options.body);
+        return jsonResponse(200, {
+          ok: true,
+          moduleId: "third-party.st-bme",
+          transaction: "vector.manifest",
+          result: {
+            ok: true,
+            appliedAt: "2024-01-01T00:00:00.000Z",
+            database: body.input?.database || "st_bme_vectors",
+            manifest: {
+              database: body.input?.database || "st_bme_vectors",
+              exists: true,
+              status: "ready",
+              nodeCount: 42,
+              edgeCount: 7,
+              mappingCount: 42,
+              indexCount: 3,
+              orphanMappingCount: 0,
+              lastFlushAt: null,
+              updatedAt: "2024-01-01T00:00:00.000Z",
+              collectionId: body.input?.collectionId || "",
+              chatId: body.input?.chatId || "",
+              modelScope: body.input?.modelScope || "",
+              graphRevision: Number(body.input?.graphRevision) || 0,
+              vectorSpaceId: body.input?.vectorSpaceId || "",
+              observedDim: Number(body.input?.observedDim) || 0,
+              indexHealth: null,
+            },
+          },
+        });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  const input = {
+    database: "st_bme_vectors",
+    collectionId: "col-1",
+    chatId: "chat-1",
+    modelScope: "gpt-4",
+    graphRevision: 5,
+    vectorSpaceId: "vs-1",
+    observedDim: 3,
+    includeMappingIntegrity: true,
+  };
+  const response = await client.requestModuleTransaction("third-party.st-bme", "vector.manifest", input);
+
+  // Verify the URL is the vector.manifest module transaction route.
+  const modCall = calls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/vector.manifest"));
+  assert.ok(modCall, "should have called /modules/third-party.st-bme/transactions/vector.manifest");
+  assert.ok(!modCall.url.includes("/bme/"));
+
+  // Verify the body envelope has input but NO idempotencyKey (vector.manifest
+  // is not idempotency-required in .authority/module.json).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.input.collectionId, "col-1");
+  assert.equal(body.input.vectorSpaceId, "vs-1");
+  assert.equal(body.input.observedDim, 3);
+  assert.equal(body.idempotencyKey, undefined, "vector.manifest envelope must NOT carry idempotencyKey");
+
+  // Verify session header is present.
+  assert.equal(modCall.options.headers[AUTHORITY_SESSION_HEADER], "sess-manifest");
+
+  // Verify the response is the full DOA payload (caller unwraps .result).
+  assert.equal(response.ok, true);
+  assert.equal(response.moduleId, "third-party.st-bme");
+  assert.equal(response.transaction, "vector.manifest");
+  assert.equal(response.result.manifest.nodeCount, 42);
+  assert.equal(response.result.manifest.vectorSpaceId, "vs-1");
+  assert.equal(response.result.manifest.observedDim, 3);
+}
+
 // Phase C: requestModuleTransaction pulls idempotencyKey from input when options.idempotencyKey is absent.
 {
   const calls = [];

@@ -170,6 +170,8 @@ function buildManifestFromStat(statResult, input) {
     chatId: normalizeString(input && input.chatId, ''),
     modelScope: normalizeString(input && input.modelScope, ''),
     graphRevision: Number(input && input.graphRevision) || 0,
+    vectorSpaceId: normalizeString(input && input.vectorSpaceId, ''),
+    observedDim: Number(input && input.observedDim) || 0,
     indexHealth: (statResult && statResult.indexHealth) || null,
   };
 }

@@ -77,6 +77,7 @@ function createMockTriviumClient({
   failSearch = false,
   failBmeVectorApply = false,
   failBmeVectorApplyCompatibility = false,
+  failBmeVectorManifest = false,
 } = {}) {
   const calls = [];
   return {
@@ -181,6 +182,39 @@ function createMockTriviumClient({
         manifest: { database: payload.database || "st_bme_vectors", exists: true },
         upsert: { successCount: payload.items?.length || 0, failureCount: 0 },
         links: { successCount: payload.links?.length || 0, failureCount: 0 },
+      };
+    },
+    async bmeVectorManifest(payload) {
+      calls.push(["bmeVectorManifest", payload]);
+      if (failBmeVectorManifest) {
+        throw new AuthorityHttpError("bme manifest missing", {
+          status: 404,
+          category: "validation",
+          path: "/modules/third-party.st-bme/transactions/vector.manifest",
+        });
+      }
+      return {
+        ok: true,
+        database: payload.database || "st_bme_vectors",
+        manifest: {
+          database: payload.database || "st_bme_vectors",
+          exists: true,
+          status: "ready",
+          nodeCount: 42,
+          edgeCount: 7,
+          mappingCount: 42,
+          indexCount: 3,
+          orphanMappingCount: 0,
+          lastFlushAt: null,
+          updatedAt: "2024-01-01T00:00:00.000Z",
+          collectionId: payload.collectionId || "",
+          chatId: payload.chatId || "",
+          modelScope: payload.modelScope || "",
+          graphRevision: Number(payload.graphRevision) || 0,
+          vectorSpaceId: payload.vectorSpaceId || "",
+          observedDim: Number(payload.observedDim) || 0,
+          indexHealth: null,
+        },
       };
     },
   };
@@ -742,6 +776,217 @@ assert.equal(isAuthorityVectorConfig(config), true);
   assert.ok(caught instanceof AuthorityHttpError);
   assert.ok(caught.message.includes("BME companion module"), "error should mention BME companion module");
   assert.ok(caught.message.includes("not loaded"), "error should say not loaded");
+}
+
+// Phase 1: bmeVectorManifest posts to /modules/third-party.st-bme/transactions/vector.manifest
+// (not /bme/vector-manifest) when using a real AuthorityHttpClient with mock fetch.
+// vector.manifest is NOT idempotency-required, so the envelope must NOT carry idempotencyKey.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-bme-manifest" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/vector.manifest")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "vector.manifest",
+            result: {
+              ok: true,
+              appliedAt: "2024-01-01T00:00:00.000Z",
+              database: body.input?.database || "st_bme_vectors",
+              manifest: {
+                database: body.input?.database || "st_bme_vectors",
+                exists: true,
+                status: "ready",
+                nodeCount: 42,
+                edgeCount: 7,
+                mappingCount: 42,
+                indexCount: 3,
+                orphanMappingCount: 0,
+                lastFlushAt: null,
+                updatedAt: "2024-01-01T00:00:00.000Z",
+                collectionId: body.input?.collectionId || "",
+                chatId: body.input?.chatId || "",
+                modelScope: body.input?.modelScope || "",
+                graphRevision: Number(body.input?.graphRevision) || 0,
+                vectorSpaceId: body.input?.vectorSpaceId || "",
+                observedDim: Number(body.input?.observedDim) || 0,
+                indexHealth: null,
+              },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeVectorManifest({
+    database: "st_bme_vectors",
+    collectionId: "col-1",
+    chatId: "chat-1",
+    modelScope: "gpt-4",
+    graphRevision: 5,
+    vectorSpaceId: "vs-1",
+    observedDim: 3,
+    includeMappingIntegrity: true,
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/vector-manifest.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/vector.manifest"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify NO idempotencyKey is on the envelope (vector.manifest is not idempotency-required).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "vector.manifest envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.collectionId, "col-1");
+  assert.equal(body.input.vectorSpaceId, "vs-1");
+  assert.equal(body.input.observedDim, 3);
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.manifest.nodeCount, 42);
+  assert.equal(result.manifest.collectionId, "col-1");
+  assert.equal(result.manifest.vectorSpaceId, "vs-1");
+  assert.equal(result.manifest.observedDim, 3);
+}
+
+// Phase 1: bmeVectorManifest enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-err-manifest" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeVectorManifest({ database: "st_bme_vectors" });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "manifest error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "manifest error should say not loaded");
+  assert.ok(
+    caught.path === "/modules/third-party.st-bme/transactions/vector.manifest",
+    "manifest error path should reference vector.manifest transaction route",
+  );
+}
+
+// Phase 1: fetchAuthorityBmeVectorManifest returns null when not ready
+// (bmeVectorManifestReady !== true), and does not throw.
+{
+  const { fetchAuthorityBmeVectorManifest } = await import("../vector/authority-vector-primary-adapter.js");
+  const result = await fetchAuthorityBmeVectorManifest(
+    { ...config, bmeVectorManifestReady: false },
+    { collectionId: "col-1", chatId: "chat-1" },
+  );
+  assert.equal(result, null, "fetchAuthorityBmeVectorManifest should return null when not ready");
+}
+
+// Phase 1: fetchAuthorityBmeVectorManifest returns null on error and does NOT throw.
+// state.dirty is not set (no graph is passed, so this contract is structural).
+{
+  const triviumClient = createMockTriviumClient({ failBmeVectorManifest: true });
+  const { fetchAuthorityBmeVectorManifest } = await import("../vector/authority-vector-primary-adapter.js");
+  let threw = false;
+  let result;
+  try {
+    result = await fetchAuthorityBmeVectorManifest(
+      { ...config, bmeVectorManifestReady: true, triviumClient },
+      { collectionId: "col-1", chatId: "chat-1" },
+    );
+  } catch (error) {
+    threw = true;
+  }
+  assert.equal(threw, false, "fetchAuthorityBmeVectorManifest must NOT throw on error");
+  assert.equal(result, null, "fetchAuthorityBmeVectorManifest must return null on error");
+  assert.equal(
+    triviumClient.calls.filter(([name]) => name === "bmeVectorManifest").length,
+    1,
+    "bmeVectorManifest should have been attempted once",
+  );
+}
+
+// Phase 1: fetchAuthorityBmeVectorManifest returns the manifest object on success.
+{
+  const triviumClient = createMockTriviumClient();
+  const { fetchAuthorityBmeVectorManifest } = await import("../vector/authority-vector-primary-adapter.js");
+  const result = await fetchAuthorityBmeVectorManifest(
+    { ...config, bmeVectorManifestReady: true, triviumClient },
+    {
+      collectionId: "col-1",
+      chatId: "chat-1",
+      namespace: "st-bme::chat-1",
+      revision: 5,
+      modelScope: "gpt-4",
+      vectorSpaceId: "vs-1",
+      observedDim: 3,
+    },
+  );
+  assert.ok(result, "fetchAuthorityBmeVectorManifest should return the manifest on success");
+  assert.equal(result.database, "st_bme_vectors");
+  assert.equal(result.collectionId, "col-1");
+  assert.equal(result.chatId, "chat-1");
+  assert.equal(result.modelScope, "gpt-4");
+  assert.equal(result.graphRevision, 5);
+  assert.equal(result.vectorSpaceId, "vs-1");
+  assert.equal(result.observedDim, 3);
+  assert.equal(result.diagnostics.operation, "bmeVectorManifest");
+  const manifestCall = triviumClient.calls.find(([name]) => name === "bmeVectorManifest")?.[1];
+  assert.equal(manifestCall.collectionId, "col-1");
+  assert.equal(manifestCall.vectorSpaceId, "vs-1");
+  assert.equal(manifestCall.observedDim, 3);
 }
 
 console.log("authority-vector-primary tests passed");

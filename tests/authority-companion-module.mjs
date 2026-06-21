@@ -228,6 +228,8 @@ async function run() {
       chatId: 'chat-1',
       modelScope: 'gpt-4',
       graphRevision: 5,
+      vectorSpaceId: 'vs-1',
+      observedDim: 3,
       includeMappingIntegrity: true,
     };
     const result = await (await getHandler(mod, 'vector.manifest'))(ctx, input, {});
@@ -241,11 +243,28 @@ async function run() {
     assert.strictEqual(result.result.manifest.chatId, 'chat-1');
     assert.strictEqual(result.result.manifest.modelScope, 'gpt-4');
     assert.strictEqual(result.result.manifest.graphRevision, 5);
+    assert.strictEqual(result.result.manifest.vectorSpaceId, 'vs-1', 'vector.manifest manifest must echo vectorSpaceId from input');
+    assert.strictEqual(result.result.manifest.observedDim, 3, 'vector.manifest manifest must echo observedDim from input');
 
     // Verify stat was called with the right database and includeMappingIntegrity
     assert.strictEqual(calls.stat.length, 1, 'stat should be called once');
     assert.strictEqual(calls.stat[0].database, 'st_bme_vectors');
     assert.strictEqual(calls.stat[0].includeMappingIntegrity, true);
+  }
+
+  // --- vector.manifest echoes empty vectorSpaceId/observedDim when absent ---
+  console.log('[test:authority-companion-module] testing vector.manifest echoes empty echo fields when absent');
+  {
+    const { ctx } = createMockTxCtx();
+    ctx.transactionName = 'vector.manifest';
+    const input = {
+      database: 'st_bme_vectors',
+      collectionId: 'col-1',
+      chatId: 'chat-1',
+    };
+    const result = await (await getHandler(mod, 'vector.manifest'))(ctx, input, {});
+    assert.strictEqual(result.result.manifest.vectorSpaceId, '', 'vector.manifest should echo empty vectorSpaceId when input has none');
+    assert.strictEqual(result.result.manifest.observedDim, 0, 'vector.manifest should echo 0 observedDim when input has none');
   }
 
   // --- module.json shape ---
