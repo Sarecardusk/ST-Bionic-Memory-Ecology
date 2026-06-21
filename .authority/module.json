@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "third-party.st-bme",
+  "displayName": "BME companion authority module",
+  "ownerExtensionId": "third-party/st-bme",
+  "version": "7.8.4",
+  "protocolVersion": 1,
+  "entry": "./server.cjs",
+  "transactions": {
+    "vector.manifest": {
+      "name": "vector.manifest",
+      "version": "1.0.0",
+      "title": "BME vector manifest",
+      "description": "Reports BME Trivium database health from the DOA generic trivium wrapper.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "trivium.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "vector.apply": {
+      "name": "vector.apply",
+      "version": "1.0.0",
+      "title": "BME vector apply",
+      "description": "Applies BME vector upserts and links through the DOA generic trivium wrapper.",
+      "riskLevel": "high",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "trivium.private" }],
+      "idempotency": "required",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    }
+  }
+}
