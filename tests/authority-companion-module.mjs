@@ -105,18 +105,32 @@ function createMockTxCtx() {
   };
 }
 
-// Mock ctx for graph.getHead / graph.loadSnapshot tests. The mock ctx.sql
-// has `query` and `exec` methods. The query mock inspects the statement
-// string to decide which rows to return (meta rows, node/edge record_ids
-// for getHead, or node/edge/tombstone payloads for loadSnapshot).
+// Mock ctx for graph.getHead / graph.loadSnapshot / graph.commitDelta tests.
+// The mock ctx.sql has `query`, `exec`, and `transaction` methods. The query
+// mock inspects the statement string to decide which rows to return (meta
+// rows, node/edge record_ids for getHead/commitDelta post-commit headHash,
+// or node/edge/tombstone payloads for loadSnapshot). The transaction mock
+// captures all statements and returns committed:true. The mock ctx also
+// exposes `locks` (real in-memory withLock) and `idempotency` (caching run
+// with fingerprint-mismatch detection) so graph.commitDelta tests can
+// exercise the lock → idempotency → CAS → transaction pipeline without
+// a live DOA host.
 function createMockSqlTxCtx(options = {}) {
   const {
     meta = {},
     nodes = [],
     edges = [],
     tombstones = [],
+    idempotencyCache = new Map(),
+    transactionDelayMs = 0,
   } = options;
-  const calls = { query: [], exec: [] };
+  const calls = {
+    query: [],
+    exec: [],
+    transaction: [],
+    lock: [],
+    idempotencyRun: [],
+  };
 
   const metaRows = Object.entries(meta).map(([key, value]) => ({
     meta_key: key,
@@ -158,10 +172,76 @@ function createMockSqlTxCtx(options = {}) {
       }
       return { kind: 'query', columns, rows, rowCount: rows.length };
     },
+    transaction: async (database, statements) => {
+      calls.transaction.push({ database, statements });
+      if (transactionDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, transactionDelayMs));
+      }
+      return {
+        committed: true,
+        results: statements.map(() => ({ kind: 'exec', rowsAffected: 1, lastInsertRowid: null })),
+      };
+    },
+  };
+
+  // Real in-memory lock service. Mirrors the DOA LockService contract:
+  // FIFO ordering through a promise chain, released in finally on both
+  // success and failure. Used by graph.commitDelta to serialize per-chat
+  // writers.
+  const lockMap = new Map();
+  const locks = {
+    withLock: async (scope, lockOpts, fn) => {
+      calls.lock.push({ scope, opts: lockOpts });
+      const prev = lockMap.get(scope) || Promise.resolve();
+      // Chain on the previous holder's promise. fn runs after prev
+      // settles (success OR failure) so a thrown fn doesn't deadlock
+      // subsequent waiters.
+      const next = prev.then(fn, fn);
+      // Store a chain that swallows errors so a failed fn doesn't break
+      // the chain for later waiters.
+      lockMap.set(scope, next.then(() => {}, () => {}));
+      return await next;
+    },
+  };
+
+  // Caching idempotency mock. Mirrors the DOA IdempotencyService.run
+  // contract: cache by key+fingerprint, return cached on exact match,
+  // throw idempotency_conflict (409) on same key + different fingerprint.
+  // Errors from fn are NOT cached (a retry after error re-executes fn).
+  const idempotency = {
+    run: async (key, fingerprint, fn) => {
+      calls.idempotencyRun.push({ key, fingerprint });
+      const exactKey = key + '::' + fingerprint;
+      if (idempotencyCache.has(exactKey)) {
+        return idempotencyCache.get(exactKey);
+      }
+      // Check for same key, different fingerprint → conflict.
+      for (const [k] of idempotencyCache.entries()) {
+        if (k.startsWith(key + '::') && k !== exactKey) {
+          const err = new Error('idempotency_conflict: key=' + key);
+          err.status = 409;
+          err.code = 'idempotency_conflict';
+          err.details = {
+            key,
+            expectedFingerprint: k.slice(key.length + 2),
+            actualFingerprint: fingerprint,
+          };
+          throw err;
+        }
+      }
+      const result = await fn();
+      idempotencyCache.set(exactKey, result);
+      return result;
+    },
+    lookup: async () => null,
+    record: async (key, fingerprint, response) => {
+      idempotencyCache.set(key + '::' + fingerprint, response);
+    },
   };
 
   return {
     calls,
+    idempotencyCache,
     ctx: {
       moduleId: 'third-party.st-bme',
       ownerExtensionId: 'third-party/st-bme',
@@ -176,6 +256,8 @@ function createMockSqlTxCtx(options = {}) {
       authorize: async () => true,
       signal: new AbortController().signal,
       sql,
+      locks,
+      idempotency,
     },
   };
 }
@@ -185,8 +267,8 @@ async function run() {
   const mod = require(SERVER_CJS);
   assert.strictEqual(typeof mod.activate, 'function', 'activate must be a function');
 
-  // --- activate registers exactly the 5 transactions ---
-  console.log('[test:authority-companion-module] testing activate registers all five transactions');
+  // --- activate registers exactly the 6 transactions ---
+  console.log('[test:authority-companion-module] testing activate registers all six transactions');
   {
     const registered = {};
     const ctx = {
@@ -202,14 +284,15 @@ async function run() {
     const keys = Object.keys(registered).sort();
     assert.deepStrictEqual(
       keys,
-      ['graph.getHead', 'graph.loadSnapshot', 'recall.candidates', 'vector.apply', 'vector.manifest'],
-      'must register exactly vector.manifest, vector.apply, recall.candidates, graph.getHead, and graph.loadSnapshot',
+      ['graph.commitDelta', 'graph.getHead', 'graph.loadSnapshot', 'recall.candidates', 'vector.apply', 'vector.manifest'],
+      'must register exactly vector.manifest, vector.apply, recall.candidates, graph.getHead, graph.loadSnapshot, and graph.commitDelta',
     );
     assert.strictEqual(typeof registered['vector.manifest'].handler, 'function', 'vector.manifest handler must be a function');
     assert.strictEqual(typeof registered['vector.apply'].handler, 'function', 'vector.apply handler must be a function');
     assert.strictEqual(typeof registered['recall.candidates'].handler, 'function', 'recall.candidates handler must be a function');
     assert.strictEqual(typeof registered['graph.getHead'].handler, 'function', 'graph.getHead handler must be a function');
     assert.strictEqual(typeof registered['graph.loadSnapshot'].handler, 'function', 'graph.loadSnapshot handler must be a function');
+    assert.strictEqual(typeof registered['graph.commitDelta'].handler, 'function', 'graph.commitDelta handler must be a function');
   }
 
   // --- vector.apply calls bulkUpsert and bulkLink with correct payload ---
@@ -430,6 +513,22 @@ async function run() {
     assert.ok(
       manifest.transactions['graph.loadSnapshot'].requiredResources.every(function (r) { return r.target === undefined; }),
       'graph.loadSnapshot must not pin a static database target',
+    );
+    // graph.commitDelta declaration
+    assert.ok(manifest.transactions['graph.commitDelta'], 'must declare graph.commitDelta');
+    assert.strictEqual(manifest.transactions['graph.commitDelta'].idempotency, 'required', 'graph.commitDelta idempotency must be required');
+    assert.strictEqual(manifest.transactions['graph.commitDelta'].riskLevel, 'high', 'graph.commitDelta riskLevel must be high');
+    assert.strictEqual(manifest.transactions['graph.commitDelta'].version, '1', 'graph.commitDelta version must be "1"');
+    assert.strictEqual(manifest.transactions['graph.commitDelta'].timeoutMs, 120000, 'graph.commitDelta timeoutMs must be 120000');
+    assert.strictEqual(manifest.transactions['graph.commitDelta'].maxRequestBytes, 67108864, 'graph.commitDelta maxRequestBytes must be 64 MiB');
+    assert.strictEqual(manifest.transactions['graph.commitDelta'].maxResponseBytes, 67108864, 'graph.commitDelta maxResponseBytes must be 64 MiB');
+    assert.ok(
+      manifest.transactions['graph.commitDelta'].requiredResources.some(function (r) { return r.resource === 'sql.private'; }),
+      'graph.commitDelta must require sql.private',
+    );
+    assert.ok(
+      manifest.transactions['graph.commitDelta'].requiredResources.every(function (r) { return r.target === undefined; }),
+      'graph.commitDelta must not pin a static database target',
     );
     assert.ok(manifest.transactions['vector.manifest'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'vector.manifest must require trivium.private');
     assert.ok(manifest.transactions['vector.apply'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'vector.apply must require trivium.private');
@@ -981,6 +1080,639 @@ async function run() {
       resultA.result.headHash,
       resultC.result.headHash,
       'same revision + same node/edge ids must produce the same headHash',
+    );
+  }
+
+  // ===========================================================================
+  // Phase E: graph.commitDelta
+  // ===========================================================================
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta success: lock + idempotency + CAS + transaction');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 5, nodeCount: 2, edgeCount: 1, tombstoneCount: 0 },
+      nodes: [{ id: 'node-a' }, { id: 'node-b' }, { id: 'node-c' }],
+      edges: [{ id: 'edge-1' }, { id: 'edge-2' }],
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const input = {
+      chatId: 'chat-commit-1',
+      collectionId: 'col-1',
+      baseRevision: 5,
+      idempotencyKey: 'test-commit-key-1',
+      delta: {
+        upsertNodes: [
+          { id: 'node-c', type: 'concept', sourceFloor: 3, archived: false, updatedAt: 1700000000000, payload: { text: 'hello' } },
+        ],
+        upsertEdges: [
+          { id: 'edge-2', fromId: 'node-a', toId: 'node-c', relation: 'related', sourceFloor: 3, updatedAt: 1700000000000 },
+        ],
+        tombstones: [
+          { id: 'tomb-1', kind: 'node', targetId: 'node-x', deletedAt: 1700000000000, sourceDeviceId: 'dev-1' },
+        ],
+        deleteNodeIds: ['node-z'],
+        deleteEdgeIds: ['edge-old'],
+        runtimeMetaPatch: {
+          lastProcessedFloor: 10,
+          extractionCount: 42,
+          processedMessageHashes: ['hash-1', 'hash-2'],
+        },
+        countDelta: { nodeCount: 3, edgeCount: 2, tombstoneCount: 1 },
+      },
+      options: { markSyncDirty: true, vectorDirtyHint: true, reason: 'extraction-batch' },
+    };
+    const result = await (await getHandler(mod, 'graph.commitDelta'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true, 'commitDelta should return ok: true');
+    assert.strictEqual(result.result.accepted, true, 'commitDelta should return accepted: true');
+    assert.strictEqual(result.result.revision, 6, 'revision should be baseRevision+1');
+    assert.strictEqual(result.result.chatId, 'chat-commit-1');
+    assert.strictEqual(typeof result.result.headHash, 'string', 'headHash must be a string');
+    assert.ok(result.result.headHash.length > 0, 'headHash must be non-empty');
+    assert.ok(result.result.committedAt, 'committedAt must be set');
+    assert.strictEqual(result.result.vectorDirtyHint, true, 'vectorDirtyHint must echo input');
+    assert.strictEqual(result.result.statementCount, 1 + 1 + 1 + 1 + 1 + 1, '5 data stmts + 1 meta stmt = 6');
+    assert.strictEqual(result.result.applied.upsertedNodes, 1);
+    assert.strictEqual(result.result.applied.upsertedEdges, 1);
+    assert.strictEqual(result.result.applied.upsertedTombstones, 1);
+    assert.strictEqual(result.result.applied.deletedNodeIds, 1);
+    assert.strictEqual(result.result.applied.deletedEdgeIds, 1);
+
+    // Lock was acquired for the chat scope.
+    assert.strictEqual(calls.lock.length, 1, 'withLock should be called once');
+    assert.strictEqual(calls.lock[0].scope, 'chat:chat-commit-1', 'lock scope must be chat:<chatId>');
+    assert.ok(calls.lock[0].opts.timeoutMs > 0, 'lock must have a timeout');
+
+    // Idempotency.run was called with the input key + a fingerprint.
+    assert.strictEqual(calls.idempotencyRun.length, 1, 'idempotency.run should be called once');
+    assert.strictEqual(calls.idempotencyRun[0].key, 'test-commit-key-1', 'idempotency key must match input');
+
+    // Schema ensure ran first (4 CREATE TABLE statements before any query).
+    const createTableCalls = calls.exec.filter((c) => c.statement.includes('CREATE TABLE'));
+    assert.strictEqual(createTableCalls.length, 4, 'ensureGraphSchema must run before any queries');
+    assert.ok(calls.query.length > 0, 'must use ctx.sql.query for CAS read + post-commit headHash');
+    assert.ok(calls.exec[0] === createTableCalls[0] || calls.exec[0].statement.includes('CREATE TABLE'), 'first exec must be CREATE TABLE');
+
+    // Transaction was called once with the built statements.
+    assert.strictEqual(calls.transaction.length, 1, 'transaction should be called once');
+    const stmts = calls.transaction[0].statements;
+    assert.ok(Array.isArray(stmts), 'statements must be an array');
+    assert.ok(stmts.length <= mod.MAX_SQL_BATCH_STATEMENTS, 'must stay under MAX_SQL_BATCH_STATEMENTS');
+
+    // Verify statement ordering: DELETE edges, DELETE nodes, INSERT nodes,
+    // INSERT edges, INSERT tombstones, meta upsert.
+    assert.ok(stmts[0].statement.includes('DELETE FROM st_bme_graph_edges'), 'first stmt must be DELETE edges');
+    assert.ok(stmts[1].statement.includes('DELETE FROM st_bme_graph_nodes'), 'second stmt must be DELETE nodes');
+    assert.ok(stmts[2].statement.includes('INSERT INTO st_bme_graph_nodes'), 'third stmt must be INSERT nodes');
+    assert.ok(stmts[3].statement.includes('INSERT INTO st_bme_graph_edges'), 'fourth stmt must be INSERT edges');
+    assert.ok(stmts[4].statement.includes('INSERT INTO st_bme_graph_tombstones'), 'fifth stmt must be INSERT tombstones');
+    const metaStmts = stmts.filter((s) => s.statement.includes('INSERT INTO st_bme_graph_meta'));
+    assert.strictEqual(metaStmts.length, 1, 'exactly one meta upsert statement');
+    const metaStmt = metaStmts[0];
+
+    // Meta upsert must include runtimeMetaPatch keys + reserved keys.
+    // The statement uses positional ? params in row order: chat_id, key, value_json, updated_at.
+    // value_json is JSON-stringified (that's what gets stored in the column),
+    // so we parse it back to compare against the original values.
+    const metaParams = metaStmt.params;
+    const metaPairs = [];
+    for (let i = 0; i < metaParams.length; i += 4) {
+      metaPairs.push({ key: metaParams[i + 1], value: JSON.parse(metaParams[i + 2]) });
+    }
+    const metaKeyMap = {};
+    for (const pair of metaPairs) metaKeyMap[pair.key] = pair.value;
+    assert.strictEqual(metaKeyMap['lastProcessedFloor'], 10, 'lastProcessedFloor must be in meta upsert');
+    assert.strictEqual(metaKeyMap['extractionCount'], 42, 'extractionCount must be in meta upsert');
+    assert.deepStrictEqual(metaKeyMap['processedMessageHashes'], ['hash-1', 'hash-2'], 'processedMessageHashes must be in meta upsert');
+    assert.strictEqual(metaKeyMap['revision'], 6, 'revision must be bumped to nextRevision');
+    assert.strictEqual(metaKeyMap['syncDirty'], true, 'syncDirty must be true (markSyncDirty default true)');
+    assert.strictEqual(metaKeyMap['syncDirtyReason'], 'extraction-batch', 'syncDirtyReason must echo reason');
+    assert.strictEqual(metaKeyMap['lastMutationReason'], 'extraction-batch', 'lastMutationReason must echo reason');
+    assert.strictEqual(metaKeyMap['nodeCount'], 3, 'nodeCount must come from countDelta');
+    assert.strictEqual(metaKeyMap['edgeCount'], 2, 'edgeCount must come from countDelta');
+    assert.strictEqual(metaKeyMap['tombstoneCount'], 1, 'tombstoneCount must come from countDelta');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta CAS conflict throws transaction_conflict');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 7, nodeCount: 2, edgeCount: 1 },
+      nodes: [{ id: 'node-a' }],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const input = {
+      chatId: 'chat-conflict',
+      baseRevision: 5, // server has 7, caller expects 5 → mismatch
+      idempotencyKey: 'test-cas-conflict',
+      delta: { upsertNodes: [{ id: 'node-b' }] },
+    };
+    let caught = null;
+    try {
+      await (await getHandler(mod, 'graph.commitDelta'))(ctx, input, {});
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'CAS conflict must throw');
+    assert.strictEqual(caught.status, 409, 'CAS conflict must be 409');
+    assert.strictEqual(caught.code, 'transaction_conflict', 'error code must be transaction_conflict');
+    assert.ok(caught.details, 'error must have details');
+    assert.strictEqual(caught.details.serverRevision, 7, 'details must include serverRevision');
+    assert.strictEqual(caught.details.baseRevision, 5, 'details must include baseRevision');
+    // Transaction must NOT have been called (CAS failed before build/commit).
+    assert.strictEqual(calls.transaction.length, 0, 'transaction must not run on CAS conflict');
+    // Idempotency.run WAS called (CAS happens inside idempotency).
+    assert.strictEqual(calls.idempotencyRun.length, 1, 'idempotency.run must be called before CAS check');
+    // Schema ensure ran (before the CAS read).
+    const createTableCalls = calls.exec.filter((c) => c.statement.includes('CREATE TABLE'));
+    assert.strictEqual(createTableCalls.length, 4, 'ensureGraphSchema must run before CAS read');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta idempotency replay returns cached result');
+  {
+    const sharedCache = new Map();
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 3, nodeCount: 0, edgeCount: 0 },
+      nodes: [{ id: 'node-a' }],
+      edges: [],
+      idempotencyCache: sharedCache,
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const input = {
+      chatId: 'chat-replay',
+      baseRevision: 3,
+      idempotencyKey: 'replay-key',
+      delta: { upsertNodes: [{ id: 'node-a' }] },
+    };
+    const handler = await getHandler(mod, 'graph.commitDelta');
+    const result1 = await handler(ctx, input, {});
+    assert.strictEqual(result1.result.revision, 4, 'first call must bump revision to 4');
+    assert.strictEqual(result1.result.accepted, true);
+    // First call: transaction executed once.
+    assert.strictEqual(calls.transaction.length, 1, 'first call must execute transaction');
+
+    // Second call with same key + same delta → same fingerprint → cached replay.
+    const result2 = await handler(ctx, input, {});
+    assert.strictEqual(result2.result.revision, 4, 'replay must return same revision');
+    assert.strictEqual(result2.result.accepted, true);
+    assert.strictEqual(result2.result.headHash, result1.result.headHash, 'replay must return same headHash');
+    // Transaction must NOT have been called again.
+    assert.strictEqual(calls.transaction.length, 1, 'replay must not re-execute transaction');
+    // idempotency.run was called twice (both calls go through it).
+    assert.strictEqual(calls.idempotencyRun.length, 2, 'idempotency.run called on both invocations');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta idempotency fingerprint mismatch throws idempotency_conflict');
+  {
+    const sharedCache = new Map();
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 3, nodeCount: 0, edgeCount: 0 },
+      nodes: [{ id: 'node-a' }],
+      edges: [],
+      idempotencyCache: sharedCache,
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const handler = await getHandler(mod, 'graph.commitDelta');
+    // First call with delta A.
+    const input1 = {
+      chatId: 'chat-mismatch',
+      baseRevision: 3,
+      idempotencyKey: 'mismatch-key',
+      delta: { upsertNodes: [{ id: 'node-a' }] },
+    };
+    await handler(ctx, input1, {});
+    assert.strictEqual(calls.transaction.length, 1, 'first call must execute transaction');
+
+    // Second call with SAME key but DIFFERENT delta → different fingerprint → conflict.
+    const input2 = {
+      chatId: 'chat-mismatch',
+      baseRevision: 4, // bump baseRevision to match new server state
+      idempotencyKey: 'mismatch-key', // SAME key
+      delta: { upsertNodes: [{ id: 'node-b' }] }, // DIFFERENT delta
+    };
+    let caught = null;
+    try {
+      await handler(ctx, input2, {});
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'fingerprint mismatch must throw');
+    assert.strictEqual(caught.status, 409, 'fingerprint mismatch must be 409');
+    assert.strictEqual(caught.code, 'idempotency_conflict', 'error code must be idempotency_conflict');
+    // Transaction still only ran once (the second call did not execute fn).
+    assert.strictEqual(calls.transaction.length, 1, 'fn must not execute on fingerprint mismatch');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta lock serializes concurrent writers for same chat');
+  {
+    // Two concurrent calls to the same chatId. The first call's transaction
+    // is artificially delayed so we can verify the second call doesn't
+    // overlap (it starts only after the first completes).
+    const sharedCache = new Map();
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 0, nodeCount: 0, edgeCount: 0 },
+      nodes: [],
+      edges: [],
+      idempotencyCache: sharedCache,
+      transactionDelayMs: 50,
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const handler = await getHandler(mod, 'graph.commitDelta');
+
+    // Track transaction execution windows.
+    const windows = [];
+    const origTransaction = ctx.sql.transaction;
+    ctx.sql.transaction = async (database, statements) => {
+      const start = Date.now();
+      const result = await origTransaction(database, statements);
+      const end = Date.now();
+      windows.push({ start, end });
+      return result;
+    };
+
+    // First call: baseRevision=0 (matches server), bumps to 1.
+    // Second call: baseRevision=1 (matches post-first-call server state), bumps to 2.
+    // But the mock ctx.sql.query always returns the ORIGINAL meta (revision=0),
+    // so the second call would CAS-fail if it ran concurrently against the
+    // stale meta. To test lock serialization (not CAS), we use different
+    // chatIds... no wait, we want SAME chatId. Let me instead verify
+    // serialization by checking the lock call order and transaction windows.
+    //
+    // Actually, the cleanest serialization test: both calls use baseRevision=0,
+    // both target the same chat. The first succeeds (CAS passes, revision→1).
+    // The second CAS-fails because the mock still returns revision=0... no,
+    // the mock returns revision=0, so CAS passes again (baseRevision=0 matches
+    // 0). Both would "succeed" against the mock. That's fine for testing
+    // lock serialization — we just verify the transaction windows don't
+    // overlap.
+    const input1 = {
+      chatId: 'chat-serial',
+      baseRevision: 0,
+      idempotencyKey: 'serial-key-1',
+      delta: { upsertNodes: [{ id: 'node-1' }] },
+    };
+    const input2 = {
+      chatId: 'chat-serial',
+      baseRevision: 0,
+      idempotencyKey: 'serial-key-2', // different key so idempotency doesn't short-circuit
+      delta: { upsertNodes: [{ id: 'node-2' }] },
+    };
+
+    // Fire both concurrently.
+    const [r1, r2] = await Promise.all([
+      handler(ctx, input1, {}),
+      handler(ctx, input2, {}),
+    ]);
+
+    assert.strictEqual(r1.result.ok, true);
+    assert.strictEqual(r2.result.ok, true);
+    // Both transactions ran.
+    assert.strictEqual(calls.transaction.length, 2, 'both calls must execute their transactions');
+    // Lock acquired twice for the same scope.
+    assert.strictEqual(calls.lock.length, 2, 'withLock called for both');
+    assert.strictEqual(calls.lock[0].scope, 'chat:chat-serial');
+    assert.strictEqual(calls.lock[1].scope, 'chat:chat-serial');
+    // The two transaction windows must NOT overlap: first.end <= second.start.
+    assert.strictEqual(windows.length, 2, 'two transaction windows recorded');
+    const sorted = windows.slice().sort((a, b) => a.start - b.start);
+    assert.ok(
+      sorted[0].end >= sorted[1].start - 5, // allow 5ms scheduling slack
+      'second transaction must start at/after first transaction ends (lock serializes)',
+    );
+    // More precisely: the second window's start must be >= the first window's end
+    // (the lock prevents overlap). With the 50ms delay, the gap should be clear.
+    assert.ok(
+      sorted[1].start >= sorted[0].end - 5,
+      'second transaction window must not overlap first (lock serializes writers)',
+    );
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta runtimeMetaPatch co-committed in same transaction');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 2, nodeCount: 1, edgeCount: 0, lastProcessedFloor: 5, extractionCount: 10 },
+      nodes: [{ id: 'node-a' }],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const input = {
+      chatId: 'chat-meta',
+      baseRevision: 2,
+      idempotencyKey: 'meta-key',
+      delta: {
+        runtimeMetaPatch: {
+          lastProcessedFloor: 15,
+          extractionCount: 25,
+          processedMessageHashes: ['h1', 'h2', 'h3'],
+          customMetaKey: 'custom-value',
+        },
+      },
+    };
+    const result = await (await getHandler(mod, 'graph.commitDelta'))(ctx, input, {});
+    assert.strictEqual(result.result.revision, 3, 'revision must bump even for meta-only delta');
+    assert.strictEqual(result.result.accepted, true);
+
+    // Exactly one transaction call.
+    assert.strictEqual(calls.transaction.length, 1);
+    const stmts = calls.transaction[0].statements;
+    // The meta upsert is the only statement for a meta-only delta.
+    assert.strictEqual(stmts.length, 1, 'meta-only delta must produce exactly 1 statement');
+    assert.ok(stmts[0].statement.includes('INSERT INTO st_bme_graph_meta'), 'must be meta upsert');
+    assert.ok(
+      stmts[0].statement.includes('ON CONFLICT(chat_id, meta_key) DO UPDATE SET'),
+      'must use ON CONFLICT DO UPDATE for upsert',
+    );
+
+    // Parse the meta pairs from positional params (value_json is JSON-stringified).
+    const metaParams = stmts[0].params;
+    const metaPairs = [];
+    for (let i = 0; i < metaParams.length; i += 4) {
+      metaPairs.push({ key: metaParams[i + 1], value: JSON.parse(metaParams[i + 2]) });
+    }
+    const metaKeyMap = {};
+    for (const pair of metaPairs) metaKeyMap[pair.key] = pair.value;
+    assert.strictEqual(metaKeyMap['lastProcessedFloor'], 15, 'lastProcessedFloor co-committed');
+    assert.strictEqual(metaKeyMap['extractionCount'], 25, 'extractionCount co-committed');
+    assert.deepStrictEqual(metaKeyMap['processedMessageHashes'], ['h1', 'h2', 'h3'], 'processedMessageHashes co-committed');
+    assert.strictEqual(metaKeyMap['customMetaKey'], 'custom-value', 'custom meta key co-committed');
+    assert.strictEqual(metaKeyMap['revision'], 3, 'revision co-committed in same statement');
+    assert.strictEqual(metaKeyMap['syncDirty'], true, 'syncDirty co-committed (default true)');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta empty delta still commits (bumps revision)');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 5, nodeCount: 0, edgeCount: 0, tombstoneCount: 0 },
+      nodes: [],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const input = {
+      chatId: 'chat-empty',
+      baseRevision: 5,
+      idempotencyKey: 'empty-key',
+      delta: {}, // completely empty
+    };
+    const result = await (await getHandler(mod, 'graph.commitDelta'))(ctx, input, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.accepted, true);
+    assert.strictEqual(result.result.revision, 6, 'empty delta must still bump revision');
+    assert.strictEqual(typeof result.result.headHash, 'string', 'headHash must be computed');
+    // Transaction ran with at least the meta upsert statement.
+    assert.strictEqual(calls.transaction.length, 1);
+    const stmts = calls.transaction[0].statements;
+    assert.ok(stmts.length >= 1, 'empty delta must still produce at least the meta upsert');
+    const metaStmts = stmts.filter((s) => s.statement.includes('st_bme_graph_meta'));
+    assert.strictEqual(metaStmts.length, 1, 'exactly one meta upsert for empty delta');
+    // No DELETE or INSERT statements for empty delta.
+    assert.strictEqual(stmts.filter((s) => s.statement.includes('DELETE')).length, 0, 'no DELETE for empty delta');
+    assert.strictEqual(stmts.filter((s) => s.statement.includes('INSERT INTO st_bme_graph_nodes')).length, 0, 'no node INSERT for empty delta');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta delta too large throws validation_error');
+  {
+    // 10001 nodes → ceil(10001/100) = 101 INSERT statements + 1 meta = 102 > 100.
+    // The early budget estimate in buildCommitDeltaStatements must catch this
+    // and throw validation_error BEFORE building any statements.
+    const largeNodeArray = Array.from({ length: 10001 }, (_, i) => ({ id: 'node-' + i, type: 'concept' }));
+    let caught = null;
+    try {
+      mod._buildCommitDeltaStatements('chat-big', 5, {
+        upsertNodes: largeNodeArray,
+      }, {}, { revision: 5, nodeCount: 0, edgeCount: 0 });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'oversized delta must throw');
+    assert.strictEqual(caught.status, 400, 'must be 400 validation_error');
+    assert.strictEqual(caught.code, 'validation_error', 'must be validation_error');
+    assert.ok(caught.details, 'must have details');
+    assert.ok(caught.details.statementCount > mod.MAX_SQL_BATCH_STATEMENTS, 'details must show overage');
+    assert.strictEqual(caught.details.maxStatements, mod.MAX_SQL_BATCH_STATEMENTS);
+    assert.strictEqual(caught.details.upsertNodes, 10001);
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta chunking: large-but-under-budget delta succeeds');
+  {
+    // 5000 nodes → ceil(5000/100) = 50 INSERT statements + 1 meta = 51 <= 100.
+    // Verifies chunking produces multiple multi-row INSERT statements, each
+    // carrying CHUNK_ROWS_INSERT rows.
+    const nodeArray = Array.from({ length: 5000 }, (_, i) => ({ id: 'node-' + i, type: 't' }));
+    const built = mod._buildCommitDeltaStatements('chat-chunk', 0, {
+      upsertNodes: nodeArray,
+    }, {}, { revision: 0, nodeCount: 0, edgeCount: 0 });
+    // 50 INSERT nodes + 1 meta = 51 statements.
+    assert.strictEqual(built.statements.length, 51, '5000 nodes must produce 50 INSERT chunks + 1 meta');
+    const insertStmts = built.statements.filter((s) => s.statement.includes('INSERT INTO st_bme_graph_nodes'));
+    assert.strictEqual(insertStmts.length, 50, '50 multi-row INSERT chunks');
+    // Each INSERT chunk carries CHUNK_ROWS_INSERT rows × 8 params = 800 params.
+    for (const stmt of insertStmts) {
+      assert.strictEqual(stmt.params.length, mod.CHUNK_ROWS_INSERT * 8, 'each chunk must have 100 rows × 8 params');
+    }
+    assert.ok(built.statements[built.statements.length - 1].statement.includes('st_bme_graph_meta'), 'last stmt must be meta upsert');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta requires chatId');
+  {
+    const { ctx } = createMockSqlTxCtx({ meta: {}, nodes: [], edges: [] });
+    ctx.transactionName = 'graph.commitDelta';
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'graph.commitDelta'))(ctx, { baseRevision: 0, delta: {} }, {}),
+      /requires chatId/,
+      'should reject missing chatId',
+    );
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta requires baseRevision');
+  {
+    const { ctx } = createMockSqlTxCtx({ meta: {}, nodes: [], edges: [] });
+    ctx.transactionName = 'graph.commitDelta';
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'graph.commitDelta'))(ctx, { chatId: 'c1', delta: {} }, {}),
+      /requires baseRevision/,
+      'should reject missing baseRevision',
+    );
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta requires delta');
+  {
+    const { ctx } = createMockSqlTxCtx({ meta: {}, nodes: [], edges: [] });
+    ctx.transactionName = 'graph.commitDelta';
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'graph.commitDelta'))(ctx, { chatId: 'c1', baseRevision: 0 }, {}),
+      /requires delta/,
+      'should reject missing delta',
+    );
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta respects explicit database');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 0 },
+      nodes: [],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const result = await (await getHandler(mod, 'graph.commitDelta'))(ctx, {
+      chatId: 'chat-db',
+      database: 'custom-graph-db',
+      baseRevision: 0,
+      idempotencyKey: 'db-key',
+      delta: {},
+    }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(calls.exec[0].database, 'custom-graph-db', 'exec must use explicit database');
+    assert.strictEqual(calls.query[0].database, 'custom-graph-db', 'query must use explicit database');
+    assert.strictEqual(calls.transaction[0].database, 'custom-graph-db', 'transaction must use explicit database');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta markSyncDirty:false clears syncDirty');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 1, nodeCount: 0, edgeCount: 0 },
+      nodes: [],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const result = await (await getHandler(mod, 'graph.commitDelta'))(ctx, {
+      chatId: 'chat-sync',
+      baseRevision: 1,
+      idempotencyKey: 'sync-key',
+      delta: {},
+      options: { markSyncDirty: false },
+    }, {});
+    assert.strictEqual(result.result.ok, true);
+    const metaStmt = calls.transaction[0].statements.find((s) => s.statement.includes('st_bme_graph_meta'));
+    const metaParams = metaStmt.params;
+    const metaPairs = [];
+    for (let i = 0; i < metaParams.length; i += 4) {
+      metaPairs.push({ key: metaParams[i + 1], value: JSON.parse(metaParams[i + 2]) });
+    }
+    const metaKeyMap = {};
+    for (const pair of metaPairs) metaKeyMap[pair.key] = pair.value;
+    assert.strictEqual(metaKeyMap['syncDirty'], false, 'syncDirty must be false when markSyncDirty:false');
+    assert.strictEqual(metaKeyMap['syncDirtyReason'], '', 'syncDirtyReason must be empty when markSyncDirty:false');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta idempotency fingerprint covers options (markSyncDirty true vs false → idempotency_conflict)');
+  {
+    // Phase E fingerprint blocker regression: previously the fingerprint
+    // omitted `database` and `options`, so reusing the same idempotency
+    // key with the same chatId/baseRevision/delta but DIFFERENT options
+    // (e.g. markSyncDirty:true vs false) would incorrectly replay cached
+    // success — committing the wrong syncDirty / lastMutationReason /
+    // vectorDirtyHint values. The fingerprint now includes options, so a
+    // differing options shape must surface idempotency_conflict (409)
+    // and must NOT execute the transaction fn a second time.
+    const sharedCache = new Map();
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 1, nodeCount: 0, edgeCount: 0 },
+      nodes: [],
+      edges: [],
+      idempotencyCache: sharedCache,
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const handler = await getHandler(mod, 'graph.commitDelta');
+
+    // First call: markSyncDirty:true (default-ish).
+    const input1 = {
+      chatId: 'chat-opts',
+      baseRevision: 1,
+      idempotencyKey: 'opts-key',
+      delta: {},
+      options: { markSyncDirty: true, reason: 'extraction-batch' },
+    };
+    const result1 = await handler(ctx, input1, {});
+    assert.strictEqual(result1.result.ok, true, 'first call must succeed');
+    assert.strictEqual(result1.result.accepted, true, 'first call must be accepted');
+    assert.strictEqual(calls.transaction.length, 1, 'first call must execute transaction');
+
+    // Second call with SAME idempotency key + SAME chatId/baseRevision/delta
+    // but DIFFERENT options (markSyncDirty:false) → different fingerprint →
+    // idempotency_conflict (not replay).
+    const input2 = {
+      chatId: 'chat-opts',
+      baseRevision: 2, // bump to match post-first-call server state (CAS never reached)
+      idempotencyKey: 'opts-key', // SAME key
+      delta: {}, // SAME delta
+      options: { markSyncDirty: false }, // DIFFERENT options
+    };
+    let caught = null;
+    try {
+      await handler(ctx, input2, {});
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'options fingerprint mismatch must throw');
+    assert.strictEqual(caught.status, 409, 'options fingerprint mismatch must be 409');
+    assert.strictEqual(caught.code, 'idempotency_conflict', 'error code must be idempotency_conflict');
+    // Transaction must NOT have been called again — the second call must
+    // short-circuit at the idempotency layer, not execute fn() (which would
+    // otherwise have run the CAS check and re-committed with markSyncDirty:false).
+    assert.strictEqual(calls.transaction.length, 1, 'fn must not execute on options fingerprint mismatch');
+    // Idempotency.run was called twice (both calls go through it).
+    assert.strictEqual(calls.idempotencyRun.length, 2, 'idempotency.run called on both invocations');
+    // The two fingerprints captured by idempotency.run must differ (the
+    // options shape is what changed).
+    assert.notStrictEqual(
+      calls.idempotencyRun[0].fingerprint,
+      calls.idempotencyRun[1].fingerprint,
+      'fingerprint must differ when options differ',
+    );
+    assert.ok(
+      calls.idempotencyRun[0].fingerprint.includes('"markSyncDirty"'),
+      'fingerprint must include options payload',
+    );
+  }
+
+  console.log('[test:authority-companion-module] testing graph.commitDelta idempotency fingerprint covers database');
+  {
+    // Same blocker, different angle: same idempotency key + same
+    // chatId/baseRevision/delta but a DIFFERENT database target must
+    // also surface idempotency_conflict rather than replay cached
+    // success against the wrong database.
+    const sharedCache = new Map();
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 1, nodeCount: 0, edgeCount: 0 },
+      nodes: [],
+      edges: [],
+      idempotencyCache: sharedCache,
+    });
+    ctx.transactionName = 'graph.commitDelta';
+    const handler = await getHandler(mod, 'graph.commitDelta');
+
+    const input1 = {
+      chatId: 'chat-db-fp',
+      database: 'graph-db-a',
+      baseRevision: 1,
+      idempotencyKey: 'db-fp-key',
+      delta: {},
+    };
+    const result1 = await handler(ctx, input1, {});
+    assert.strictEqual(result1.result.ok, true, 'first call must succeed');
+    assert.strictEqual(calls.transaction.length, 1, 'first call must execute transaction');
+    assert.strictEqual(calls.transaction[0].database, 'graph-db-a', 'first call must target db-a');
+
+    const input2 = {
+      chatId: 'chat-db-fp',
+      database: 'graph-db-b', // DIFFERENT database target
+      baseRevision: 2,
+      idempotencyKey: 'db-fp-key', // SAME key
+      delta: {}, // SAME delta
+    };
+    let caught = null;
+    try {
+      await handler(ctx, input2, {});
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'database fingerprint mismatch must throw');
+    assert.strictEqual(caught.status, 409, 'database fingerprint mismatch must be 409');
+    assert.strictEqual(caught.code, 'idempotency_conflict', 'error code must be idempotency_conflict');
+    assert.strictEqual(calls.transaction.length, 1, 'fn must not execute on database fingerprint mismatch');
+    assert.notStrictEqual(
+      calls.idempotencyRun[0].fingerprint,
+      calls.idempotencyRun[1].fingerprint,
+      'fingerprint must differ when database differs',
     );
   }
 

@@ -71,6 +71,19 @@
       "timeoutMs": 120000,
       "maxRequestBytes": 67108864,
       "maxResponseBytes": 67108864
+    },
+    "graph.commitDelta": {
+      "name": "graph.commitDelta",
+      "version": "1",
+      "title": "BME graph commitDelta",
+      "description": "Atomically commits a BME graph delta (upserts/deletes/tombstones + runtime meta patch) for a chat under per-chat lock + idempotency + CAS against baseRevision. Co-commits the runtime meta patch (lastProcessedFloor/extractionCount/processedMessageHashes) in the same atomic SQL transaction so extraction floor and graph contents cannot drift.",
+      "riskLevel": "high",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "sql.private" }],
+      "idempotency": "required",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
     }
   }
 }

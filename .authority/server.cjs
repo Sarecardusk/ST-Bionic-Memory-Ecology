@@ -44,6 +44,37 @@ const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_BME_GRAPH_DATABASE = 'default';
 const BME_GRAPH_SCHEMA_VERSION = 1;
 
+// DOA enforces a hard cap of 100 statements per ctx.sql.transaction call
+// (see MAX_SQL_BATCH_STATEMENTS in packages/server-plugin/src/constants.ts).
+// The companion handler must pack the delta into bulk operations to stay
+// under this cap. We mirror the constant here so the handler can validate
+// the budget locally and surface a clear validation_error before reaching
+// the DOA wrapper's hard reject.
+const MAX_SQL_BATCH_STATEMENTS = 100;
+
+// Chunking limits to stay under SQLite's default parameter cap (999 in
+// most builds; 32766 in newer ones — we use the conservative 999 budget).
+// Each multi-row INSERT carries 7-9 params per row × 100 rows = 700-900
+// params per statement (safe). DELETE IN clauses carry 1 param per id;
+// 500 ids per chunk is well under the cap and keeps statement text small.
+const CHUNK_ROWS_INSERT = 100;
+const CHUNK_IDS_DELETE = 500;
+
+// Reserved meta keys that always accompany a commitDelta. Mirrors
+// PERSIST_META_RESERVED_KEYS in sync/authority-graph-store.js so the
+// server-side companion write stays in lockstep with the client-side
+// graph store's reserved-meta contract.
+const COMMIT_DELTA_RESERVED_META_KEYS = [
+  'revision',
+  'lastModified',
+  'lastMutationReason',
+  'syncDirty',
+  'syncDirtyReason',
+  'nodeCount',
+  'edgeCount',
+  'tombstoneCount',
+];
+
 const crypto = require('crypto');
 
 // Server-side caps for recall.candidates. Mirrors the DOA companion
@@ -461,6 +492,344 @@ async function readGraphHead(txCtx, database, chatId) {
   return { exists: true, revision: revision, headHash: headHash, meta: meta };
 }
 
+// --- graph.commitDelta helpers ---
+//
+// Build a single multi-row INSERT ... ON CONFLICT DO UPDATE statement for
+// `st_bme_graph_meta`. Each row contributes 4 params (chat_id, meta_key,
+// value_json, updated_at). The caller passes a list of { key, value }
+// entries; values are JSON-stringified. The DOA transaction wrapper
+// accepts positional `?` params (SqlValue[]), so we expand the placeholder
+// list and concat params in row order.
+function buildMetaUpsertStatement(chatId, entries, nowMs) {
+  var rows = [];
+  var params = [];
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (!entry || !entry.key) continue;
+    rows.push('(?, ?, ?, ?)');
+    params.push(chatId, String(entry.key), JSON.stringify(entry.value == null ? null : entry.value), nowMs);
+  }
+  if (rows.length === 0) return null;
+  return {
+    statement:
+      'INSERT INTO ' + GRAPH_TABLES.meta +
+      ' (chat_id, meta_key, value_json, updated_at) VALUES ' +
+      rows.join(', ') +
+      ' ON CONFLICT(chat_id, meta_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at',
+    params: params,
+  };
+}
+
+// Build a single multi-row INSERT ... ON CONFLICT DO UPDATE statement for
+// `st_bme_graph_nodes`. Each row carries 8 params (chat_id, record_id,
+// payload_json, node_type, source_floor, archived, updated_at, deleted_at).
+// `payload_json` is the full node object JSON-stringified (mirrors the
+// BME client store's `_upsertNodeStatement` shape).
+function buildNodeInsertStatement(chatId, nodes) {
+  var rows = [];
+  var params = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i] || {};
+    var id = normalizeRecordId(node.id || node.recordId || node.record_id);
+    if (!id) continue;
+    rows.push('(?, ?, ?, ?, ?, ?, ?, ?)');
+    params.push(
+      chatId,
+      id,
+      JSON.stringify(node),
+      String(node.type || node.nodeType || ''),
+      Number.isFinite(Number(node.sourceFloor != null ? node.sourceFloor : node.source_floor)) ? Number(node.sourceFloor != null ? node.sourceFloor : node.source_floor) : null,
+      node.archived === true ? 1 : 0,
+      Number.isFinite(Number(node.updatedAt != null ? node.updatedAt : node.updated_at)) ? Number(node.updatedAt != null ? node.updatedAt : node.updated_at) : null,
+      Number.isFinite(Number(node.deletedAt != null ? node.deletedAt : node.deleted_at)) ? Number(node.deletedAt != null ? node.deletedAt : node.deleted_at) : null
+    );
+  }
+  if (rows.length === 0) return null;
+  return {
+    statement:
+      'INSERT INTO ' + GRAPH_TABLES.nodes +
+      ' (chat_id, record_id, payload_json, node_type, source_floor, archived, updated_at, deleted_at) VALUES ' +
+      rows.join(', ') +
+      ' ON CONFLICT(chat_id, record_id) DO UPDATE SET payload_json = excluded.payload_json, node_type = excluded.node_type, source_floor = excluded.source_floor, archived = excluded.archived, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at',
+    params: params,
+  };
+}
+
+// Build a single multi-row INSERT ... ON CONFLICT DO UPDATE statement for
+// `st_bme_graph_edges`. Each row carries 9 params (chat_id, record_id,
+// payload_json, from_id, to_id, relation, source_floor, updated_at,
+// deleted_at).
+function buildEdgeInsertStatement(chatId, edges) {
+  var rows = [];
+  var params = [];
+  for (var i = 0; i < edges.length; i++) {
+    var edge = edges[i] || {};
+    var id = normalizeRecordId(edge.id || edge.recordId || edge.record_id);
+    if (!id) continue;
+    rows.push('(?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    params.push(
+      chatId,
+      id,
+      JSON.stringify(edge),
+      normalizeRecordId(edge.fromId != null ? edge.fromId : edge.from_id),
+      normalizeRecordId(edge.toId != null ? edge.toId : edge.to_id),
+      String(edge.relation || ''),
+      Number.isFinite(Number(edge.sourceFloor != null ? edge.sourceFloor : edge.source_floor)) ? Number(edge.sourceFloor != null ? edge.sourceFloor : edge.source_floor) : null,
+      Number.isFinite(Number(edge.updatedAt != null ? edge.updatedAt : edge.updated_at)) ? Number(edge.updatedAt != null ? edge.updatedAt : edge.updated_at) : null,
+      Number.isFinite(Number(edge.deletedAt != null ? edge.deletedAt : edge.deleted_at)) ? Number(edge.deletedAt != null ? edge.deletedAt : edge.deleted_at) : null
+    );
+  }
+  if (rows.length === 0) return null;
+  return {
+    statement:
+      'INSERT INTO ' + GRAPH_TABLES.edges +
+      ' (chat_id, record_id, payload_json, from_id, to_id, relation, source_floor, updated_at, deleted_at) VALUES ' +
+      rows.join(', ') +
+      ' ON CONFLICT(chat_id, record_id) DO UPDATE SET payload_json = excluded.payload_json, from_id = excluded.from_id, to_id = excluded.to_id, relation = excluded.relation, source_floor = excluded.source_floor, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at',
+    params: params,
+  };
+}
+
+// Build a single multi-row INSERT ... ON CONFLICT DO UPDATE statement for
+// `st_bme_graph_tombstones`. Each row carries 7 params (chat_id, record_id,
+// payload_json, tombstone_kind, target_id, deleted_at, source_device_id).
+function buildTombstoneInsertStatement(chatId, tombstones) {
+  var rows = [];
+  var params = [];
+  for (var i = 0; i < tombstones.length; i++) {
+    var tomb = tombstones[i] || {};
+    var id = normalizeRecordId(tomb.id || tomb.recordId || tomb.record_id);
+    if (!id) continue;
+    rows.push('(?, ?, ?, ?, ?, ?, ?)');
+    params.push(
+      chatId,
+      id,
+      JSON.stringify(tomb),
+      normalizeRecordId(tomb.kind != null ? tomb.kind : tomb.tombstoneKind || tomb.tombstone_kind),
+      normalizeRecordId(tomb.targetId != null ? tomb.targetId : tomb.target_id),
+      Number.isFinite(Number(tomb.deletedAt != null ? tomb.deletedAt : tomb.deleted_at)) ? Number(tomb.deletedAt != null ? tomb.deletedAt : tomb.deleted_at) : null,
+      normalizeRecordId(tomb.sourceDeviceId != null ? tomb.sourceDeviceId : tomb.source_device_id)
+    );
+  }
+  if (rows.length === 0) return null;
+  return {
+    statement:
+      'INSERT INTO ' + GRAPH_TABLES.tombstones +
+      ' (chat_id, record_id, payload_json, tombstone_kind, target_id, deleted_at, source_device_id) VALUES ' +
+      rows.join(', ') +
+      ' ON CONFLICT(chat_id, record_id) DO UPDATE SET payload_json = excluded.payload_json, tombstone_kind = excluded.tombstone_kind, target_id = excluded.target_id, deleted_at = excluded.deleted_at, source_device_id = excluded.source_device_id',
+    params: params,
+  };
+}
+
+// Build a single DELETE FROM <table> WHERE chat_id = ? AND record_id IN (...)
+// statement. Chunked upstream so the IN list stays under the SQLite param
+// cap. Returns null if `ids` is empty (no statement needed).
+function buildDeleteInStatement(table, chatId, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  var placeholders = [];
+  var params = [chatId];
+  for (var i = 0; i < ids.length; i++) {
+    var id = normalizeRecordId(ids[i]);
+    if (!id) continue;
+    placeholders.push('?');
+    params.push(id);
+  }
+  if (placeholders.length === 0) return null;
+  return {
+    statement: 'DELETE FROM ' + table + ' WHERE chat_id = ? AND record_id IN (' + placeholders.join(', ') + ')',
+    params: params,
+  };
+}
+
+// Chunk a flat array into sub-arrays of size `size`.
+function chunkArray(arr, size) {
+  var chunks = [];
+  for (var i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+// Build the full statement list for a commitDelta transaction. Returns
+// { statements, statementCount, counts: { nodeInserts, edgeInserts, ... } }
+// for diagnostics. Throws validation_error if the total statement count
+// would exceed MAX_SQL_BATCH_STATEMENTS.
+function buildCommitDeltaStatements(chatId, baseRevision, delta, options, existingMeta) {
+  delta = delta || {};
+  options = options || {};
+  var upsertNodes = toArray(delta.upsertNodes);
+  var upsertEdges = toArray(delta.upsertEdges);
+  var tombstones = toArray(delta.tombstones);
+  var deleteNodeIds = toArray(delta.deleteNodeIds).map(normalizeRecordId).filter(Boolean);
+  var deleteEdgeIds = toArray(delta.deleteEdgeIds).map(normalizeRecordId).filter(Boolean);
+  var runtimeMetaPatch = (delta.runtimeMetaPatch && typeof delta.runtimeMetaPatch === 'object' && !Array.isArray(delta.runtimeMetaPatch))
+    ? delta.runtimeMetaPatch
+    : {};
+  var countDelta = (delta.countDelta && typeof delta.countDelta === 'object' && !Array.isArray(delta.countDelta))
+    ? delta.countDelta
+    : {};
+
+  // Early budget estimate so we can reject oversized deltas WITHOUT
+  // building all the statements. Each chunk is one statement; the meta
+  // upsert is always exactly one statement.
+  var estimatedEdgeDeleteStmts = Math.ceil(deleteEdgeIds.length / CHUNK_IDS_DELETE);
+  var estimatedNodeDeleteStmts = Math.ceil(deleteNodeIds.length / CHUNK_IDS_DELETE);
+  var estimatedNodeInsertStmts = Math.ceil(upsertNodes.length / CHUNK_ROWS_INSERT);
+  var estimatedEdgeInsertStmts = Math.ceil(upsertEdges.length / CHUNK_ROWS_INSERT);
+  var estimatedTombInsertStmts = Math.ceil(tombstones.length / CHUNK_ROWS_INSERT);
+  var estimatedTotal =
+    estimatedEdgeDeleteStmts +
+    estimatedNodeDeleteStmts +
+    estimatedNodeInsertStmts +
+    estimatedEdgeInsertStmts +
+    estimatedTombInsertStmts +
+    1; // +1 for the meta upsert (always present)
+
+  if (estimatedTotal > MAX_SQL_BATCH_STATEMENTS) {
+    var earlyErr = new Error(
+      'BME graph.commitDelta delta exceeds MAX_SQL_BATCH_STATEMENTS (' + MAX_SQL_BATCH_STATEMENTS +
+      '): estimated ' + estimatedTotal + ' statements. ' +
+      'Reduce upsert/delete batch sizes and retry.'
+    );
+    earlyErr.status = 400;
+    earlyErr.code = 'validation_error';
+    earlyErr.details = {
+      statementCount: estimatedTotal,
+      maxStatements: MAX_SQL_BATCH_STATEMENTS,
+      upsertNodes: upsertNodes.length,
+      upsertEdges: upsertEdges.length,
+      tombstones: tombstones.length,
+      deleteNodeIds: deleteNodeIds.length,
+      deleteEdgeIds: deleteEdgeIds.length,
+    };
+    throw earlyErr;
+  }
+
+  var nowMs = Date.now();
+  var nextRevision = Number(baseRevision) + 1;
+  var markSyncDirty = options.markSyncDirty !== false; // default true
+  var reason = normalizeString(options.reason, 'commitDelta');
+
+  var statements = [];
+
+  // (a) DELETE edges (chunked by CHUNK_IDS_DELETE)
+  var edgeDeleteChunks = chunkArray(deleteEdgeIds, CHUNK_IDS_DELETE);
+  for (var ed = 0; ed < edgeDeleteChunks.length; ed++) {
+    var stmt = buildDeleteInStatement(GRAPH_TABLES.edges, chatId, edgeDeleteChunks[ed]);
+    if (stmt) statements.push(stmt);
+  }
+
+  // (b) DELETE nodes (chunked by CHUNK_IDS_DELETE)
+  var nodeDeleteChunks = chunkArray(deleteNodeIds, CHUNK_IDS_DELETE);
+  for (var nd = 0; nd < nodeDeleteChunks.length; nd++) {
+    var stmt2 = buildDeleteInStatement(GRAPH_TABLES.nodes, chatId, nodeDeleteChunks[nd]);
+    if (stmt2) statements.push(stmt2);
+  }
+
+  // (c) Multi-row INSERT nodes (chunked by CHUNK_ROWS_INSERT)
+  var nodeInsertChunks = chunkArray(upsertNodes, CHUNK_ROWS_INSERT);
+  for (var ni = 0; ni < nodeInsertChunks.length; ni++) {
+    var stmt3 = buildNodeInsertStatement(chatId, nodeInsertChunks[ni]);
+    if (stmt3) statements.push(stmt3);
+  }
+
+  // (d) Multi-row INSERT edges (chunked by CHUNK_ROWS_INSERT)
+  var edgeInsertChunks = chunkArray(upsertEdges, CHUNK_ROWS_INSERT);
+  for (var ei = 0; ei < edgeInsertChunks.length; ei++) {
+    var stmt4 = buildEdgeInsertStatement(chatId, edgeInsertChunks[ei]);
+    if (stmt4) statements.push(stmt4);
+  }
+
+  // (e) Multi-row INSERT tombstones (chunked by CHUNK_ROWS_INSERT)
+  var tombInsertChunks = chunkArray(tombstones, CHUNK_ROWS_INSERT);
+  for (var ti = 0; ti < tombInsertChunks.length; ti++) {
+    var stmt5 = buildTombstoneInsertStatement(chatId, tombInsertChunks[ti]);
+    if (stmt5) statements.push(stmt5);
+  }
+
+  // (f) Meta upsert (single multi-row statement). Always present so the
+  // revision bump + syncDirty + runtimeMetaPatch co-commit in the same
+  // atomic transaction. Reserved meta keys override any same-named keys
+  // in runtimeMetaPatch so callers cannot accidentally stomp revision.
+  var metaEntries = [];
+  var reserved = new Set(COMMIT_DELTA_RESERVED_META_KEYS);
+  // 1. Runtime meta patch first (non-reserved keys only).
+  var patchKeys = Object.keys(runtimeMetaPatch);
+  for (var pk = 0; pk < patchKeys.length; pk++) {
+    var patchKey = patchKeys[pk];
+    if (reserved.has(patchKey)) continue;
+    metaEntries.push({ key: patchKey, value: runtimeMetaPatch[patchKey] });
+  }
+  // 2. Reserved keys (caller-supplied countDelta wins; otherwise fall
+  // back to existing meta so we don't clobber known-good counts when
+  // the caller didn't bother to recompute them).
+  var fallbackNodeCount = Number(existingMeta && existingMeta.nodeCount);
+  if (!Number.isFinite(fallbackNodeCount)) fallbackNodeCount = 0;
+  var fallbackEdgeCount = Number(existingMeta && existingMeta.edgeCount);
+  if (!Number.isFinite(fallbackEdgeCount)) fallbackEdgeCount = 0;
+  var fallbackTombstoneCount = Number(existingMeta && existingMeta.tombstoneCount);
+  if (!Number.isFinite(fallbackTombstoneCount)) fallbackTombstoneCount = 0;
+
+  // Override reserved runtimeMetaPatch keys when present (lastProcessedFloor,
+  // extractionCount are NOT in the reserved set, so they flow through the
+  // runtime meta patch path above; but if a caller passes nodeCount in
+  // runtimeMetaPatch it would be skipped — countDelta is the canonical
+  // channel for counts).
+  var nextNodeCount = Number.isFinite(Number(countDelta.nodeCount)) ? Number(countDelta.nodeCount) : fallbackNodeCount;
+  var nextEdgeCount = Number.isFinite(Number(countDelta.edgeCount)) ? Number(countDelta.edgeCount) : fallbackEdgeCount;
+  var nextTombstoneCount = Number.isFinite(Number(countDelta.tombstoneCount)) ? Number(countDelta.tombstoneCount) : fallbackTombstoneCount;
+
+  metaEntries.push({ key: 'revision', value: nextRevision });
+  metaEntries.push({ key: 'lastModified', value: nowMs });
+  metaEntries.push({ key: 'lastMutationReason', value: reason });
+  metaEntries.push({ key: 'syncDirty', value: Boolean(markSyncDirty) });
+  metaEntries.push({ key: 'syncDirtyReason', value: markSyncDirty ? reason : '' });
+  metaEntries.push({ key: 'nodeCount', value: nextNodeCount });
+  metaEntries.push({ key: 'edgeCount', value: nextEdgeCount });
+  metaEntries.push({ key: 'tombstoneCount', value: nextTombstoneCount });
+
+  var metaStmt = buildMetaUpsertStatement(chatId, metaEntries, nowMs);
+  if (metaStmt) statements.push(metaStmt);
+
+  // Final budget check (defense-in-depth; the early estimate should
+  // have caught any overage, but the actual statement count is the
+  // source of truth).
+  if (statements.length > MAX_SQL_BATCH_STATEMENTS) {
+    var err = new Error(
+      'BME graph.commitDelta delta exceeds MAX_SQL_BATCH_STATEMENTS (' + MAX_SQL_BATCH_STATEMENTS +
+      '): generated ' + statements.length + ' statements. ' +
+      'Reduce upsert/delete batch sizes and retry.'
+    );
+    err.status = 400;
+    err.code = 'validation_error';
+    err.details = {
+      statementCount: statements.length,
+      maxStatements: MAX_SQL_BATCH_STATEMENTS,
+      upsertNodes: upsertNodes.length,
+      upsertEdges: upsertEdges.length,
+      tombstones: tombstones.length,
+      deleteNodeIds: deleteNodeIds.length,
+      deleteEdgeIds: deleteEdgeIds.length,
+    };
+    throw err;
+  }
+
+  return {
+    statements: statements,
+    nextRevision: nextRevision,
+    nextNodeCount: nextNodeCount,
+    nextEdgeCount: nextEdgeCount,
+    nextTombstoneCount: nextTombstoneCount,
+    upsertedNodes: upsertNodes.length,
+    upsertedEdges: upsertEdges.length,
+    upsertedTombstones: tombstones.length,
+    deletedNodeIds: deleteNodeIds.length,
+    deletedEdgeIds: deleteEdgeIds.length,
+    committedAt: new Date(nowMs).toISOString(),
+  };
+}
+
 // --- activate ---
 
 module.exports.activate = async function activate(ctx) {
@@ -855,6 +1224,168 @@ module.exports.activate = async function activate(ctx) {
     },
   });
 
+  ctx.registerTransaction('graph.commitDelta', {
+    handler: async function (txCtx, input) {
+      input = input || {};
+      var database = resolveGraphDatabase(input);
+      var chatId = resolveGraphChatId(input);
+
+      // Validate companion capabilities required for the lock → idempotency
+      // → CAS → transaction pipeline. The DOA host wires these onto txCtx
+      // when the manifest declares idempotency:"required" + sql.private;
+      // surface a clear error if a future host forgets to inject them.
+      if (!txCtx || typeof txCtx.locks !== 'object' || typeof txCtx.locks.withLock !== 'function') {
+        var lockErr = new Error('BME graph.commitDelta requires ctx.locks.withLock (Phase B companion capability)');
+        lockErr.status = 500;
+        lockErr.code = 'capability_unavailable';
+        throw lockErr;
+      }
+      if (!txCtx || typeof txCtx.idempotency !== 'object' || typeof txCtx.idempotency.run !== 'function') {
+        var idemErr = new Error('BME graph.commitDelta requires ctx.idempotency.run (Phase C companion capability)');
+        idemErr.status = 500;
+        idemErr.code = 'capability_unavailable';
+        throw idemErr;
+      }
+
+      // --- validate input ---
+      // baseRevision is required (number, >= 0). It is the CAS expected
+      // value: the caller's view of the current server revision. The
+      // handler reads the actual server revision inside the lock and
+      // compares; mismatch → 409 transaction_conflict.
+      var baseRevision = Number(input.baseRevision);
+      if (!Number.isFinite(baseRevision) || baseRevision < 0) {
+        var verr = new Error('BME graph.commitDelta requires baseRevision (non-negative number)');
+        verr.status = 400;
+        verr.code = 'validation_error';
+        throw verr;
+      }
+      var delta = input.delta;
+      if (!delta || typeof delta !== 'object' || Array.isArray(delta)) {
+        var dverr = new Error('BME graph.commitDelta requires delta (object)');
+        dverr.status = 400;
+        dverr.code = 'validation_error';
+        throw dverr;
+      }
+      var options = (input.options && typeof input.options === 'object' && !Array.isArray(input.options))
+        ? input.options
+        : {};
+
+      // Idempotency key: prefer caller-supplied (the DOA wrapper auto-
+      // prefixes with ownerExtensionId); fall back to a deterministic
+      // key scoped to chat + baseRevision. The fingerprint covers the
+      // full delta + chatId + baseRevision + database + options so two
+      // retries of the same logical request always produce the same
+      // fingerprint, while a request that targets a different database
+      // or carries different options (markSyncDirty, reason,
+      // vectorDirtyHint, ...) is treated as a distinct logical write
+      // and surfaces idempotency_conflict rather than silently replaying
+      // cached success.
+      var idempotencyKey = normalizeString(input.idempotencyKey, 'commitDelta:' + chatId + ':rev:' + baseRevision);
+      var fingerprint = JSON.stringify({ chatId: chatId, baseRevision: baseRevision, database: database, delta: delta, options: options });
+
+      // --- lock → idempotency → CAS → transaction ---
+      // The lock serializes all companion writers for the same chat.
+      // Inside the lock, idempotency checks for cached success (replay
+      // safety). Inside idempotency, CAS checks baseRevision against
+      // the server revision. If CAS passes, all statements execute in
+      // ONE atomic ctx.sql.transaction. The lock makes the JS-level
+      // CAS safe: only one writer at a time, so the window between the
+      // revision read and the transaction is zero.
+      return {
+        result: await txCtx.locks.withLock('chat:' + chatId, { timeoutMs: 30000 }, async function () {
+          return await txCtx.idempotency.run(idempotencyKey, fingerprint, async function () {
+            // Lazy schema ensure (idempotent — safe to call every commit).
+            await ensureGraphSchema(txCtx, database);
+
+            // Read current revision + meta. We fetch all meta rows so we
+            // can (a) check CAS on revision and (b) fall back to existing
+            // counts when the caller didn't supply countDelta.
+            var metaRows = normalizeSqlRows(
+              await txCtx.sql.query(
+                database,
+                'SELECT meta_key, value_json FROM ' + GRAPH_TABLES.meta + ' WHERE chat_id = ?',
+                [chatId]
+              )
+            );
+            var existingMeta = metaRows.length > 0 ? toMetaMap(metaRows) : {};
+            var currentRevision = Number(existingMeta.revision);
+            if (!Number.isFinite(currentRevision)) currentRevision = 0;
+
+            // CAS check. If the server revision doesn't match the caller's
+            // baseRevision, another writer committed first; surface a 409
+            // so the caller can re-read and retry.
+            if (currentRevision !== baseRevision) {
+              var casErr = new Error(
+                'BME graph.commitDelta CAS conflict: baseRevision=' + baseRevision +
+                ' but serverRevision=' + currentRevision
+              );
+              casErr.status = 409;
+              casErr.code = 'transaction_conflict';
+              casErr.details = {
+                serverRevision: currentRevision,
+                baseRevision: baseRevision,
+                chatId: chatId,
+              };
+              throw casErr;
+            }
+
+            // Build statements (throws validation_error if budget exceeded).
+            var built = buildCommitDeltaStatements(chatId, baseRevision, delta, options, existingMeta);
+
+            // Execute as ONE atomic transaction.
+            if (built.statements.length > 0) {
+              await txCtx.sql.transaction(database, built.statements);
+            }
+
+            // Compute headHash from the post-commit node/edge record_ids.
+            // The lock guarantees no other writer can interleave, so this
+            // read is consistent with the just-committed transaction.
+            var nodeRows = normalizeSqlRows(
+              await txCtx.sql.query(
+                database,
+                'SELECT record_id FROM ' + GRAPH_TABLES.nodes + ' WHERE chat_id = ? AND deleted_at IS NULL',
+                [chatId]
+              )
+            );
+            var edgeRows = normalizeSqlRows(
+              await txCtx.sql.query(
+                database,
+                'SELECT record_id FROM ' + GRAPH_TABLES.edges + ' WHERE chat_id = ? AND deleted_at IS NULL',
+                [chatId]
+              )
+            );
+            var nodeIds = extractRecordIds(nodeRows);
+            var edgeIds = extractRecordIds(edgeRows);
+            var headHash = computeHeadHash(nodeIds, edgeIds, built.nextRevision);
+
+            return {
+              ok: true,
+              accepted: true,
+              revision: built.nextRevision,
+              headHash: headHash,
+              committedAt: built.committedAt,
+              chatId: chatId,
+              vectorDirtyHint: Boolean(options.vectorDirtyHint),
+              counts: {
+                nodeCount: built.nextNodeCount,
+                edgeCount: built.nextEdgeCount,
+                tombstoneCount: built.nextTombstoneCount,
+              },
+              applied: {
+                upsertedNodes: built.upsertedNodes,
+                upsertedEdges: built.upsertedEdges,
+                upsertedTombstones: built.upsertedTombstones,
+                deletedNodeIds: built.deletedNodeIds,
+                deletedEdgeIds: built.deletedEdgeIds,
+              },
+              statementCount: built.statements.length,
+            };
+          });
+        }),
+      };
+    },
+  });
+
   if (logger.info) {
     logger.info('[st-bme] Companion authority module activated: third-party.st-bme');
   }
@@ -864,6 +1395,10 @@ module.exports.DEFAULT_BME_DATABASE = DEFAULT_BME_DATABASE;
 module.exports.DEFAULT_NAMESPACE = DEFAULT_NAMESPACE;
 module.exports.DEFAULT_BME_GRAPH_DATABASE = DEFAULT_BME_GRAPH_DATABASE;
 module.exports.BME_GRAPH_SCHEMA_VERSION = BME_GRAPH_SCHEMA_VERSION;
+module.exports.MAX_SQL_BATCH_STATEMENTS = MAX_SQL_BATCH_STATEMENTS;
+module.exports.CHUNK_ROWS_INSERT = CHUNK_ROWS_INSERT;
+module.exports.CHUNK_IDS_DELETE = CHUNK_IDS_DELETE;
+module.exports.COMMIT_DELTA_RESERVED_META_KEYS = COMMIT_DELTA_RESERVED_META_KEYS;
 module.exports.GRAPH_TABLES = GRAPH_TABLES;
 module.exports.GRAPH_SCHEMA_STATEMENTS = GRAPH_SCHEMA_STATEMENTS;
 module.exports.GRAPH_META_REPORT_KEYS = GRAPH_META_REPORT_KEYS;
@@ -885,5 +1420,12 @@ module.exports._normalizePayloadRows = normalizePayloadRows;
 module.exports._resolveGraphDatabase = resolveGraphDatabase;
 module.exports._resolveGraphChatId = resolveGraphChatId;
 module.exports._buildGraphMetaReport = buildGraphMetaReport;
+module.exports._buildMetaUpsertStatement = buildMetaUpsertStatement;
+module.exports._buildNodeInsertStatement = buildNodeInsertStatement;
+module.exports._buildEdgeInsertStatement = buildEdgeInsertStatement;
+module.exports._buildTombstoneInsertStatement = buildTombstoneInsertStatement;
+module.exports._buildDeleteInStatement = buildDeleteInStatement;
+module.exports._buildCommitDeltaStatements = buildCommitDeltaStatements;
+module.exports._chunkArray = chunkArray;
 module.exports.MAX_SEARCH_TOP_K = MAX_SEARCH_TOP_K;
 module.exports.MAX_SEARCH_EXPAND_DEPTH = MAX_SEARCH_EXPAND_DEPTH;
