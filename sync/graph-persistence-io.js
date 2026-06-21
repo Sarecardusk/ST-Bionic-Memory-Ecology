@@ -1819,12 +1819,139 @@ export async function saveGraphToIndexedDbImpl(runtime,
         dirtyStateVersion: dirtyPersistDeltaVersion,
       };
     }
-    const commitResult = await db.commitDelta(delta, {
-      reason,
-      requestedRevision,
-      markSyncDirty: true,
-      committedSnapshot: snapshot,
-    });
+    // Phase F: when the resolved store is an AuthorityGraphStore that
+    // dispatches to the BME companion module `graph.commitDelta`
+    // transaction (bmeGraphCommitReady === true), the wrapper throws an
+    // AuthorityGraphCommitConflictError on a 409 transaction_conflict. We
+    // must NOT fall back to the local chunked path on this error — the
+    // server has already refused the write because another writer
+    // committed first, so writing locally would silently diverge from the
+    // server's authoritative state. Instead, fetch a fresh snapshot/head
+    // via db.exportSnapshot, rebuild the delta against the fresh revision,
+    // and retry ONCE. If the retry also conflicts, surface the error — do
+    // NOT advance the extraction floor / processed-message hashes.
+    let commitResult = null;
+    let conflictRetryAttempted = false;
+    try {
+      commitResult = await db.commitDelta(delta, {
+        reason,
+        requestedRevision,
+        markSyncDirty: true,
+        committedSnapshot: snapshot,
+      });
+    } catch (commitError) {
+      const isGraphCommitConflict = Boolean(
+        commitError &&
+          (commitError.name === "AuthorityGraphCommitConflictError" ||
+            String(commitError?.code || commitError?.payload?.details?.code || commitError?.payload?.code || "").toLowerCase() === "transaction_conflict"),
+      );
+      if (!isGraphCommitConflict) {
+        throw commitError;
+      }
+      // Fresh head fetch + delta rebuild + single retry.
+      conflictRetryAttempted = true;
+      let freshSnapshot = null;
+      try {
+        freshSnapshot = await db.exportSnapshot({ includeTombstones: true });
+      } catch (exportError) {
+        // If we can't even read the fresh head, we cannot safely retry.
+        // Surface the original conflict error with the export failure as
+        // cause so the caller can decide whether to re-queue or fail.
+        console.warn(
+          `[ST-BME] graph.commitDelta transaction_conflict 后无法读取最新 head:`,
+          exportError?.message || exportError,
+        );
+        throw commitError;
+      }
+      const freshRevision = normalizeIndexedDbRevision(freshSnapshot?.meta?.revision);
+      if (!Number.isFinite(freshRevision) || freshRevision <= 0) {
+        console.warn(
+          `[ST-BME] graph.commitDelta transaction_conflict 后读取到非法 revision (${freshRevision}); 不再重试`,
+        );
+        throw commitError;
+      }
+      // Phase F conflict-retry: rebuild the delta against the fresh
+      // snapshot if (and only if) we still have a persistGraphInput and
+      // buildPersistDeltaFromGraphDirtyState is available. We must NOT
+      // fall back to the original stale delta — that could advance a stale
+      // runtimeMetaPatch / extraction floor past a conflicting commit. If
+      // rebuild is unavailable or fails, surface the original conflict
+      // error so the caller does NOT advance extraction floor / processed
+      // hashes.
+      let retryDelta = null;
+      let retrySnapshot = snapshot;
+      if (persistGraphInput && typeof buildPersistDeltaFromGraphDirtyState === "function") {
+        try {
+          const rebuiltDelta = buildPersistDeltaFromGraphDirtyState(freshSnapshot, persistGraphInput, {
+            chatId: normalizedChatId,
+            revision: freshRevision,
+            lastModified: Date.now(),
+            meta: {
+              storagePrimary: localStore.storagePrimary,
+              storageMode: localStore.storageMode,
+              lastMutationReason: String(reason || "graph-save"),
+              integrity:
+                currentIdentity.integrity || graphPersistenceState.metadataIntegrity,
+              hostChatId: currentIdentity.hostChatId || "",
+            },
+          });
+          if (rebuiltDelta) {
+            retryDelta = rebuiltDelta;
+            retrySnapshot = applyPersistDeltaToSnapshot
+              ? applyPersistDeltaToSnapshot(freshSnapshot, rebuiltDelta, {
+                  chatId: normalizedChatId,
+                  revision: freshRevision,
+                  lastModified: Date.now(),
+                  reason: String(reason || "graph-save"),
+                })
+              : retrySnapshot;
+          }
+        } catch (rebuildError) {
+          // rebuild failed — surface the conflict, do NOT retry with the
+          // stale original delta.
+          console.warn(
+            `[ST-BME] graph.commitDelta transaction_conflict 后 delta 重建失败; 抛出冲突错误而非用过期 delta 重试:`,
+            rebuildError?.message || rebuildError,
+          );
+          throw commitError;
+        }
+      }
+      if (!retryDelta) {
+        // No rebuild path available (no persistGraphInput, no builder, or
+        // rebuild returned null/undefined) — surface the conflict so the
+        // caller does NOT advance extraction floor / processed hashes.
+        console.warn(
+          `[ST-BME] graph.commitDelta transaction_conflict 后无法重建 delta (persistGraphInput=${Boolean(persistGraphInput)}); 抛出冲突错误而非用过期 delta 重试`,
+        );
+        throw commitError;
+      }
+      // Only retry with a successfully rebuilt delta.
+      try {
+        commitResult = await db.commitDelta(retryDelta, {
+          reason,
+          requestedRevision: freshRevision,
+          baseRevision: freshRevision,
+          markSyncDirty: true,
+          committedSnapshot: retrySnapshot,
+        });
+      } catch (retryError) {
+        // Second conflict (or any error) — do NOT advance extraction
+        // floor / processed hashes. Surface the retry error so the
+        // caller's catch block records it via updatePersistDeltaDiagnostics
+        // and does not promote the snapshot.
+        console.warn(
+          `[ST-BME] graph.commitDelta transaction_conflict 重试仍失败:`,
+          retryError?.message || retryError,
+        );
+        throw retryError;
+      }
+      // Swap in the rebuilt delta/snapshot for downstream diagnostics.
+      delta = retryDelta;
+      snapshot = retrySnapshot;
+      if (persistGraphInput && dirtyPersistDeltaVersion > 0 && sourceGraphInput && sourceGraphInput !== graph) {
+        pruneGraphPersistDirtyState(sourceGraphInput, dirtyPersistDeltaVersion);
+      }
+    }
     const commitDiagnostics =
       commitResult?.diagnostics &&
       typeof commitResult.diagnostics === "object" &&

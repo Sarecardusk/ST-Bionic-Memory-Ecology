@@ -407,4 +407,163 @@ function jsonResponse(status, payload) {
   assert.equal(response.result.candidates[0].externalId, "node-a");
 }
 
+// Phase F: session init body includes graph.commitDelta in modules.execute declarations.
+{
+  let sessionInitBody = null;
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith("/session/init")) {
+        sessionInitBody = JSON.parse(options.body);
+        return jsonResponse(200, { sessionToken: "sess-graph-commit-perm" });
+      }
+      return jsonResponse(200, { ok: true });
+    },
+  });
+  await client.requestJson("/data", { session: true, body: {} });
+
+  assert.ok(sessionInitBody, "session init body should have been sent");
+  const perms = sessionInitBody.declaredPermissions;
+  assert.ok(perms.modules.execute.includes("third-party.st-bme:graph.commitDelta"), "must declare graph.commitDelta execute");
+}
+
+// Phase F: requestModuleTransaction posts to /modules/third-party.st-bme/transactions/graph.commitDelta
+// with envelope idempotencyKey (graph.commitDelta has idempotency: "required" in .authority/module.json).
+{
+  const calls = [];
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-graph-commit" });
+      }
+      if (url.includes("/modules/third-party.st-bme/transactions/graph.commitDelta")) {
+        return jsonResponse(200, {
+          ok: true,
+          moduleId: "third-party.st-bme",
+          transaction: "graph.commitDelta",
+          result: {
+            ok: true,
+            accepted: true,
+            revision: 11,
+            headHash: "sha256:abc",
+            committedAt: 1700000000000,
+            chatId: "chat-1",
+            counts: { nodeCount: 3, edgeCount: 1, tombstoneCount: 0 },
+            applied: {
+              upsertedNodes: 1,
+              upsertedEdges: 0,
+              upsertedTombstones: 0,
+              deletedNodeIds: 0,
+              deletedEdgeIds: 0,
+            },
+            statementCount: 5,
+          },
+        });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  const input = {
+    chatId: "chat-1",
+    baseRevision: 10,
+    delta: {
+      upsertNodes: [{ id: "n-1", type: "event" }],
+      deleteNodeIds: [],
+    },
+    options: { markSyncDirty: true, reason: "test-commit" },
+  };
+  const response = await client.requestModuleTransaction("third-party.st-bme", "graph.commitDelta", input, {
+    idempotencyKey: "idem-graph-commit",
+  });
+
+  const modCall = calls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.commitDelta"));
+  assert.ok(modCall, "should have called graph.commitDelta module route");
+  assert.ok(!modCall.url.includes("/bme/"), "should NOT call /bme/ route");
+
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.input.chatId, "chat-1");
+  assert.equal(body.input.baseRevision, 10);
+  assert.equal(body.idempotencyKey, "idem-graph-commit", "envelope MUST carry idempotencyKey for graph.commitDelta");
+
+  assert.equal(modCall.options.headers[AUTHORITY_SESSION_HEADER], "sess-graph-commit");
+  assert.equal(response.ok, true);
+  assert.equal(response.moduleId, "third-party.st-bme");
+  assert.equal(response.transaction, "graph.commitDelta");
+  assert.equal(response.result.revision, 11);
+  assert.equal(response.result.headHash, "sha256:abc");
+}
+
+// Phase F: graph.getHead / graph.loadSnapshot post to correct URLs without idempotencyKey.
+// Both transactions have idempotency: "none" in .authority/module.json.
+{
+  const calls = [];
+  const client = new AuthorityHttpClient({
+    baseUrl: "https://authority.example.test",
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/session/init")) {
+        return jsonResponse(200, { sessionToken: "sess-graph-read" });
+      }
+      if (url.includes("/modules/third-party.st-bme/transactions/graph.getHead")) {
+        return jsonResponse(200, {
+          ok: true,
+          moduleId: "third-party.st-bme",
+          transaction: "graph.getHead",
+          result: {
+            ok: true,
+            revision: 42,
+            headHash: "sha256:head-42",
+            chatId: "chat-1",
+            meta: { revision: 42, lastModified: 1700000000000 },
+          },
+        });
+      }
+      if (url.includes("/modules/third-party.st-bme/transactions/graph.loadSnapshot")) {
+        return jsonResponse(200, {
+          ok: true,
+          moduleId: "third-party.st-bme",
+          transaction: "graph.loadSnapshot",
+          result: {
+            ok: true,
+            revision: 42,
+            headHash: "sha256:head-42",
+            chatId: "chat-1",
+            nodes: [],
+            edges: [],
+            tombstones: [],
+            meta: { revision: 42 },
+            state: { lastProcessedFloor: -1, extractionCount: 0 },
+          },
+        });
+      }
+      return jsonResponse(500, { error: "unexpected" });
+    },
+  });
+
+  const headInput = { chatId: "chat-1" };
+  const headResponse = await client.requestModuleTransaction("third-party.st-bme", "graph.getHead", headInput);
+
+  const headCall = calls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.getHead"));
+  assert.ok(headCall, "should have called graph.getHead module route");
+  assert.ok(!headCall.url.includes("/bme/"));
+  const headBody = JSON.parse(headCall.options.body);
+  assert.equal(headBody.idempotencyKey, undefined, "graph.getHead envelope must NOT carry idempotencyKey");
+  assert.equal(headResponse.result.revision, 42);
+  assert.equal(headResponse.result.headHash, "sha256:head-42");
+
+  const snapshotInput = { chatId: "chat-1" };
+  const snapshotResponse = await client.requestModuleTransaction("third-party.st-bme", "graph.loadSnapshot", snapshotInput);
+
+  const snapshotCall = calls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.loadSnapshot"));
+  assert.ok(snapshotCall, "should have called graph.loadSnapshot module route");
+  assert.ok(!snapshotCall.url.includes("/bme/"));
+  const snapshotBody = JSON.parse(snapshotCall.options.body);
+  assert.equal(snapshotBody.idempotencyKey, undefined, "graph.loadSnapshot envelope must NOT carry idempotencyKey");
+  assert.equal(snapshotResponse.result.revision, 42);
+  assert.deepEqual(snapshotResponse.result.nodes, []);
+}
+
 console.log("authority-http-client tests passed");

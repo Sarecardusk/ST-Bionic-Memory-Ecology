@@ -1245,4 +1245,295 @@ assert.equal(isAuthorityVectorConfig(config), true);
   assert.equal(cfg3.bmeCandidateSearchReady, false, "normalizeAuthorityVectorConfig defaults bmeCandidateSearchReady to false");
 }
 
+// Phase F: bmeGraphCommit posts to /modules/third-party.st-bme/transactions/graph.commitDelta
+// (not /bme/graph-commit) when using a real AuthorityHttpClient with mock fetch.
+// graph.commitDelta has idempotency:"required" in .authority/module.json, so
+// the envelope MUST carry idempotencyKey.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-commit" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/graph.commitDelta")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "graph.commitDelta",
+            result: {
+              ok: true,
+              accepted: true,
+              revision: 11,
+              headHash: "sha256:server-head",
+              committedAt: 1700000000000,
+              chatId: body.input?.chatId || "",
+              counts: { nodeCount: 3, edgeCount: 1, tombstoneCount: 0 },
+              applied: {
+                upsertedNodes: body.input?.delta?.upsertNodes?.length || 0,
+                upsertedEdges: body.input?.delta?.upsertEdges?.length || 0,
+                upsertedTombstones: body.input?.delta?.tombstones?.length || 0,
+                deletedNodeIds: body.input?.delta?.deleteNodeIds?.length || 0,
+                deletedEdgeIds: body.input?.delta?.deleteEdgeIds?.length || 0,
+              },
+              statementCount: 5,
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeGraphCommit({
+    chatId: "chat-graph-1",
+    baseRevision: 10,
+    delta: {
+      upsertNodes: [{ id: "n-1", type: "event" }],
+      deleteNodeIds: [],
+    },
+    options: { markSyncDirty: true, reason: "phase-f-test" },
+    idempotencyKey: "graph-idem-1",
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/graph.commitDelta"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify idempotencyKey is on the envelope (graph.commitDelta is idempotency-required).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, "graph-idem-1", "envelope MUST carry idempotencyKey for graph.commitDelta");
+  assert.equal(body.input.chatId, "chat-graph-1");
+  assert.equal(body.input.baseRevision, 10);
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 11);
+  assert.equal(result.headHash, "sha256:server-head");
+  assert.equal(result.counts.nodeCount, 3);
+}
+
+// Phase F: bmeGraphCommit enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-commit-err" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeGraphCommit({ chatId: "x", baseRevision: 0, delta: {} });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "commit error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "commit error should say not loaded");
+  assert.ok(
+    caught.path === "/modules/third-party.st-bme/transactions/graph.commitDelta",
+    "commit error path should reference graph.commitDelta transaction route",
+  );
+}
+
+// Phase F: bmeGraphGetHead posts to /modules/third-party.st-bme/transactions/graph.getHead
+// with envelope { input } only (NO idempotencyKey — graph.getHead has idempotency:"none").
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-head" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/graph.getHead")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "graph.getHead",
+            result: {
+              ok: true,
+              revision: 42,
+              headHash: "sha256:head-42",
+              chatId: "chat-graph-1",
+              meta: { revision: 42, lastModified: 1700000000000 },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeGraphGetHead({ chatId: "chat-graph-1" });
+
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.getHead"));
+  assert.ok(modCall, "should have called graph.getHead module route");
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "graph.getHead envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.chatId, "chat-graph-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 42);
+  assert.equal(result.headHash, "sha256:head-42");
+}
+
+// Phase F: bmeGraphLoadSnapshot posts to /modules/third-party.st-bme/transactions/graph.loadSnapshot
+// with envelope { input } only (NO idempotencyKey — graph.loadSnapshot has idempotency:"none").
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-snapshot" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/graph.loadSnapshot")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "graph.loadSnapshot",
+            result: {
+              ok: true,
+              revision: 42,
+              headHash: "sha256:head-42",
+              chatId: "chat-graph-1",
+              nodes: [],
+              edges: [],
+              tombstones: [],
+              meta: { revision: 42 },
+              state: { lastProcessedFloor: -1, extractionCount: 0 },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeGraphLoadSnapshot({ chatId: "chat-graph-1" });
+
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.loadSnapshot"));
+  assert.ok(modCall, "should have called graph.loadSnapshot module route");
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "graph.loadSnapshot envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.chatId, "chat-graph-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 42);
+  assert.deepEqual(result.nodes, []);
+}
+
+// Phase F: bmeGraphCommit forwards caller signal through to requestModuleTransaction.
+{
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true, result: { ok: true, revision: 1 } }; },
+    }),
+  });
+
+  let capturedOptions = null;
+  client.http.requestModuleTransaction = async (moduleId, transactionName, input, options) => {
+    capturedOptions = options;
+    return { ok: true, result: { ok: true, revision: 1 } };
+  };
+
+  const controller = new AbortController();
+  const callerSignal = controller.signal;
+  await client.bmeGraphCommit(
+    { chatId: "x", baseRevision: 0, delta: {}, idempotencyKey: "k" },
+    { signal: callerSignal, timeoutMs: 5000 },
+  );
+
+  assert.ok(capturedOptions, "requestModuleTransaction should receive an options argument");
+  assert.equal(capturedOptions.signal, callerSignal, "signal must be forwarded");
+  assert.equal(capturedOptions.timeoutMs, 5000, "timeoutMs must be forwarded");
+  assert.equal(capturedOptions.idempotencyKey, "k", "idempotencyKey must be forwarded");
+}
+
 console.log("authority-vector-primary tests passed");

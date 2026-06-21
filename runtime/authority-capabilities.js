@@ -149,6 +149,7 @@ function buildDefaultSessionInitConfig(source = {}) {
           `${BME_AUTHORITY_MODULE_ID_LOCAL}:vector.manifest`,
           `${BME_AUTHORITY_MODULE_ID_LOCAL}:vector.apply`,
           `${BME_AUTHORITY_MODULE_ID_LOCAL}:recall.candidates`,
+          `${BME_AUTHORITY_MODULE_ID_LOCAL}:graph.commitDelta`,
         ],
       },
     },
@@ -368,6 +369,7 @@ export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
 const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
 const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
 const BME_RECALL_CANDIDATES_TRANSACTION = "recall.candidates";
+const BME_GRAPH_COMMIT_DELTA_TRANSACTION = "graph.commitDelta";
 
 /**
  * Derive module readiness from a generic DOA `/modules` response.
@@ -409,6 +411,7 @@ export function deriveModuleReadiness(modulesPayload = {}) {
   const hasVectorManifest = Boolean(transactions[BME_VECTOR_MANIFEST_TRANSACTION]);
   const hasVectorApply = Boolean(transactions[BME_VECTOR_APPLY_TRANSACTION]);
   const hasRecallCandidates = Boolean(transactions[BME_RECALL_CANDIDATES_TRANSACTION]);
+  const hasGraphCommitDelta = Boolean(transactions[BME_GRAPH_COMMIT_DELTA_TRANSACTION]);
 
   return {
     modulesReady,
@@ -416,6 +419,7 @@ export function deriveModuleReadiness(modulesPayload = {}) {
     bmeVectorManifestReady: bmeModuleReady && hasVectorManifest,
     bmeVectorApplyReady: bmeModuleReady && hasVectorApply,
     bmeCandidateSearchReady: bmeModuleReady && hasRecallCandidates,
+    bmeGraphCommitReady: bmeModuleReady && hasGraphCommitDelta,
   };
 }
 
@@ -549,6 +553,7 @@ export function createDefaultAuthorityCapabilityState(overrides = {}) {
     bmeVectorApplyJobsReady: false,
     bmeServerEmbeddingProbeReady: false,
     bmeCandidateSearchReady: false,
+    bmeGraphCommitReady: false,
     bmeProtocolVersion: 0,
     features: [],
     missingFeatures: ["sql.query", "sql.mutation", "trivium.search", "jobs", "blob-or-private-files"],
@@ -594,6 +599,7 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
   const bmeModuleVectorManifestReady = Boolean(moduleReadiness.bmeVectorManifestReady);
   const bmeModuleVectorApplyReady = Boolean(moduleReadiness.bmeVectorApplyReady);
   const bmeModuleCandidateSearchReady = Boolean(moduleReadiness.bmeCandidateSearchReady);
+  const bmeModuleGraphCommitReady = Boolean(moduleReadiness.bmeGraphCommitReady);
 
   // Legacy: if module readiness is not available, fall back to features.
   const legacyBmeVectorManifestReady = healthy && sessionReady && permissionReady && readiness.bmeVectorManifest;
@@ -610,6 +616,13 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
   const bmeCandidateSearchReady = moduleReadiness.modulesReady
     ? (bmeModuleReady && bmeModuleCandidateSearchReady)
     : legacyBmeCandidateSearchReady;
+  // graph.commitDelta has no legacy feature flag — only the companion module
+  // path supplies it. When module readiness is unavailable or the module is
+  // not loaded, bmeGraphCommitReady stays false and the frontend keeps using
+  // the existing local chunked AuthorityGraphStore.commitDelta path.
+  const bmeGraphCommitReady = moduleReadiness.modulesReady
+    ? (bmeModuleReady && bmeModuleGraphCommitReady)
+    : false;
 
   const bmeVectorApplyJobsReady = healthy && sessionReady && permissionReady && readiness.bmeVectorApplyJobs;
   const bmeServerEmbeddingProbeReady = healthy && sessionReady && permissionReady && readiness.bmeServerEmbeddingProbe;
@@ -642,6 +655,7 @@ export function normalizeAuthorityCapabilityState(input = {}, settings = {}) {
     bmeVectorApplyJobsReady,
     bmeServerEmbeddingProbeReady,
     bmeCandidateSearchReady,
+    bmeGraphCommitReady,
     bmeProtocolVersion,
     features: Array.from(features).sort(),
     missingFeatures,

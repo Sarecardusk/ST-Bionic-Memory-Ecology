@@ -14,6 +14,9 @@ export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
 export const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
 export const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
 export const BME_RECALL_CANDIDATES_TRANSACTION = "recall.candidates";
+export const BME_GRAPH_COMMIT_DELTA_TRANSACTION = "graph.commitDelta";
+export const BME_GRAPH_GET_HEAD_TRANSACTION = "graph.getHead";
+export const BME_GRAPH_LOAD_SNAPSHOT_TRANSACTION = "graph.loadSnapshot";
 
 const DEFAULT_AUTHORITY_TRIVIUM_DATABASE = "st_bme_vectors";
 const DEFAULT_AUTHORITY_VECTOR_CHUNK_SIZE = 1000;
@@ -787,6 +790,75 @@ export class AuthorityTriviumHttpClient {
       return response?.result ?? response ?? {};
     } catch (error) {
       throw enrichBmeModuleError(error, BME_RECALL_CANDIDATES_TRANSACTION);
+    }
+  }
+
+  // Phase F: graph.commitDelta / graph.getHead / graph.loadSnapshot are the
+  // server-side atomic graph persistence transactions exposed by the BME
+  // companion module. The frontend AuthorityGraphStore.commitDelta wrapper
+  // switches to bmeGraphCommit when DOA + companion module are available
+  // (capability.bmeGraphCommitReady); on transaction_conflict it must NOT
+  // fall back to the local chunked path — it fetches a fresh head via
+  // bmeGraphGetHead so the caller can rebuild the delta and retry once.
+  // bmeGraphLoadSnapshot is exposed for completeness (snapshot bootstrap
+  // after a miss). graph.commitDelta has idempotency:"required" in
+  // .authority/module.json, so the caller MUST lift idempotencyKey to
+  // the envelope (requestModuleTransaction pulls it from
+  // options.idempotencyKey OR input.idempotencyKey). graph.getHead and
+  // graph.loadSnapshot are read-only with idempotency:"none".
+  async bmeGraphCommit(payload = {}, options = {}) {
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_GRAPH_COMMIT_DELTA_TRANSACTION,
+        input,
+        {
+          ...(input.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
+          ...(options.idempotencyKey ? { idempotencyKey: String(options.idempotencyKey) } : {}),
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_GRAPH_COMMIT_DELTA_TRANSACTION);
+    }
+  }
+
+  async bmeGraphGetHead(payload = {}, options = {}) {
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_GRAPH_GET_HEAD_TRANSACTION,
+        input,
+        {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_GRAPH_GET_HEAD_TRANSACTION);
+    }
+  }
+
+  async bmeGraphLoadSnapshot(payload = {}, options = {}) {
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_GRAPH_LOAD_SNAPSHOT_TRANSACTION,
+        input,
+        {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_GRAPH_LOAD_SNAPSHOT_TRANSACTION);
     }
   }
 }

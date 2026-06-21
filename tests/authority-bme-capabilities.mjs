@@ -500,4 +500,142 @@ assert.equal(legacy.bmeProtocolVersion, 0);
   assert.equal(state.bmeVectorApplyReady, true);
 }
 
+// Phase F: deriveModuleReadiness with loaded record + graph.commitDelta sets bmeGraphCommitReady.
+{
+  const readiness = deriveModuleReadiness({
+    modules: [],
+    records: [
+      {
+        moduleId: BME_AUTHORITY_MODULE_ID,
+        status: "loaded",
+        manifest: {
+          id: BME_AUTHORITY_MODULE_ID,
+          transactions: {
+            "graph.commitDelta": { name: "graph.commitDelta" },
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(readiness.bmeModuleReady, true, "module should be loaded");
+  assert.equal(readiness.bmeGraphCommitReady, true, "bmeGraphCommitReady must be true when graph.commitDelta declared and module is loaded");
+}
+
+// Phase F: deriveModuleReadiness with load_error record does NOT set bmeGraphCommitReady.
+{
+  const readiness = deriveModuleReadiness({
+    modules: [],
+    records: [
+      {
+        moduleId: BME_AUTHORITY_MODULE_ID,
+        status: "load_error",
+        manifest: {
+          id: BME_AUTHORITY_MODULE_ID,
+          transactions: {
+            "graph.commitDelta": { name: "graph.commitDelta" },
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(readiness.bmeModuleReady, false);
+  assert.equal(readiness.bmeGraphCommitReady, false, "bmeGraphCommitReady must be false on load_error");
+}
+
+// Phase F: deriveModuleReadiness with module loaded but graph.commitDelta MISSING does NOT set bmeGraphCommitReady.
+{
+  const readiness = deriveModuleReadiness({
+    modules: [],
+    records: [
+      {
+        moduleId: BME_AUTHORITY_MODULE_ID,
+        status: "loaded",
+        manifest: {
+          id: BME_AUTHORITY_MODULE_ID,
+          transactions: {
+            "vector.manifest": { name: "vector.manifest" },
+            "vector.apply": { name: "vector.apply" },
+            // graph.commitDelta deliberately MISSING
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(readiness.bmeModuleReady, true);
+  assert.equal(readiness.bmeGraphCommitReady, false, "bmeGraphCommitReady must be false when graph.commitDelta transaction is missing");
+}
+
+// Phase F: normalizeAuthorityCapabilityState surfaces bmeGraphCommitReady from moduleReadiness.
+{
+  const state = normalizeAuthorityCapabilityState({
+    installed: true,
+    healthy: true,
+    sessionReady: true,
+    permissionReady: true,
+    features: ["sql.query", "sql.mutation", "trivium.search", "jobs", "storage.blob"],
+    moduleReadiness: {
+      modulesReady: true,
+      bmeModuleReady: true,
+      bmeGraphCommitReady: true,
+    },
+  });
+  assert.equal(state.bmeGraphCommitReady, true, "state.bmeGraphCommitReady must reflect moduleReadiness.bmeGraphCommitReady");
+}
+
+// Phase F: normalizeAuthorityCapabilityState does not set bmeGraphCommitReady when module not loaded.
+{
+  const state = normalizeAuthorityCapabilityState({
+    installed: true,
+    healthy: true,
+    sessionReady: true,
+    permissionReady: true,
+    features: ["sql.query", "sql.mutation", "trivium.search", "jobs", "storage.blob"],
+    moduleReadiness: {
+      modulesReady: true,
+      bmeModuleReady: false, // not loaded
+      bmeGraphCommitReady: false,
+    },
+  });
+  assert.equal(state.bmeGraphCommitReady, false);
+}
+
+// Phase F: createDefaultAuthorityCapabilityState seeds bmeGraphCommitReady = false.
+{
+  const state = normalizeAuthorityCapabilityState({});
+  assert.equal(state.bmeGraphCommitReady, false, "default state must seed bmeGraphCommitReady = false");
+}
+
+// Phase F: session init body includes graph.commitDelta in modules.execute declarations.
+{
+  let sessionInitBody = null;
+  const fetchImpl = async (url, options = {}) => {
+    if (String(url).endsWith("/session/init")) {
+      sessionInitBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-cap-graph" }; },
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true }; },
+    };
+  };
+
+  const state = await probeAuthorityCapabilities({
+    settings: { authorityEnabled: true, authorityBaseUrl: "https://authority.test" },
+    fetchImpl,
+    allowRelativeUrl: true,
+  });
+
+  assert.ok(sessionInitBody, "session init body should have been sent");
+  const perms = sessionInitBody.declaredPermissions;
+  assert.ok(perms.modules.execute.includes("third-party.st-bme:graph.commitDelta"), "session init must declare graph.commitDelta execute");
+  assert.ok(typeof state === "object");
+}
+
 console.log("authority-bme-capabilities tests passed");
