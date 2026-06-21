@@ -37,6 +37,15 @@
 const DEFAULT_BME_DATABASE = 'st_bme_vectors';
 const DEFAULT_NAMESPACE = 'default';
 
+// BME graph SQL default database. Matches `DEFAULT_AUTHORITY_SQL_DATABASE`
+// in sync/authority-graph-store.js — the value BME actually opens the graph
+// store with when no explicit database is configured. Companion handlers use
+// this when the request omits `database`.
+const DEFAULT_BME_GRAPH_DATABASE = 'default';
+const BME_GRAPH_SCHEMA_VERSION = 1;
+
+const crypto = require('crypto');
+
 // Server-side caps for recall.candidates. Mirrors the DOA companion
 // trivium wrapper caps (MAX_SEARCH_TOP_K / MAX_SEARCH_EXPAND_DEPTH) so the
 // handler clamps client requests before delegating to txCtx.trivium.
@@ -257,6 +266,199 @@ function validateRecallCandidatesInput(input, observedDim) {
       );
     }
   }
+}
+
+// --- graph helpers (graph.getHead / graph.loadSnapshot) ---
+
+// SQL result rows come back as `{ kind: 'query', columns, rows: [...] }` from
+// the DOA `ctx.sql.query` wrapper (see SqlQueryResult in @stdo/shared-types).
+// Test mocks may pass a bare array or `{ rows }` / `{ data }`. Normalize all
+// shapes to a plain array of row objects.
+function normalizeSqlRows(result) {
+  if (Array.isArray(result)) return result;
+  if (!result || typeof result !== 'object') return [];
+  if (Array.isArray(result.rows)) return result.rows;
+  if (Array.isArray(result.data)) return result.data;
+  if (Array.isArray(result.result && result.result.rows)) return result.result.rows;
+  return [];
+}
+
+function parseJsonValue(value, fallback) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function readRowValue(row, keys) {
+  if (!row || typeof row !== 'object') return undefined;
+  for (var i = 0; i < keys.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(row, keys[i])) {
+      return row[keys[i]];
+    }
+  }
+  return undefined;
+}
+
+function toMetaMap(rows) {
+  var output = {};
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row || typeof row !== 'object') continue;
+    var key = String(readRowValue(row, ['key', 'meta_key', 'metaKey']) || '').trim();
+    if (!key) continue;
+    var rawValue = readRowValue(row, ['valueJson', 'value_json', 'value']);
+    output[key] = parseJsonValue(rawValue, null);
+  }
+  return output;
+}
+
+function normalizePayloadRows(rows) {
+  return rows
+    .map(function (row) {
+      var raw = readRowValue(row, ['payloadJson', 'payload_json', 'payload']);
+      return parseJsonValue(raw, null);
+    })
+    .filter(function (record) {
+      return record && typeof record === 'object' && !Array.isArray(record);
+    });
+}
+
+function extractRecordIds(rows) {
+  var ids = [];
+  for (var i = 0; i < rows.length; i++) {
+    var id = String(readRowValue(rows[i], ['record_id', 'recordId', 'id']) || '').trim();
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+function extractRecordIdFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  return String(payload.id || payload.recordId || payload.record_id || '').trim();
+}
+
+// Compute a content hash for same-revision divergence detection. Hashes
+// sorted node + edge record_ids + revision so two chats with the same
+// revision but different contents produce different headHashes. SHA-256 is
+// always available server-side via node:crypto.
+function computeHeadHash(nodeIds, edgeIds, revision) {
+  var parts = [];
+  for (var i = 0; i < nodeIds.length; i++) {
+    if (nodeIds[i]) parts.push('n:' + nodeIds[i]);
+  }
+  for (var j = 0; j < edgeIds.length; j++) {
+    if (edgeIds[j]) parts.push('e:' + edgeIds[j]);
+  }
+  parts.sort();
+  parts.push('r:' + revision);
+  return crypto.createHash('sha256').update(parts.join('|')).digest('hex');
+}
+
+// CREATE TABLE IF NOT EXISTS for all 4 BME graph tables. Matches the schema
+// in sync/authority-graph-store.js `_ensureSchema` (:1067-1086). Safe to call
+// repeatedly — companion handlers call this lazily before reads so a fresh
+// database does not error on SELECT from a missing table.
+var GRAPH_TABLES = {
+  meta: 'st_bme_graph_meta',
+  nodes: 'st_bme_graph_nodes',
+  edges: 'st_bme_graph_edges',
+  tombstones: 'st_bme_graph_tombstones',
+};
+
+var GRAPH_SCHEMA_STATEMENTS = [
+  'CREATE TABLE IF NOT EXISTS ' + GRAPH_TABLES.meta + ' (chat_id TEXT NOT NULL, meta_key TEXT NOT NULL, value_json TEXT, updated_at INTEGER, PRIMARY KEY(chat_id, meta_key))',
+  'CREATE TABLE IF NOT EXISTS ' + GRAPH_TABLES.nodes + ' (chat_id TEXT NOT NULL, record_id TEXT NOT NULL, payload_json TEXT NOT NULL, node_type TEXT, source_floor INTEGER, archived INTEGER, updated_at INTEGER, deleted_at INTEGER, PRIMARY KEY(chat_id, record_id))',
+  'CREATE TABLE IF NOT EXISTS ' + GRAPH_TABLES.edges + ' (chat_id TEXT NOT NULL, record_id TEXT NOT NULL, payload_json TEXT NOT NULL, from_id TEXT, to_id TEXT, relation TEXT, source_floor INTEGER, updated_at INTEGER, deleted_at INTEGER, PRIMARY KEY(chat_id, record_id))',
+  'CREATE TABLE IF NOT EXISTS ' + GRAPH_TABLES.tombstones + ' (chat_id TEXT NOT NULL, record_id TEXT NOT NULL, payload_json TEXT NOT NULL, tombstone_kind TEXT, target_id TEXT, deleted_at INTEGER, source_device_id TEXT, PRIMARY KEY(chat_id, record_id))',
+];
+
+async function ensureGraphSchema(txCtx, database) {
+  if (!txCtx || typeof txCtx.sql !== 'object' || typeof txCtx.sql.exec !== 'function') {
+    throw new Error('BME graph transaction requires ctx.sql.exec (sql.private)');
+  }
+  for (var i = 0; i < GRAPH_SCHEMA_STATEMENTS.length; i++) {
+    await txCtx.sql.exec(database, GRAPH_SCHEMA_STATEMENTS[i]);
+  }
+}
+
+function resolveGraphDatabase(payload) {
+  return normalizeString(payload && payload.database, DEFAULT_BME_GRAPH_DATABASE);
+}
+
+function resolveGraphChatId(payload) {
+  var chatId = normalizeString(payload && payload.chatId, '');
+  if (!chatId) {
+    throw new Error('BME graph transaction requires chatId');
+  }
+  return chatId;
+}
+
+// Meta keys surfaced by graph.getHead. Mirrors the reserved meta keys in
+// sync/authority-graph-store.js PERSIST_META_RESERVED_KEYS plus the runtime
+// state keys (lastProcessedFloor, extractionCount, schemaVersion).
+var GRAPH_META_REPORT_KEYS = [
+  'revision',
+  'lastModified',
+  'syncDirty',
+  'syncDirtyReason',
+  'lastProcessedFloor',
+  'extractionCount',
+  'schemaVersion',
+  'nodeCount',
+  'edgeCount',
+  'tombstoneCount',
+];
+
+function buildGraphMetaReport(meta) {
+  var report = {};
+  for (var i = 0; i < GRAPH_META_REPORT_KEYS.length; i++) {
+    var key = GRAPH_META_REPORT_KEYS[i];
+    if (Object.prototype.hasOwnProperty.call(meta, key)) {
+      report[key] = meta[key];
+    }
+  }
+  return report;
+}
+
+// Read head info for a chat: revision, headHash, meta. Used by both
+// graph.getHead (full response) and graph.loadSnapshot (minRevision check).
+// Returns { exists, revision, headHash, meta }.
+async function readGraphHead(txCtx, database, chatId) {
+  var metaRows = normalizeSqlRows(
+    await txCtx.sql.query(
+      database,
+      'SELECT meta_key, value_json FROM ' + GRAPH_TABLES.meta + ' WHERE chat_id = ?',
+      [chatId]
+    )
+  );
+  if (metaRows.length === 0) {
+    return { exists: false, revision: 0, headHash: null, meta: {} };
+  }
+  var meta = toMetaMap(metaRows);
+  var revision = Number(meta.revision) || 0;
+
+  var nodeRows = normalizeSqlRows(
+    await txCtx.sql.query(
+      database,
+      'SELECT record_id FROM ' + GRAPH_TABLES.nodes + ' WHERE chat_id = ? AND deleted_at IS NULL',
+      [chatId]
+    )
+  );
+  var edgeRows = normalizeSqlRows(
+    await txCtx.sql.query(
+      database,
+      'SELECT record_id FROM ' + GRAPH_TABLES.edges + ' WHERE chat_id = ? AND deleted_at IS NULL',
+      [chatId]
+    )
+  );
+  var nodeIds = extractRecordIds(nodeRows);
+  var edgeIds = extractRecordIds(edgeRows);
+  var headHash = computeHeadHash(nodeIds, edgeIds, revision);
+  return { exists: true, revision: revision, headHash: headHash, meta: meta };
 }
 
 // --- activate ---
@@ -511,6 +713,148 @@ module.exports.activate = async function activate(ctx) {
     },
   });
 
+  ctx.registerTransaction('graph.getHead', {
+    handler: async function (txCtx, input) {
+      input = input || {};
+      var database = resolveGraphDatabase(input);
+      var chatId = resolveGraphChatId(input);
+
+      await ensureGraphSchema(txCtx, database);
+
+      var head = await readGraphHead(txCtx, database, chatId);
+      if (!head.exists) {
+        return {
+          result: {
+            ok: true,
+            chatId: chatId,
+            revision: 0,
+            headHash: null,
+            exists: false,
+          },
+        };
+      }
+
+      var metaReport = buildGraphMetaReport(head.meta);
+      return {
+        result: {
+          ok: true,
+          chatId: chatId,
+          revision: head.revision,
+          headHash: head.headHash,
+          lastModified: metaReport.lastModified != null ? metaReport.lastModified : null,
+          syncDirty: Boolean(metaReport.syncDirty),
+          exists: true,
+          meta: metaReport,
+        },
+      };
+    },
+  });
+
+  ctx.registerTransaction('graph.loadSnapshot', {
+    handler: async function (txCtx, input) {
+      input = input || {};
+      var database = resolveGraphDatabase(input);
+      var chatId = resolveGraphChatId(input);
+
+      await ensureGraphSchema(txCtx, database);
+
+      var head = await readGraphHead(txCtx, database, chatId);
+
+      // minRevision short-circuit: if the caller already has this revision,
+      // skip the payload and tell them nothing changed.
+      if (input.minRevision !== undefined && input.minRevision !== null) {
+        var minRevision = Number(input.minRevision);
+        if (Number.isFinite(minRevision) && head.exists && head.revision === minRevision) {
+          return {
+            result: {
+              ok: true,
+              unchanged: true,
+              chatId: chatId,
+              revision: head.revision,
+              headHash: head.headHash,
+            },
+          };
+        }
+      }
+
+      if (!head.exists) {
+        // No meta rows: return an empty snapshot at revision 0.
+        return {
+          result: {
+            ok: true,
+            chatId: chatId,
+            revision: 0,
+            headHash: null,
+            schemaVersion: BME_GRAPH_SCHEMA_VERSION,
+            meta: {},
+            nodes: [],
+            edges: [],
+            tombstones: [],
+            state: {
+              lastProcessedFloor: 0,
+              extractionCount: 0,
+            },
+          },
+        };
+      }
+
+      var nodeRows = normalizeSqlRows(
+        await txCtx.sql.query(
+          database,
+          'SELECT payload_json FROM ' + GRAPH_TABLES.nodes + ' WHERE chat_id = ? AND deleted_at IS NULL',
+          [chatId]
+        )
+      );
+      var edgeRows = normalizeSqlRows(
+        await txCtx.sql.query(
+          database,
+          'SELECT payload_json FROM ' + GRAPH_TABLES.edges + ' WHERE chat_id = ? AND deleted_at IS NULL',
+          [chatId]
+        )
+      );
+      var tombstoneRows = normalizeSqlRows(
+        await txCtx.sql.query(
+          database,
+          'SELECT payload_json FROM ' + GRAPH_TABLES.tombstones + ' WHERE chat_id = ?',
+          [chatId]
+        )
+      );
+
+      var nodes = normalizePayloadRows(nodeRows);
+      var edges = normalizePayloadRows(edgeRows);
+      var tombstones = normalizePayloadRows(tombstoneRows);
+
+      // Compute headHash from the loaded payloads (same algorithm as getHead).
+      var nodeIds = nodes.map(extractRecordIdFromPayload).filter(Boolean);
+      var edgeIds = edges.map(extractRecordIdFromPayload).filter(Boolean);
+      var headHash = computeHeadHash(nodeIds, edgeIds, head.revision);
+
+      var meta = head.meta;
+      var lastProcessedFloor = Number(meta.lastProcessedFloor);
+      if (!Number.isFinite(lastProcessedFloor)) lastProcessedFloor = 0;
+      var extractionCount = Number(meta.extractionCount);
+      if (!Number.isFinite(extractionCount)) extractionCount = 0;
+
+      return {
+        result: {
+          ok: true,
+          chatId: chatId,
+          revision: head.revision,
+          headHash: headHash,
+          schemaVersion: BME_GRAPH_SCHEMA_VERSION,
+          meta: meta,
+          nodes: nodes,
+          edges: edges,
+          tombstones: tombstones,
+          state: {
+            lastProcessedFloor: lastProcessedFloor,
+            extractionCount: extractionCount,
+          },
+        },
+      };
+    },
+  });
+
   if (logger.info) {
     logger.info('[st-bme] Companion authority module activated: third-party.st-bme');
   }
@@ -518,6 +862,11 @@ module.exports.activate = async function activate(ctx) {
 
 module.exports.DEFAULT_BME_DATABASE = DEFAULT_BME_DATABASE;
 module.exports.DEFAULT_NAMESPACE = DEFAULT_NAMESPACE;
+module.exports.DEFAULT_BME_GRAPH_DATABASE = DEFAULT_BME_GRAPH_DATABASE;
+module.exports.BME_GRAPH_SCHEMA_VERSION = BME_GRAPH_SCHEMA_VERSION;
+module.exports.GRAPH_TABLES = GRAPH_TABLES;
+module.exports.GRAPH_SCHEMA_STATEMENTS = GRAPH_SCHEMA_STATEMENTS;
+module.exports.GRAPH_META_REPORT_KEYS = GRAPH_META_REPORT_KEYS;
 module.exports._validateVectorBatch = validateVectorBatch;
 module.exports._buildUpsertItems = buildUpsertItems;
 module.exports._buildLinkItems = buildLinkItems;
@@ -527,5 +876,14 @@ module.exports._resolveNamespace = resolveNamespace;
 module.exports._validateRecallCandidatesInput = validateRecallCandidatesInput;
 module.exports._sanitizeSearchHit = sanitizeSearchHit;
 module.exports._sanitizeNeighborNode = sanitizeNeighborNode;
+module.exports._ensureGraphSchema = ensureGraphSchema;
+module.exports._readGraphHead = readGraphHead;
+module.exports._computeHeadHash = computeHeadHash;
+module.exports._normalizeSqlRows = normalizeSqlRows;
+module.exports._toMetaMap = toMetaMap;
+module.exports._normalizePayloadRows = normalizePayloadRows;
+module.exports._resolveGraphDatabase = resolveGraphDatabase;
+module.exports._resolveGraphChatId = resolveGraphChatId;
+module.exports._buildGraphMetaReport = buildGraphMetaReport;
 module.exports.MAX_SEARCH_TOP_K = MAX_SEARCH_TOP_K;
 module.exports.MAX_SEARCH_EXPAND_DEPTH = MAX_SEARCH_EXPAND_DEPTH;

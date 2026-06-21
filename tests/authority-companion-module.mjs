@@ -105,13 +105,88 @@ function createMockTxCtx() {
   };
 }
 
+// Mock ctx for graph.getHead / graph.loadSnapshot tests. The mock ctx.sql
+// has `query` and `exec` methods. The query mock inspects the statement
+// string to decide which rows to return (meta rows, node/edge record_ids
+// for getHead, or node/edge/tombstone payloads for loadSnapshot).
+function createMockSqlTxCtx(options = {}) {
+  const {
+    meta = {},
+    nodes = [],
+    edges = [],
+    tombstones = [],
+  } = options;
+  const calls = { query: [], exec: [] };
+
+  const metaRows = Object.entries(meta).map(([key, value]) => ({
+    meta_key: key,
+    value_json: JSON.stringify(value),
+  }));
+  const nodeRecordIdRows = nodes.map((n) => ({ record_id: String(n.id) }));
+  const nodePayloadRows = nodes.map((n) => ({ payload_json: JSON.stringify(n) }));
+  const edgeRecordIdRows = edges.map((e) => ({ record_id: String(e.id) }));
+  const edgePayloadRows = edges.map((e) => ({ payload_json: JSON.stringify(e) }));
+  const tombstonePayloadRows = tombstones.map((t) => ({ payload_json: JSON.stringify(t) }));
+
+  const sql = {
+    exec: async (database, statement, params) => {
+      calls.exec.push({ database, statement, params });
+      return { kind: 'exec', rowsAffected: 0, lastInsertRowid: null };
+    },
+    query: async (database, statement, params) => {
+      calls.query.push({ database, statement, params });
+      let rows = [];
+      let columns = [];
+      if (statement.includes('st_bme_graph_meta')) {
+        rows = metaRows;
+        columns = ['meta_key', 'value_json'];
+      } else if (statement.includes('st_bme_graph_nodes') && statement.includes('record_id')) {
+        rows = nodeRecordIdRows;
+        columns = ['record_id'];
+      } else if (statement.includes('st_bme_graph_nodes')) {
+        rows = nodePayloadRows;
+        columns = ['payload_json'];
+      } else if (statement.includes('st_bme_graph_edges') && statement.includes('record_id')) {
+        rows = edgeRecordIdRows;
+        columns = ['record_id'];
+      } else if (statement.includes('st_bme_graph_edges')) {
+        rows = edgePayloadRows;
+        columns = ['payload_json'];
+      } else if (statement.includes('st_bme_graph_tombstones')) {
+        rows = tombstonePayloadRows;
+        columns = ['payload_json'];
+      }
+      return { kind: 'query', columns, rows, rowCount: rows.length };
+    },
+  };
+
+  return {
+    calls,
+    ctx: {
+      moduleId: 'third-party.st-bme',
+      ownerExtensionId: 'third-party/st-bme',
+      moduleVersion: '7.8.4',
+      transactionName: '',
+      transactionVersion: '1',
+      callerExtensionId: 'third-party/test-extension',
+      requestId: 'test-req-graph-1',
+      limits: { maxRequestBytes: 67108864, maxResponseBytes: 67108864, timeoutMs: 120000, source: 'manifest' },
+      logger: { info() {}, warn() {}, error() {} },
+      audit: { logUsage: async () => {}, logWarning: async () => {}, logError: async () => {} },
+      authorize: async () => true,
+      signal: new AbortController().signal,
+      sql,
+    },
+  };
+}
+
 async function run() {
   console.log('[test:authority-companion-module] loading server.cjs');
   const mod = require(SERVER_CJS);
   assert.strictEqual(typeof mod.activate, 'function', 'activate must be a function');
 
-  // --- activate registers exactly vector.manifest and vector.apply ---
-  console.log('[test:authority-companion-module] testing activate registers both transactions');
+  // --- activate registers exactly the 5 transactions ---
+  console.log('[test:authority-companion-module] testing activate registers all five transactions');
   {
     const registered = {};
     const ctx = {
@@ -125,10 +200,16 @@ async function run() {
     };
     await mod.activate(ctx);
     const keys = Object.keys(registered).sort();
-    assert.deepStrictEqual(keys, ['recall.candidates', 'vector.apply', 'vector.manifest'], 'must register exactly vector.manifest, vector.apply, and recall.candidates');
+    assert.deepStrictEqual(
+      keys,
+      ['graph.getHead', 'graph.loadSnapshot', 'recall.candidates', 'vector.apply', 'vector.manifest'],
+      'must register exactly vector.manifest, vector.apply, recall.candidates, graph.getHead, and graph.loadSnapshot',
+    );
     assert.strictEqual(typeof registered['vector.manifest'].handler, 'function', 'vector.manifest handler must be a function');
     assert.strictEqual(typeof registered['vector.apply'].handler, 'function', 'vector.apply handler must be a function');
     assert.strictEqual(typeof registered['recall.candidates'].handler, 'function', 'recall.candidates handler must be a function');
+    assert.strictEqual(typeof registered['graph.getHead'].handler, 'function', 'graph.getHead handler must be a function');
+    assert.strictEqual(typeof registered['graph.loadSnapshot'].handler, 'function', 'graph.loadSnapshot handler must be a function');
   }
 
   // --- vector.apply calls bulkUpsert and bulkLink with correct payload ---
@@ -311,6 +392,8 @@ async function run() {
     assert.ok(manifest.transactions['vector.manifest'], 'must declare vector.manifest');
     assert.ok(manifest.transactions['vector.apply'], 'must declare vector.apply');
     assert.ok(manifest.transactions['recall.candidates'], 'must declare recall.candidates');
+    assert.ok(manifest.transactions['graph.getHead'], 'must declare graph.getHead');
+    assert.ok(manifest.transactions['graph.loadSnapshot'], 'must declare graph.loadSnapshot');
     assert.strictEqual(manifest.transactions['vector.apply'].idempotency, 'required', 'vector.apply idempotency must be required');
     assert.strictEqual(manifest.transactions['recall.candidates'].idempotency, 'none', 'recall.candidates idempotency must be none');
     assert.strictEqual(manifest.transactions['recall.candidates'].riskLevel, 'low', 'recall.candidates riskLevel must be low');
@@ -318,6 +401,36 @@ async function run() {
     assert.strictEqual(manifest.transactions['recall.candidates'].timeoutMs, 120000, 'recall.candidates timeoutMs must be 120000');
     assert.strictEqual(manifest.transactions['recall.candidates'].maxRequestBytes, 67108864, 'recall.candidates maxRequestBytes must be 64 MiB');
     assert.strictEqual(manifest.transactions['recall.candidates'].maxResponseBytes, 67108864, 'recall.candidates maxResponseBytes must be 64 MiB');
+    // graph.getHead declaration
+    assert.strictEqual(manifest.transactions['graph.getHead'].idempotency, 'none', 'graph.getHead idempotency must be none');
+    assert.strictEqual(manifest.transactions['graph.getHead'].riskLevel, 'low', 'graph.getHead riskLevel must be low');
+    assert.strictEqual(manifest.transactions['graph.getHead'].version, '1', 'graph.getHead version must be "1"');
+    assert.strictEqual(manifest.transactions['graph.getHead'].timeoutMs, 120000, 'graph.getHead timeoutMs must be 120000');
+    assert.strictEqual(manifest.transactions['graph.getHead'].maxRequestBytes, 67108864, 'graph.getHead maxRequestBytes must be 64 MiB');
+    assert.strictEqual(manifest.transactions['graph.getHead'].maxResponseBytes, 67108864, 'graph.getHead maxResponseBytes must be 64 MiB');
+    assert.ok(
+      manifest.transactions['graph.getHead'].requiredResources.some(function (r) { return r.resource === 'sql.private'; }),
+      'graph.getHead must require sql.private',
+    );
+    assert.ok(
+      manifest.transactions['graph.getHead'].requiredResources.every(function (r) { return r.target === undefined; }),
+      'graph.getHead must not pin a static database target',
+    );
+    // graph.loadSnapshot declaration
+    assert.strictEqual(manifest.transactions['graph.loadSnapshot'].idempotency, 'none', 'graph.loadSnapshot idempotency must be none');
+    assert.strictEqual(manifest.transactions['graph.loadSnapshot'].riskLevel, 'low', 'graph.loadSnapshot riskLevel must be low');
+    assert.strictEqual(manifest.transactions['graph.loadSnapshot'].version, '1', 'graph.loadSnapshot version must be "1"');
+    assert.strictEqual(manifest.transactions['graph.loadSnapshot'].timeoutMs, 120000, 'graph.loadSnapshot timeoutMs must be 120000');
+    assert.strictEqual(manifest.transactions['graph.loadSnapshot'].maxRequestBytes, 67108864, 'graph.loadSnapshot maxRequestBytes must be 64 MiB');
+    assert.strictEqual(manifest.transactions['graph.loadSnapshot'].maxResponseBytes, 67108864, 'graph.loadSnapshot maxResponseBytes must be 64 MiB');
+    assert.ok(
+      manifest.transactions['graph.loadSnapshot'].requiredResources.some(function (r) { return r.resource === 'sql.private'; }),
+      'graph.loadSnapshot must require sql.private',
+    );
+    assert.ok(
+      manifest.transactions['graph.loadSnapshot'].requiredResources.every(function (r) { return r.target === undefined; }),
+      'graph.loadSnapshot must not pin a static database target',
+    );
     assert.ok(manifest.transactions['vector.manifest'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'vector.manifest must require trivium.private');
     assert.ok(manifest.transactions['vector.apply'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'vector.apply must require trivium.private');
     assert.ok(manifest.transactions['recall.candidates'].requiredResources.some(function (r) { return r.resource === 'trivium.private'; }), 'recall.candidates must require trivium.private');
@@ -594,6 +707,281 @@ async function run() {
     assert.strictEqual(calls.searchHybrid[0].topK, mod.MAX_SEARCH_TOP_K, 'topK should be clamped to MAX_SEARCH_TOP_K');
     // neighbors depth should be clamped to MAX_SEARCH_EXPAND_DEPTH.
     assert.strictEqual(calls.neighbors[0].depth, mod.MAX_SEARCH_EXPAND_DEPTH, 'expandDepth should be clamped to MAX_SEARCH_EXPAND_DEPTH');
+  }
+
+  // ===========================================================================
+  // Phase D: graph.getHead / graph.loadSnapshot
+  // ===========================================================================
+
+  console.log('[test:authority-companion-module] testing graph.getHead returns revision + headHash + meta when chat exists');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: {
+        revision: 5,
+        lastModified: 1700000000000,
+        syncDirty: false,
+        syncDirtyReason: null,
+        lastProcessedFloor: 3,
+        extractionCount: 12,
+        schemaVersion: 1,
+        nodeCount: 2,
+        edgeCount: 1,
+        tombstoneCount: 0,
+      },
+      nodes: [{ id: 'node-a' }, { id: 'node-b' }],
+      edges: [{ id: 'edge-1' }],
+    });
+    ctx.transactionName = 'graph.getHead';
+    const result = await (await getHandler(mod, 'graph.getHead'))(ctx, { chatId: 'chat-1' }, {});
+    assert.strictEqual(result.result.ok, true, 'graph.getHead should return ok: true');
+    assert.strictEqual(result.result.chatId, 'chat-1');
+    assert.strictEqual(result.result.revision, 5, 'revision should be 5');
+    assert.strictEqual(result.result.exists, true, 'exists should be true when meta rows present');
+    assert.strictEqual(typeof result.result.headHash, 'string', 'headHash must be a string when chat exists');
+    assert.ok(result.result.headHash.length > 0, 'headHash must be non-empty');
+    assert.strictEqual(result.result.lastModified, 1700000000000, 'lastModified should be echoed from meta');
+    assert.strictEqual(result.result.syncDirty, false, 'syncDirty should be false');
+    assert.ok(result.result.meta, 'meta must be present');
+    assert.strictEqual(result.result.meta.revision, 5);
+    assert.strictEqual(result.result.meta.nodeCount, 2);
+    assert.strictEqual(result.result.meta.edgeCount, 1);
+    assert.strictEqual(result.result.meta.tombstoneCount, 0);
+    assert.strictEqual(result.result.meta.lastProcessedFloor, 3);
+    assert.strictEqual(result.result.meta.extractionCount, 12);
+    assert.strictEqual(result.result.meta.schemaVersion, 1);
+    assert.strictEqual(result.result.meta.syncDirty, false);
+    assert.strictEqual(result.result.meta.syncDirtyReason, null);
+
+    // ensureGraphSchema called first — exec called with 4 CREATE TABLE statements.
+    const createTableCalls = calls.exec.filter((c) => c.statement.includes('CREATE TABLE'));
+    assert.strictEqual(createTableCalls.length, 4, 'must run 4 CREATE TABLE statements before reading');
+    assert.ok(createTableCalls.every((c) => c.statement.includes('IF NOT EXISTS')), 'CREATE TABLE must be idempotent (IF NOT EXISTS)');
+
+    // Database defaults to BME's graph default ('default') when not specified.
+    assert.strictEqual(calls.exec[0].database, 'default', 'exec database must default to BME graph default');
+    assert.strictEqual(calls.query[0].database, 'default', 'query database must default to BME graph default');
+
+    // Only ctx.sql.query and ctx.sql.exec are used (no other ctx methods).
+    assert.ok(calls.query.length > 0, 'must use ctx.sql.query for reads');
+    assert.ok(calls.exec.length > 0, 'must use ctx.sql.exec for schema ensure');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.getHead returns exists:false for new chat');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({ meta: {}, nodes: [], edges: [] });
+    ctx.transactionName = 'graph.getHead';
+    const result = await (await getHandler(mod, 'graph.getHead'))(ctx, { chatId: 'new-chat' }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.chatId, 'new-chat');
+    assert.strictEqual(result.result.revision, 0, 'revision should be 0 for new chat');
+    assert.strictEqual(result.result.exists, false, 'exists should be false when no meta rows');
+    assert.strictEqual(result.result.headHash, null, 'headHash must be null for new chat');
+
+    // Schema ensure still runs even for new chats.
+    const createTableCalls = calls.exec.filter((c) => c.statement.includes('CREATE TABLE'));
+    assert.strictEqual(createTableCalls.length, 4, 'ensureGraphSchema must run before the meta read');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.getHead respects explicit database');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({ meta: { revision: 1 }, nodes: [], edges: [] });
+    ctx.transactionName = 'graph.getHead';
+    const result = await (await getHandler(mod, 'graph.getHead'))(ctx, { chatId: 'chat-1', database: 'custom-db' }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(calls.exec[0].database, 'custom-db', 'exec must use explicit database');
+    assert.strictEqual(calls.query[0].database, 'custom-db', 'query must use explicit database');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.getHead requires chatId');
+  {
+    const { ctx } = createMockSqlTxCtx({ meta: {}, nodes: [], edges: [] });
+    ctx.transactionName = 'graph.getHead';
+    await assert.rejects(
+      async () => await (await getHandler(mod, 'graph.getHead'))(ctx, {}, {}),
+      /requires chatId/,
+      'should reject missing chatId',
+    );
+  }
+
+  console.log('[test:authority-companion-module] testing graph.loadSnapshot returns full snapshot when chat exists');
+  {
+    const testNodes = [{ id: 'node-a', type: 'concept' }, { id: 'node-b', type: 'fact' }];
+    const testEdges = [{ id: 'edge-1', from: 'node-a', to: 'node-b', relation: 'related' }];
+    const testTombstones = [{ id: 'tomb-1', kind: 'node', targetId: 'node-c' }];
+    const testMeta = {
+      revision: 7,
+      lastModified: 1700000000001,
+      syncDirty: true,
+      syncDirtyReason: 'test',
+      lastProcessedFloor: 4,
+      extractionCount: 20,
+      schemaVersion: 1,
+      nodeCount: 2,
+      edgeCount: 1,
+      tombstoneCount: 1,
+    };
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: testMeta,
+      nodes: testNodes,
+      edges: testEdges,
+      tombstones: testTombstones,
+    });
+    ctx.transactionName = 'graph.loadSnapshot';
+    const result = await (await getHandler(mod, 'graph.loadSnapshot'))(ctx, { chatId: 'chat-snap' }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.chatId, 'chat-snap');
+    assert.strictEqual(result.result.revision, 7);
+    assert.strictEqual(result.result.schemaVersion, 1, 'schemaVersion should be 1');
+    assert.strictEqual(typeof result.result.headHash, 'string', 'headHash must be a string');
+    assert.ok(result.result.headHash.length > 0);
+
+    assert.ok(Array.isArray(result.result.nodes), 'nodes must be an array');
+    assert.strictEqual(result.result.nodes.length, 2, 'nodes should have 2 entries');
+    assert.strictEqual(result.result.nodes[0].id, 'node-a');
+    assert.strictEqual(result.result.nodes[1].id, 'node-b');
+    assert.ok(Array.isArray(result.result.edges), 'edges must be an array');
+    assert.strictEqual(result.result.edges.length, 1);
+    assert.strictEqual(result.result.edges[0].id, 'edge-1');
+    assert.ok(Array.isArray(result.result.tombstones), 'tombstones must be an array');
+    assert.strictEqual(result.result.tombstones.length, 1);
+    assert.strictEqual(result.result.tombstones[0].id, 'tomb-1');
+
+    assert.ok(result.result.meta, 'meta must be present');
+    assert.strictEqual(result.result.meta.revision, 7);
+    assert.strictEqual(result.result.meta.syncDirty, true);
+    assert.strictEqual(result.result.meta.syncDirtyReason, 'test');
+
+    assert.ok(result.result.state, 'state must be present');
+    assert.strictEqual(result.result.state.lastProcessedFloor, 4);
+    assert.strictEqual(result.result.state.extractionCount, 20);
+
+    // ensureGraphSchema called first.
+    const createTableCalls = calls.exec.filter((c) => c.statement.includes('CREATE TABLE'));
+    assert.strictEqual(createTableCalls.length, 4, 'must run 4 CREATE TABLE statements before reading');
+
+    // Only ctx.sql.query and ctx.sql.exec are used.
+    assert.ok(calls.query.length > 0, 'must use ctx.sql.query for reads');
+    assert.ok(calls.exec.length > 0, 'must use ctx.sql.exec for schema ensure');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.loadSnapshot returns unchanged when minRevision matches');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 7 },
+      nodes: [{ id: 'node-a' }],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.loadSnapshot';
+    const result = await (await getHandler(mod, 'graph.loadSnapshot'))(ctx, { chatId: 'chat-unchanged', minRevision: 7 }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.unchanged, true, 'unchanged must be true when minRevision matches current revision');
+    assert.strictEqual(result.result.revision, 7);
+    assert.strictEqual(result.result.chatId, 'chat-unchanged');
+    assert.strictEqual(typeof result.result.headHash, 'string', 'headHash must still be present');
+
+    // Should NOT have queried payload tables — short-circuit before the payload reads.
+    const payloadQueries = calls.query.filter((c) => c.statement.includes('payload_json'));
+    assert.strictEqual(payloadQueries.length, 0, 'should not query payload tables when unchanged');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.loadSnapshot returns full snapshot when minRevision does not match');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 7 },
+      nodes: [{ id: 'node-a' }],
+      edges: [{ id: 'edge-1' }],
+    });
+    ctx.transactionName = 'graph.loadSnapshot';
+    const result = await (await getHandler(mod, 'graph.loadSnapshot'))(ctx, { chatId: 'chat-changed', minRevision: 5 }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.unchanged, undefined, 'unchanged must NOT be set when minRevision differs');
+    assert.strictEqual(result.result.revision, 7);
+    assert.ok(Array.isArray(result.result.nodes), 'nodes must be returned when revision differs');
+    assert.strictEqual(result.result.nodes.length, 1);
+    assert.strictEqual(result.result.nodes[0].id, 'node-a');
+    assert.ok(Array.isArray(result.result.edges));
+    assert.strictEqual(result.result.edges.length, 1);
+    assert.strictEqual(result.result.edges[0].id, 'edge-1');
+
+    // Payload tables were queried because the revision differed.
+    const payloadQueries = calls.query.filter((c) => c.statement.includes('payload_json'));
+    assert.ok(payloadQueries.length >= 3, 'should query nodes, edges, and tombstones payload tables');
+  }
+
+  console.log('[test:authority-companion-module] testing graph.loadSnapshot returns empty snapshot for new chat');
+  {
+    const { ctx } = createMockSqlTxCtx({ meta: {}, nodes: [], edges: [], tombstones: [] });
+    ctx.transactionName = 'graph.loadSnapshot';
+    const result = await (await getHandler(mod, 'graph.loadSnapshot'))(ctx, { chatId: 'new-chat-snap' }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(result.result.chatId, 'new-chat-snap');
+    assert.strictEqual(result.result.revision, 0);
+    assert.strictEqual(result.result.headHash, null);
+    assert.strictEqual(result.result.schemaVersion, 1);
+    assert.deepStrictEqual(result.result.nodes, []);
+    assert.deepStrictEqual(result.result.edges, []);
+    assert.deepStrictEqual(result.result.tombstones, []);
+    assert.deepStrictEqual(result.result.state, { lastProcessedFloor: 0, extractionCount: 0 });
+  }
+
+  console.log('[test:authority-companion-module] testing graph.loadSnapshot respects explicit database');
+  {
+    const { calls, ctx } = createMockSqlTxCtx({
+      meta: { revision: 1 },
+      nodes: [{ id: 'n1' }],
+      edges: [],
+    });
+    ctx.transactionName = 'graph.loadSnapshot';
+    const result = await (await getHandler(mod, 'graph.loadSnapshot'))(ctx, { chatId: 'chat-1', database: 'graph-db' }, {});
+    assert.strictEqual(result.result.ok, true);
+    assert.strictEqual(calls.exec[0].database, 'graph-db', 'exec must use explicit database');
+    assert.strictEqual(calls.query[0].database, 'graph-db', 'query must use explicit database');
+  }
+
+  console.log('[test:authority-companion-module] testing graph headHash divergence detection');
+  {
+    // Same revision, different node sets -> different headHash.
+    const { ctx: ctxA } = createMockSqlTxCtx({
+      meta: { revision: 5 },
+      nodes: [{ id: 'node-a' }, { id: 'node-b' }],
+      edges: [{ id: 'edge-1' }],
+    });
+    ctxA.transactionName = 'graph.getHead';
+    const resultA = await (await getHandler(mod, 'graph.getHead'))(ctxA, { chatId: 'chat-A' }, {});
+
+    const { ctx: ctxB } = createMockSqlTxCtx({
+      meta: { revision: 5 },
+      nodes: [{ id: 'node-a' }, { id: 'node-c' }],
+      edges: [{ id: 'edge-1' }],
+    });
+    ctxB.transactionName = 'graph.getHead';
+    const resultB = await (await getHandler(mod, 'graph.getHead'))(ctxB, { chatId: 'chat-B' }, {});
+
+    assert.strictEqual(resultA.result.revision, 5);
+    assert.strictEqual(resultB.result.revision, 5);
+    assert.strictEqual(resultA.result.exists, true);
+    assert.strictEqual(resultB.result.exists, true);
+    assert.ok(typeof resultA.result.headHash === 'string');
+    assert.ok(typeof resultB.result.headHash === 'string');
+    assert.notStrictEqual(
+      resultA.result.headHash,
+      resultB.result.headHash,
+      'same revision with different node ids must produce different headHashes',
+    );
+
+    // Same revision + same node ids + same edge ids -> same headHash.
+    const { ctx: ctxC } = createMockSqlTxCtx({
+      meta: { revision: 5 },
+      nodes: [{ id: 'node-a' }, { id: 'node-b' }],
+      edges: [{ id: 'edge-1' }],
+    });
+    ctxC.transactionName = 'graph.getHead';
+    const resultC = await (await getHandler(mod, 'graph.getHead'))(ctxC, { chatId: 'chat-C' }, {});
+    assert.strictEqual(
+      resultA.result.headHash,
+      resultC.result.headHash,
+      'same revision + same node/edge ids must produce the same headHash',
+    );
   }
 
   console.log('[test:authority-companion-module] all tests passed');

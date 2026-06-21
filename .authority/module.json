@@ -45,6 +45,32 @@
       "timeoutMs": 120000,
       "maxRequestBytes": 67108864,
       "maxResponseBytes": 67108864
+    },
+    "graph.getHead": {
+      "name": "graph.getHead",
+      "version": "1",
+      "title": "BME graph getHead",
+      "description": "Returns BME graph head (revision + content hash + selected meta) for a chat. Read-only; detects same-revision divergence via a content hash over node/edge record_ids + revision.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "sql.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "graph.loadSnapshot": {
+      "name": "graph.loadSnapshot",
+      "version": "1",
+      "title": "BME graph loadSnapshot",
+      "description": "Returns the full BME graph snapshot (nodes, edges, tombstones, meta, state) for a chat. Read-only; supports minRevision short-circuit to skip payload when unchanged.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "sql.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
     }
   }
 }
