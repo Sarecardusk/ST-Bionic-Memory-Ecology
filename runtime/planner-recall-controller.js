@@ -108,11 +108,17 @@ export async function runPlannerRecallForEnaController(runtime = {}, {
   });
   const memoryBlock = runtime.formatInjection(result, schema).trim();
 
+  // Belt-and-braces: when formatInjection produced an empty memory block
+  // (e.g. retrieval selected zero nodes), do NOT advertise a usable handoff
+  // result. Callers (ena-planner-runtime-utils.js:65) gate on
+  // `plannerRecall?.result` truthiness; nulling it here prevents an empty
+  // cached payload from short-circuiting the main recall. The main recall
+  // should run fresh instead (docs/features/ena-planner.md:44-50,76).
   return {
     ok: Boolean(memoryBlock),
     reason: memoryBlock ? "completed" : "empty-memory-block",
     memoryBlock,
     recentMessages,
-    result,
+    result: memoryBlock ? result : null,
   };
 }
