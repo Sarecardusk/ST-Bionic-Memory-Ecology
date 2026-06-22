@@ -6374,7 +6374,11 @@
   flex-direction: column;
 }
 
-.bme-recall-card.expanded .bme-recall-pane {
+.bme-recall-card.expanded .bme-recall-body.active-tab-recall .bme-recall-recall-pane {
+  display: flex;
+}
+
+.bme-recall-card.expanded .bme-recall-body.active-tab-planner .bme-recall-planner-pane {
   display: flex;
 }
 
@@ -6552,17 +6556,28 @@
   margin-bottom: 8px;
 }
 
-.bme-recall-planner-plot {
+.bme-recall-planner-plot-list {
   margin: 0;
-  padding: 10px 12px;
-  border-radius: 6px;
-  background: var(--bme-surface-lowest, #0e0e11);
+  padding-left: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   color: var(--bme-on-surface, #e4e1e6);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.bme-recall-planner-plot-list li::marker {
+  color: var(--bme-primary-text, #ffb2b7);
+  font-weight: 700;
+}
+
+.bme-recall-planner-plot-item {
   white-space: pre-wrap;
   word-break: break-word;
-  overflow-x: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bme-surface-lowest, #0e0e11);
 }
 
 .bme-recall-planner-block {

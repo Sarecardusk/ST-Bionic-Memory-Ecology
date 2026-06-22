@@ -2536,7 +2536,7 @@ async function testRecallCardWithPlotShowsRawUserInputOnly() {
   }
 }
 
-async function testRecallTabWithPlotUsesPlainInjectionPreview() {
+async function testRecallTabWithPlotKeepsEnaInjectionPreview() {
   const chat = [
     {
       is_user: true,
@@ -2570,22 +2570,21 @@ async function testRecallTabWithPlotUsesPlainInjectionPreview() {
     card.querySelector(".bme-recall-tab-recall")?.click();
 
     const sourceTag = card.querySelector(".bme-recall-meta-tag.is-ena");
-    assert.equal(sourceTag, null, "recall pane should not show ENA source chip when plot also exists");
+    assert.equal(Boolean(sourceTag), true, "recall pane should still show ENA source chip when plot also exists");
+    assert.equal(sourceTag?.textContent, "🧭 ENA Planner");
     const preview = card.querySelector(".bme-recall-injection-preview");
     assert.equal(Boolean(preview), true);
-    assert.equal(preview.classList.contains("is-ena"), false);
-    assert.equal(preview.classList.contains("expanded"), false);
+    assert.equal(preview.classList.contains("is-ena"), true);
+    assert.equal(preview.classList.contains("expanded"), true);
     const toggleHTML = preview.querySelector(".bme-recall-injection-toggle")?.innerHTML || "";
     assert.ok(
-      toggleHTML.includes("注入预览"),
-      "recall tab preview should use the plain injection preview label",
+      toggleHTML.includes("ENA 注入预览"),
+      "recall tab preview should keep the ENA injection preview label",
     );
     assert.equal(
-      toggleHTML.includes("ENA"),
-      false,
-      "recall tab preview label must not contain ENA",
+      preview.querySelector(".bme-recall-injection-note")?.textContent,
+      "由 Ena Planner 触发的本轮记忆块",
     );
-    assert.equal(card.querySelector(".bme-recall-injection-note"), null);
   } finally {
     harness.restoreGlobals();
   }
@@ -2762,7 +2761,7 @@ async function testRecallCardActiveTabClickExpandsCurrentPane() {
     assert.equal(card.classList.contains("expanded"), true);
     assert.equal(plannerTab.getAttribute("aria-pressed"), "true");
     assert.ok(
-      card.querySelector(".bme-recall-planner-plot")?.textContent.includes("Planner guidance visible"),
+      card.querySelector(".bme-recall-planner-plot-item")?.textContent.includes("Planner guidance visible"),
       "clicking the active planner tag should expand and render planner content",
     );
   } finally {
@@ -2877,7 +2876,7 @@ async function testRecallCardPlannerPaneRendersGuidanceAndNotes() {
     ).find((el) => el.textContent.includes("剧情指引"));
     assert.equal(Boolean(guidanceLabel), true, "should render 剧情指引 label");
     assert.ok(
-      card.querySelector(".bme-recall-planner-plot")?.textContent.includes("ruins"),
+      card.querySelector(".bme-recall-planner-plot-item")?.textContent.includes("ruins"),
       "plot text should be visible",
     );
 
@@ -2928,7 +2927,7 @@ async function testRecallCardMountsForPlotBlocksOnlyMessage() {
     assert.equal(card.dataset.activeTab, "planner");
     card.querySelector(".bme-recall-tab-planner")?.click();
     assert.ok(
-      card.querySelector(".bme-recall-planner-plot")?.textContent.includes("Blocks-only plot guidance"),
+      card.querySelector(".bme-recall-planner-plot-item")?.textContent.includes("Blocks-only plot guidance"),
       "blocks-only plot should render guidance",
     );
     assert.ok(
@@ -9454,7 +9453,7 @@ await testRecallCardShowsEnaSourceChipAndExpandedPreview();
 await testRecallCardBeautifiesInjectionPreviewSections();
 await testRecallCardWithRecallAndPlotShowsBothTabs();
 await testRecallCardWithPlotShowsRawUserInputOnly();
-await testRecallTabWithPlotUsesPlainInjectionPreview();
+  await testRecallTabWithPlotKeepsEnaInjectionPreview();
 await testRecallCardTabInteractionsSupportPointerAndChildTargets();
 await testRecallCardDefaultsToPlannerTabWhenPlotTextExists();
 await testRecallCardActiveTabClickExpandsCurrentPane();

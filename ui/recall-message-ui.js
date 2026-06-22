@@ -428,7 +428,6 @@ function buildPlannerRawTags(plotRecord) {
 
   const chunks = [];
   if (plotRecord?.plotText) chunks.push(String(plotRecord.plotText));
-  if (plotRecord?.plannerAugmentedMessage) chunks.push(String(plotRecord.plannerAugmentedMessage));
   if (Array.isArray(plotRecord?.plotBlocks) && plotRecord.plotBlocks.length > 0) {
     chunks.push(...plotRecord.plotBlocks.map((b) => String(b || "")));
   }
@@ -449,6 +448,21 @@ function appendPlannerTextSection(pane, className, label, entries = []) {
   return true;
 }
 
+function appendPlannerPlotList(pane, label, entries = []) {
+  const normalizedEntries = entries.map((item) => String(item || "").trim()).filter(Boolean);
+  if (!normalizedEntries.length) return false;
+  const section = el("div", "bme-recall-planner-section");
+  section.appendChild(el("div", "bme-recall-planner-section-label", label));
+  const list = el("ol", "bme-recall-planner-plot-list");
+  for (const text of normalizedEntries) {
+    const item = el("li", "bme-recall-planner-plot-item", text);
+    list.appendChild(item);
+  }
+  section.appendChild(list);
+  pane.appendChild(section);
+  return true;
+}
+
 function buildPlannerPane(
   plotRecord,
   { estimateTokens = defaultEstimateTokens, callbacks = {}, messageIndex = null } = {},
@@ -461,9 +475,8 @@ function buildPlannerPane(
   }
 
   const tagged = extractTaggedPlannerBlocks(plotRecord);
-  appendPlannerTextSection(
+  appendPlannerPlotList(
     pane,
-    "bme-recall-planner-plot",
     t("recall.planner.guidance"),
     tagged.plot.length ? tagged.plot : [tagged.fallback],
   );
@@ -593,8 +606,8 @@ function buildRecallPane({
     if (typeof HTMLElement === "undefined" || !(meta instanceof HTMLElement)) {
       meta.textContent = metaText;
     }
-    const showEnaSource = !hasPlot && isPlannerRecallSource(activeRecord);
-    if (sourceLabel && !hasPlot) {
+    const showEnaSource = isPlannerRecallSource(activeRecord);
+    if (sourceLabel) {
       const sourceTag = el(
         "span",
         `bme-recall-meta-tag${showEnaSource ? " is-ena" : ""}`,
@@ -612,7 +625,7 @@ function buildRecallPane({
     pane.appendChild(meta);
 
     const injectionPreviewBlock = buildInjectionPreviewBlock(activeRecord || {}, {
-      forcePlain: hasPlot,
+      forcePlain: false,
     });
     if (injectionPreviewBlock) {
       pane.appendChild(injectionPreviewBlock);
@@ -917,13 +930,18 @@ export function createRecallCardElement({
     const nextHasPlot = hasPlotRecordContent(activePlotRecord);
     hasRecall = nextHasRecall;
     hasPlot = nextHasPlot;
-    activeTab =
-      (activeTab === "planner" && nextHasPlot) ||
-      (!nextHasRecall && nextHasPlot)
-        ? "planner"
-        : nextHasRecall || !nextHasPlot
-          ? "recall"
-          : activeTab;
+
+    const dataUpdate =
+      Object.prototype.hasOwnProperty.call(next, "record") ||
+      Object.prototype.hasOwnProperty.call(next, "plotRecord");
+    if (dataUpdate) {
+      activeTab = nextHasPlot ? "planner" : nextHasRecall ? "recall" : activeTab;
+    } else {
+      const currentAvailable =
+        (activeTab === "planner" && nextHasPlot) ||
+        (activeTab === "recall" && nextHasRecall);
+      activeTab = currentAvailable ? activeTab : nextHasPlot ? "planner" : "recall";
+    }
 
     card.dataset.updatedAt = String(activeRecord?.updatedAt || "");
     card.dataset.activeTab = activeTab;
