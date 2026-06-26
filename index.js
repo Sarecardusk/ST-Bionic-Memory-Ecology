@@ -111,7 +111,10 @@ import {
   registerGenerationAfterCommandsController,
   scheduleSendIntentHookRetryController,
 } from "./host/event-binding.js";
-import { writeStructuredPlotRecordToMessage } from "./ena-planner/planner-plot-history.js";
+import {
+  readStructuredPlotRecordFromMessage,
+  writeStructuredPlotRecordToMessage,
+} from "./ena-planner/planner-plot-history.js";
 import {
   BME_HOST_PROFILE_LUKER,
   getBmeHostAdapter,
@@ -288,12 +291,12 @@ import {
   resolveRecallInputController,
   runRecallController,
 } from "./retrieval/recall-controller.js";
-import { createRecallMessageUiController } from "./ui/recall-message-ui-controller.js";
+import { createRecallMessageUiController } from "./ui/recall-message-ui-controller.js?v=recall-tabs-v4";
 import {
   createRecallCardElement,
   openRecallSidebar,
   updateRecallCardData,
-} from "./ui/recall-message-ui.js";
+} from "./ui/recall-message-ui.js?v=recall-tabs-v4";
 import {
   buildPersistedRecallRecord,
   bumpPersistedRecallGenerationCount,
@@ -1871,6 +1874,7 @@ const recallMessageUiController = createRecallMessageUiController({
   updateRecallCardData,
   normalizeRecallInputText,
   rerunRecallForMessage: (messageIndex) => rerunRecallForMessage(messageIndex),
+  readStructuredPlotRecordFromMessage,
   PERSISTED_RECALL_UI_REFRESH_RETRY_DELAYS_MS,
   PERSISTED_RECALL_UI_DIAGNOSTIC_THROTTLE_MS,
 });
@@ -5817,6 +5821,9 @@ function buildAuthorityGraphStoreOptions(settings = getSettings()) {
     baseUrl: normalizedSettings.baseUrl,
     bmeVectorManifestReady: Boolean(capability.bmeVectorManifestReady),
     bmeVectorApplyReady: Boolean(capability.bmeVectorApplyReady),
+    bmeCandidateSearchReady: Boolean(capability.bmeCandidateSearchReady),
+    bmeGraphCommitReady: Boolean(capability.bmeGraphCommitReady),
+    isAuthorityModuleGraphCommitReady: Boolean(capability.bmeGraphCommitReady),
     bmeProtocolVersion: Math.max(0, Number(capability.bmeProtocolVersion) || 0),
     headerProvider:
       typeof getRequestHeaders === "function" ? () => getRequestHeaders() : null,
@@ -14715,6 +14722,13 @@ function peekPlannerRecallHandoff(
   return rerollRecallInput.peekPlannerRecallHandoff(chatId, now);
 }
 
+function peekConsumedPlannerRecallHandoff(
+  chatId = getCurrentChatId(),
+  now = Date.now(),
+) {
+  return rerollRecallInput.peekConsumedPlannerRecallHandoff?.(chatId, now) || null;
+}
+
 function clearPlannerRecallHandoffsForChat(
   chatId = getCurrentChatId(),
   { clearAll = false } = {},
@@ -14755,6 +14769,48 @@ function preparePlannerPlotRecordHandoff(plannerPlotRecord = null) {
     ...plannerPlotRecord,
     chatId: getCurrentChatId(),
   });
+}
+
+function persistPlannerRecallHandoffToUserMessage(newUserMessageIndex) {
+  const context = getContext();
+  const chat = context?.chat;
+  if (
+    !Array.isArray(chat) ||
+    !Number.isFinite(newUserMessageIndex) ||
+    !chat[newUserMessageIndex]?.is_user
+  ) {
+    return false;
+  }
+  if (readPersistedRecallFromUserMessage(chat, newUserMessageIndex)) {
+    return false;
+  }
+  const chatId = context?.chatId || getCurrentChatId();
+  const handoff = peekPlannerRecallHandoff(chatId) || peekConsumedPlannerRecallHandoff(chatId);
+  const injectionText = String(handoff?.injectionText || "").trim();
+  const result = handoff?.result || null;
+  if (!handoff || !injectionText || !result) {
+    return false;
+  }
+  const targetUserFloorText = normalizeRecallInputText(
+    chat[newUserMessageIndex]?.mes || "",
+  );
+  const record = buildPersistedRecallRecord({
+    injectionText,
+    selectedNodeIds: result?.selectedNodeIds || [],
+    recallInput: String(handoff.rawUserInput || ""),
+    recallSource: String(handoff.source || "planner-handoff"),
+    hookName: "MESSAGE_SENT",
+    tokenEstimate: estimateTokens(injectionText),
+    manuallyEdited: false,
+    authoritativeInputUsed: true,
+    boundUserFloorText: targetUserFloorText,
+  });
+  if (!writePersistedRecallToUserMessage(chat, newUserMessageIndex, record)) {
+    return false;
+  }
+  rerollRecallInput.clearPlannerRecallOnlyForChat?.(chatId);
+  triggerChatMetadataSave(context, { immediate: false });
+  return true;
 }
 
 function persistPlannerPlotRecordToUserMessage(newUserMessageIndex) {
@@ -16092,6 +16148,7 @@ function onMessageSent(messageId) {
       getContext,
       isTrivialUserInput,
       markCurrentGenerationTrivialSkip,
+      persistPlannerRecallHandoffToUserMessage,
       persistPlannerPlotRecordToUserMessage,
       recordRecallSentUserMessage,
       rebindRecallRecordToNewUserMessage,

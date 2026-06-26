@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "id": "third-party.st-bme",
+  "displayName": "BME companion authority module",
+  "ownerExtensionId": "third-party/st-bme",
+  "version": "7.8.4",
+  "protocolVersion": 1,
+  "entry": "./server.cjs",
+  "transactions": {
+    "vector.manifest": {
+      "name": "vector.manifest",
+      "version": "1.0.0",
+      "title": "BME vector manifest",
+      "description": "Reports BME Trivium database health from the DOA generic trivium wrapper.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "trivium.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "vector.apply": {
+      "name": "vector.apply",
+      "version": "1.0.0",
+      "title": "BME vector apply",
+      "description": "Applies BME vector upserts and links through the DOA generic trivium wrapper.",
+      "riskLevel": "high",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "trivium.private" }],
+      "idempotency": "required",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "recall.candidates": {
+      "name": "recall.candidates",
+      "version": "1",
+      "title": "BME recall candidates",
+      "description": "Returns candidate node references for BME recall in a single server-side call (search + expand). Read-only; returns only externalId/internalId/namespace/score.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "trivium.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "graph.getHead": {
+      "name": "graph.getHead",
+      "version": "1",
+      "title": "BME graph getHead",
+      "description": "Returns BME graph head (revision + content hash + selected meta) for a chat. Read-only; detects same-revision divergence via a content hash over node/edge record_ids + revision.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "sql.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "graph.loadSnapshot": {
+      "name": "graph.loadSnapshot",
+      "version": "1",
+      "title": "BME graph loadSnapshot",
+      "description": "Returns the full BME graph snapshot (nodes, edges, tombstones, meta, state) for a chat. Read-only; supports minRevision short-circuit to skip payload when unchanged.",
+      "riskLevel": "low",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "sql.private" }],
+      "idempotency": "none",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    },
+    "graph.commitDelta": {
+      "name": "graph.commitDelta",
+      "version": "1",
+      "title": "BME graph commitDelta",
+      "description": "Atomically commits a BME graph delta (upserts/deletes/tombstones + runtime meta patch) for a chat under per-chat lock + idempotency + CAS against baseRevision. Co-commits the runtime meta patch (lastProcessedFloor/extractionCount/processedMessageHashes) in the same atomic SQL transaction so extraction floor and graph contents cannot drift.",
+      "riskLevel": "high",
+      "permissionTarget": { "kind": "transaction" },
+      "requiredResources": [{ "resource": "sql.private" }],
+      "idempotency": "required",
+      "timeoutMs": 120000,
+      "maxRequestBytes": 67108864,
+      "maxResponseBytes": 67108864
+    }
+  }
+}

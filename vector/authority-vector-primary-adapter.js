@@ -10,6 +10,14 @@ import { deriveVectorSpace } from "./vector-space.js";
 export const AUTHORITY_VECTOR_MODE = "authority";
 export const AUTHORITY_VECTOR_SOURCE = "authority-trivium";
 
+export const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
+export const BME_VECTOR_MANIFEST_TRANSACTION = "vector.manifest";
+export const BME_VECTOR_APPLY_TRANSACTION = "vector.apply";
+export const BME_RECALL_CANDIDATES_TRANSACTION = "recall.candidates";
+export const BME_GRAPH_COMMIT_DELTA_TRANSACTION = "graph.commitDelta";
+export const BME_GRAPH_GET_HEAD_TRANSACTION = "graph.getHead";
+export const BME_GRAPH_LOAD_SNAPSHOT_TRANSACTION = "graph.loadSnapshot";
+
 const DEFAULT_AUTHORITY_TRIVIUM_DATABASE = "st_bme_vectors";
 const DEFAULT_AUTHORITY_VECTOR_CHUNK_SIZE = 1000;
 const MAX_AUTHORITY_VECTOR_CHUNK_SIZE = 2000;
@@ -418,6 +426,7 @@ export function normalizeAuthorityVectorConfig(settings = {}, overrides = {}) {
     failOpen: source.authorityVectorFailOpen !== false && source.failOpen !== false,
     bmeVectorApplyReady: Boolean(source.bmeVectorApplyReady ?? source.authorityBmeVectorApplyReady),
     bmeVectorManifestReady: Boolean(source.bmeVectorManifestReady ?? source.authorityBmeVectorManifestReady),
+    bmeCandidateSearchReady: Boolean(source.bmeCandidateSearchReady ?? source.authorityBmeCandidateSearchReady),
     bmeProtocolVersion: Math.max(0, Number(source.bmeProtocolVersion ?? source.authorityBmeProtocolVersion) || 0),
     ...overrides,
   };
@@ -704,8 +713,184 @@ export class AuthorityTriviumHttpClient {
   }
 
   async bmeVectorApply(payload = {}) {
-    return await this.requestV06("/bme/vector-apply", payload);
+    // Phase C: call the BME companion module transaction via the generic DOA
+    // module host. The module host requires idempotencyKey on the request envelope when the manifest
+    // declares idempotency:required; requestModuleTransaction pulls the key
+    // from options.idempotencyKey OR input.idempotencyKey automatically.
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_VECTOR_APPLY_TRANSACTION,
+        input,
+        {
+          ...(input.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
+        },
+      );
+      // The module host returns { ok, moduleId, transaction, result, ... }.
+      // The BME adapter expects the inner result shape
+      // ({ ok, manifest, upsert, links, ... }). Unwrap it.
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_VECTOR_APPLY_TRANSACTION);
+    }
   }
+
+  async bmeVectorManifest(payload = {}) {
+    // Phase 1 (vector.manifest as non-fatal health probe): call the BME
+    // companion module transaction via the generic DOA module host. The
+    // vector.manifest transaction is NOT idempotency-required in
+    // .authority/module.json, so we pass only { input: payload } with no
+    // idempotencyKey on the envelope. The DOA module host returns
+    // { ok, moduleId, transaction, result, ... }; callers (the higher-level
+    // fetchAuthorityBmeVectorManifest wrapper) want the inner result shape
+    // ({ ok, manifest, ... }). Unwrap it.
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_VECTOR_MANIFEST_TRANSACTION,
+        input,
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_VECTOR_MANIFEST_TRANSACTION);
+    }
+  }
+
+  async bmeRecallCandidates(payload = {}, options = {}) {
+    // Phase 3 (recall.candidates fast path): call the BME companion module
+    // transaction via the generic DOA module host. The recall.candidates
+    // transaction is read-only with idempotency: "none" in
+    // .authority/module.json, so we pass only { input: payload } with no
+    // idempotencyKey on the envelope. The DOA module host returns
+    // { ok, moduleId, transaction, result, ... }; the candidate-provider
+    // wants the inner result shape ({ ok, candidates, ... }). Unwrap it.
+    // Throws on non-AbortError errors so the caller can implement failOpen
+    // / failClosed semantics (matching bmeVectorApply/bmeVectorManifest).
+    //
+    // `options.signal` (and `options.timeoutMs`) MUST be forwarded through
+    // requestModuleTransaction → requestJson → fetch, so a caller-side
+    // abort actually cancels the production HTTP request. Without this,
+    // the fast-path abort in retrieval/authority-candidate-provider.js
+    // would only stop awaiting the promise but leave the server request
+    // running, and any wrapped AuthorityHttpError { category: "aborted" }
+    // could be misclassified as a normal server failure.
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_RECALL_CANDIDATES_TRANSACTION,
+        input,
+        {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_RECALL_CANDIDATES_TRANSACTION);
+    }
+  }
+
+  // Phase F: graph.commitDelta / graph.getHead / graph.loadSnapshot are the
+  // server-side atomic graph persistence transactions exposed by the BME
+  // companion module. The frontend AuthorityGraphStore.commitDelta wrapper
+  // switches to bmeGraphCommit when DOA + companion module are available
+  // (capability.bmeGraphCommitReady); on transaction_conflict it must NOT
+  // fall back to the local chunked path — it fetches a fresh head via
+  // bmeGraphGetHead so the caller can rebuild the delta and retry once.
+  // bmeGraphLoadSnapshot is exposed for completeness (snapshot bootstrap
+  // after a miss). graph.commitDelta has idempotency:"required" in
+  // .authority/module.json, so the caller MUST lift idempotencyKey to
+  // the envelope (requestModuleTransaction pulls it from
+  // options.idempotencyKey OR input.idempotencyKey). graph.getHead and
+  // graph.loadSnapshot are read-only with idempotency:"none".
+  async bmeGraphCommit(payload = {}, options = {}) {
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_GRAPH_COMMIT_DELTA_TRANSACTION,
+        input,
+        {
+          ...(input.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
+          ...(options.idempotencyKey ? { idempotencyKey: String(options.idempotencyKey) } : {}),
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_GRAPH_COMMIT_DELTA_TRANSACTION);
+    }
+  }
+
+  async bmeGraphGetHead(payload = {}, options = {}) {
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_GRAPH_GET_HEAD_TRANSACTION,
+        input,
+        {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_GRAPH_GET_HEAD_TRANSACTION);
+    }
+  }
+
+  async bmeGraphLoadSnapshot(payload = {}, options = {}) {
+    const input = payload || {};
+    try {
+      const response = await this.http.requestModuleTransaction(
+        BME_AUTHORITY_MODULE_ID,
+        BME_GRAPH_LOAD_SNAPSHOT_TRANSACTION,
+        input,
+        {
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+      return response?.result ?? response ?? {};
+    } catch (error) {
+      throw enrichBmeModuleError(error, BME_GRAPH_LOAD_SNAPSHOT_TRANSACTION);
+    }
+  }
+}
+
+// Enriches module load errors so the frontend can say "BME companion
+// module not loaded" rather than showing an opaque code. The DOA module
+// error code lives in `error.payload.details.code`; the top-level
+// `payload.code` is the generic AuthorityErrorCode. Shared by
+// bmeVectorApply and bmeVectorManifest.
+function enrichBmeModuleError(error, transactionName) {
+  if (!(error instanceof AuthorityHttpError)) {
+    return error;
+  }
+  const moduleErrorCode = String(error.payload?.details?.code || error.payload?.code || error.code || "");
+  if (
+    moduleErrorCode === "module_not_loaded" ||
+    moduleErrorCode === "module_load_error" ||
+    moduleErrorCode === "module_not_found"
+  ) {
+    return new AuthorityHttpError(
+      `BME companion module '${BME_AUTHORITY_MODULE_ID}' is not loaded: ${error.message}`,
+      {
+        status: error.status,
+        code: moduleErrorCode,
+        category: error.category,
+        payload: error.payload,
+        path: `/modules/${BME_AUTHORITY_MODULE_ID}/transactions/${transactionName}`,
+        protocol: AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
+      },
+    );
+  }
+  return error;
 }
 
 export function createAuthorityTriviumClient(config = {}, options = {}) {
@@ -990,6 +1175,50 @@ export async function applyAuthorityBmeVectorManifest(graph, config = {}, entrie
       totalMs: roundMs(nowMs() - startedAt),
     },
   };
+}
+
+export async function fetchAuthorityBmeVectorManifest(config = {}, options = {}) {
+  // Phase 1: non-fatal BME vector.manifest health probe. Gates on
+  // `config.bmeVectorManifestReady === true` AND `isAuthorityVectorConfig(config)`.
+  // Swallows failures (returns null on error, logs diagnostic) so callers can
+  // never see a throw from this path. MUST NOT set `state.dirty`.
+  if (config.bmeVectorManifestReady !== true || !isAuthorityVectorConfig(config)) {
+    return null;
+  }
+  const startedAt = nowMs();
+  try {
+    const client = createAuthorityTriviumClient(config, options);
+    const payload = {
+      ...buildOpenOptions(config, options),
+      database: config.database,
+      namespace: options.namespace,
+      collectionId: options.collectionId,
+      chatId: options.chatId,
+      graphRevision: Math.max(0, Math.floor(Number(options.revision) || 0)),
+      modelScope: String(options.modelScope || ""),
+      includeMappingIntegrity: Boolean(options.includeMappingIntegrity),
+      ...(options.vectorSpaceId ? { vectorSpaceId: String(options.vectorSpaceId) } : {}),
+      ...(Number(options.observedDim) > 0 ? { observedDim: Number(options.observedDim) } : {}),
+    };
+    const result = await callClient(
+      client,
+      ["bmeVectorManifest", "fetchBmeVectorManifest", "vectorManifest"],
+      "bmeVectorManifest",
+      payload,
+    );
+    const manifest = result?.manifest || result || null;
+    return {
+      ...(manifest && typeof manifest === "object" ? manifest : {}),
+      diagnostics: {
+        operation: "bmeVectorManifest",
+        ok: Boolean(result?.ok),
+        totalMs: roundMs(nowMs() - startedAt),
+      },
+    };
+  } catch (error) {
+    console.warn("[ST-BME] BME vector.manifest 健康探针失败:", error?.message || error);
+    return null;
+  }
 }
 
 export async function syncAuthorityTriviumLinks(graph, config = {}, options = {}) {

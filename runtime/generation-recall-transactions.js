@@ -660,7 +660,14 @@ export function createGenerationRecallTransactions(deps = {}) {
       generationType:
         transaction.frozenRecallOptions?.generationType || generationType,
     };
-    if (plannerRecallHandoff?.result) {
+    // Only register a cached recall payload when the planner handoff
+    // actually carries a non-empty memory block. Otherwise the main recall
+    // would be short-circuited by an empty cached payload and produce no
+    // recall record / no recall card (see docs/features/ena-planner.md:76).
+    if (
+      plannerRecallHandoff?.result &&
+      String(plannerRecallHandoff.injectionText || "").trim()
+    ) {
       boundRecallOptions.cachedRecallPayload = {
         handoffId: plannerRecallHandoff.id,
         chatId: plannerRecallHandoff.chatId,

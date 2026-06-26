@@ -77,6 +77,7 @@ function createMockTriviumClient({
   failSearch = false,
   failBmeVectorApply = false,
   failBmeVectorApplyCompatibility = false,
+  failBmeVectorManifest = false,
 } = {}) {
   const calls = [];
   return {
@@ -181,6 +182,39 @@ function createMockTriviumClient({
         manifest: { database: payload.database || "st_bme_vectors", exists: true },
         upsert: { successCount: payload.items?.length || 0, failureCount: 0 },
         links: { successCount: payload.links?.length || 0, failureCount: 0 },
+      };
+    },
+    async bmeVectorManifest(payload) {
+      calls.push(["bmeVectorManifest", payload]);
+      if (failBmeVectorManifest) {
+        throw new AuthorityHttpError("bme manifest missing", {
+          status: 404,
+          category: "validation",
+          path: "/modules/third-party.st-bme/transactions/vector.manifest",
+        });
+      }
+      return {
+        ok: true,
+        database: payload.database || "st_bme_vectors",
+        manifest: {
+          database: payload.database || "st_bme_vectors",
+          exists: true,
+          status: "ready",
+          nodeCount: 42,
+          edgeCount: 7,
+          mappingCount: 42,
+          indexCount: 3,
+          orphanMappingCount: 0,
+          lastFlushAt: null,
+          updatedAt: "2024-01-01T00:00:00.000Z",
+          collectionId: payload.collectionId || "",
+          chatId: payload.chatId || "",
+          modelScope: payload.modelScope || "",
+          graphRevision: Number(payload.graphRevision) || 0,
+          vectorSpaceId: payload.vectorSpaceId || "",
+          observedDim: Number(payload.observedDim) || 0,
+          indexHealth: null,
+        },
       };
     },
   };
@@ -626,6 +660,880 @@ assert.equal(isAuthorityVectorConfig(config), true);
   } finally {
     globalThis.__stBmeTestOverrides = previousOverrides;
   }
+}
+
+// Phase C: bmeVectorApply posts to /modules/third-party.st-bme/transactions/vector.apply
+// (not /bme/vector-apply) when using a real AuthorityHttpClient with mock fetch.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-bme" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/vector.apply")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "vector.apply",
+            result: {
+              ok: true,
+              database: body.input?.database || "st_bme_vectors",
+              manifest: { database: body.input?.database || "st_bme_vectors", exists: true },
+              upsert: { successCount: body.input?.items?.length || 0, failureCount: 0 },
+              links: { successCount: body.input?.links?.length || 0, failureCount: 0 },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { AuthorityHttpClient, AuthorityHttpError } = await import("../runtime/authority-http-client.js");
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeVectorApply({
+    database: "st_bme_vectors",
+    items: [{ externalId: "node-a", vector: [1, 2, 3], payload: { text: "hello" } }],
+    links: [{ fromId: "node-a", toId: "node-b", label: "related" }],
+    idempotencyKey: "test-key-1",
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/vector-apply.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/vector.apply"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify idempotencyKey is on the envelope, not just inside input.
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, "test-key-1");
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.upsert.successCount, 1);
+  assert.equal(result.links.successCount, 1);
+}
+
+// Phase C: bmeVectorApply enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-err" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeVectorApply({ items: [{ externalId: "a", vector: [1, 2, 3] }] });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "error should say not loaded");
+}
+
+// Phase 1: bmeVectorManifest posts to /modules/third-party.st-bme/transactions/vector.manifest
+// (not /bme/vector-manifest) when using a real AuthorityHttpClient with mock fetch.
+// vector.manifest is NOT idempotency-required, so the envelope must NOT carry idempotencyKey.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-bme-manifest" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/vector.manifest")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "vector.manifest",
+            result: {
+              ok: true,
+              appliedAt: "2024-01-01T00:00:00.000Z",
+              database: body.input?.database || "st_bme_vectors",
+              manifest: {
+                database: body.input?.database || "st_bme_vectors",
+                exists: true,
+                status: "ready",
+                nodeCount: 42,
+                edgeCount: 7,
+                mappingCount: 42,
+                indexCount: 3,
+                orphanMappingCount: 0,
+                lastFlushAt: null,
+                updatedAt: "2024-01-01T00:00:00.000Z",
+                collectionId: body.input?.collectionId || "",
+                chatId: body.input?.chatId || "",
+                modelScope: body.input?.modelScope || "",
+                graphRevision: Number(body.input?.graphRevision) || 0,
+                vectorSpaceId: body.input?.vectorSpaceId || "",
+                observedDim: Number(body.input?.observedDim) || 0,
+                indexHealth: null,
+              },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeVectorManifest({
+    database: "st_bme_vectors",
+    collectionId: "col-1",
+    chatId: "chat-1",
+    modelScope: "gpt-4",
+    graphRevision: 5,
+    vectorSpaceId: "vs-1",
+    observedDim: 3,
+    includeMappingIntegrity: true,
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/vector-manifest.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/vector.manifest"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify NO idempotencyKey is on the envelope (vector.manifest is not idempotency-required).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "vector.manifest envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.collectionId, "col-1");
+  assert.equal(body.input.vectorSpaceId, "vs-1");
+  assert.equal(body.input.observedDim, 3);
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.manifest.nodeCount, 42);
+  assert.equal(result.manifest.collectionId, "col-1");
+  assert.equal(result.manifest.vectorSpaceId, "vs-1");
+  assert.equal(result.manifest.observedDim, 3);
+}
+
+// Phase 1: bmeVectorManifest enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-err-manifest" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeVectorManifest({ database: "st_bme_vectors" });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "manifest error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "manifest error should say not loaded");
+  assert.ok(
+    caught.path === "/modules/third-party.st-bme/transactions/vector.manifest",
+    "manifest error path should reference vector.manifest transaction route",
+  );
+}
+
+// Phase 1: fetchAuthorityBmeVectorManifest returns null when not ready
+// (bmeVectorManifestReady !== true), and does not throw.
+{
+  const { fetchAuthorityBmeVectorManifest } = await import("../vector/authority-vector-primary-adapter.js");
+  const result = await fetchAuthorityBmeVectorManifest(
+    { ...config, bmeVectorManifestReady: false },
+    { collectionId: "col-1", chatId: "chat-1" },
+  );
+  assert.equal(result, null, "fetchAuthorityBmeVectorManifest should return null when not ready");
+}
+
+// Phase 1: fetchAuthorityBmeVectorManifest returns null on error and does NOT throw.
+// state.dirty is not set (no graph is passed, so this contract is structural).
+{
+  const triviumClient = createMockTriviumClient({ failBmeVectorManifest: true });
+  const { fetchAuthorityBmeVectorManifest } = await import("../vector/authority-vector-primary-adapter.js");
+  let threw = false;
+  let result;
+  try {
+    result = await fetchAuthorityBmeVectorManifest(
+      { ...config, bmeVectorManifestReady: true, triviumClient },
+      { collectionId: "col-1", chatId: "chat-1" },
+    );
+  } catch (error) {
+    threw = true;
+  }
+  assert.equal(threw, false, "fetchAuthorityBmeVectorManifest must NOT throw on error");
+  assert.equal(result, null, "fetchAuthorityBmeVectorManifest must return null on error");
+  assert.equal(
+    triviumClient.calls.filter(([name]) => name === "bmeVectorManifest").length,
+    1,
+    "bmeVectorManifest should have been attempted once",
+  );
+}
+
+// Phase 1: fetchAuthorityBmeVectorManifest returns the manifest object on success.
+{
+  const triviumClient = createMockTriviumClient();
+  const { fetchAuthorityBmeVectorManifest } = await import("../vector/authority-vector-primary-adapter.js");
+  const result = await fetchAuthorityBmeVectorManifest(
+    { ...config, bmeVectorManifestReady: true, triviumClient },
+    {
+      collectionId: "col-1",
+      chatId: "chat-1",
+      namespace: "st-bme::chat-1",
+      revision: 5,
+      modelScope: "gpt-4",
+      vectorSpaceId: "vs-1",
+      observedDim: 3,
+    },
+  );
+  assert.ok(result, "fetchAuthorityBmeVectorManifest should return the manifest on success");
+  assert.equal(result.database, "st_bme_vectors");
+  assert.equal(result.collectionId, "col-1");
+  assert.equal(result.chatId, "chat-1");
+  assert.equal(result.modelScope, "gpt-4");
+  assert.equal(result.graphRevision, 5);
+  assert.equal(result.vectorSpaceId, "vs-1");
+  assert.equal(result.observedDim, 3);
+  assert.equal(result.diagnostics.operation, "bmeVectorManifest");
+  const manifestCall = triviumClient.calls.find(([name]) => name === "bmeVectorManifest")?.[1];
+  assert.equal(manifestCall.collectionId, "col-1");
+  assert.equal(manifestCall.vectorSpaceId, "vs-1");
+  assert.equal(manifestCall.observedDim, 3);
+}
+
+// Phase 3: bmeRecallCandidates posts to /modules/third-party.st-bme/transactions/recall.candidates
+// (not /bme/recall-candidates) when using a real AuthorityHttpClient with mock fetch.
+// recall.candidates is NOT idempotency-required, so the envelope must NOT carry idempotencyKey.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-recall" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/recall.candidates")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "recall.candidates",
+            result: {
+              ok: true,
+              database: body.input?.database || "st_bme_vectors",
+              collectionId: body.input?.collectionId || "",
+              chatId: body.input?.chatId || "",
+              graphRevision: Number(body.input?.graphRevision) || 0,
+              modelScope: body.input?.modelScope || "",
+              vectorSpaceId: body.input?.vectorSpaceId || "",
+              observedDim: Number(body.input?.observedDim) || 0,
+              candidates: [
+                { externalId: "node-a", internalId: 1, namespace: "ns-1", score: 0.92, source: "search" },
+                { externalId: "node-b", internalId: 2, namespace: "ns-1", score: 0.0, source: "expand" },
+              ],
+              queryCount: Number(body.input?.queryTexts?.length) || 0,
+              searchedAt: "2024-01-01T00:00:00.000Z",
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeRecallCandidates({
+    database: "st_bme_vectors",
+    collectionId: "col-1",
+    chatId: "chat-1",
+    graphRevision: 5,
+    modelScope: "gpt-4",
+    vectorSpaceId: "vs-1",
+    observedDim: 3,
+    queryTexts: ["hello"],
+    queryVectors: [[1, 2, 3]],
+    topK: 10,
+    expandDepth: 2,
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/recall.candidates"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify NO idempotencyKey on the envelope (recall.candidates is not idempotency-required).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "recall.candidates envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.collectionId, "col-1");
+  assert.equal(body.input.vectorSpaceId, "vs-1");
+  assert.equal(body.input.observedDim, 3);
+  assert.deepEqual(body.input.queryTexts, ["hello"]);
+  assert.deepEqual(body.input.queryVectors, [[1, 2, 3]]);
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.candidates.length, 2);
+  assert.equal(result.candidates[0].externalId, "node-a");
+  assert.equal(result.candidates[1].source, "expand");
+}
+
+// Phase 3: bmeRecallCandidates enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-err-recall" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeRecallCandidates({ queryTexts: ["hello"] });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "recall error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "recall error should say not loaded");
+  assert.ok(
+    caught.path === "/modules/third-party.st-bme/transactions/recall.candidates",
+    "recall error path should reference recall.candidates transaction route",
+  );
+}
+
+// Phase 3: bmeRecallCandidates forwards the caller's signal through to
+// requestModuleTransaction → requestJson → fetch, so a caller-side abort
+// actually cancels the production HTTP request (not just the awaiting).
+// This is the production-abort-wiring blocker: bmeRecallCandidates(payload, { signal })
+// must thread `signal` into requestModuleTransaction options, which
+// requestJson forwards into fetch via createRequestSignal.
+//
+// We spy directly on requestModuleTransaction (rather than checking the
+// fetch-level signal) because createRequestSignal wraps the caller's
+// signal in a fresh AbortController — the fetch-level signal is a
+// different object linked via an abort listener, not the caller's signal.
+{
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true, result: { ok: true, candidates: [] } }; },
+    }),
+  });
+
+  let capturedModuleId = null;
+  let capturedTransactionName = null;
+  let capturedInput = null;
+  let capturedOptions = null;
+  let callCount = 0;
+  // Replace requestModuleTransaction with a spy that records the options.
+  client.http.requestModuleTransaction = async (moduleId, transactionName, input, options) => {
+    callCount += 1;
+    capturedModuleId = moduleId;
+    capturedTransactionName = transactionName;
+    capturedInput = input;
+    capturedOptions = options;
+    return { ok: true, result: { ok: true, candidates: [] } };
+  };
+
+  const controller = new AbortController();
+  const callerSignal = controller.signal;
+  await client.bmeRecallCandidates(
+    { database: "st_bme_vectors", queryTexts: ["hello"], queryVectors: [[1, 2, 3]] },
+    { signal: callerSignal, timeoutMs: 5000 },
+  );
+
+  assert.equal(callCount, 1, "bmeRecallCandidates should call requestModuleTransaction exactly once");
+  assert.equal(capturedModuleId, "third-party.st-bme");
+  assert.equal(capturedTransactionName, "recall.candidates");
+  assert.equal(capturedInput.queryTexts[0], "hello");
+  assert.ok(capturedOptions, "requestModuleTransaction should receive an options argument");
+  assert.equal(
+    capturedOptions.signal,
+    callerSignal,
+    "bmeRecallCandidates options.signal must be forwarded to requestModuleTransaction options.signal",
+  );
+  assert.equal(
+    capturedOptions.timeoutMs,
+    5000,
+    "bmeRecallCandidates options.timeoutMs must be forwarded to requestModuleTransaction options.timeoutMs",
+  );
+}
+
+// Phase 3: bmeRecallCandidates without an options argument still works
+// (default behavior — no signal, no timeoutMs forwarded).
+{
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true, result: { ok: true, candidates: [] } }; },
+    }),
+  });
+
+  let capturedOptions = "not-called";
+  client.http.requestModuleTransaction = async (moduleId, transactionName, input, options) => {
+    capturedOptions = options;
+    return { ok: true, result: { ok: true, candidates: [] } };
+  };
+
+  const result = await client.bmeRecallCandidates({ database: "st_bme_vectors", queryTexts: ["hello"], queryVectors: [[1, 2, 3]] });
+  assert.equal(result.ok, true);
+  assert.ok(capturedOptions, "requestModuleTransaction should receive an options argument even when bmeRecallCandidates is called without one");
+  assert.equal(capturedOptions.signal, undefined, "no signal should be forwarded when bmeRecallCandidates is called without options");
+  assert.equal(capturedOptions.timeoutMs, undefined, "no timeoutMs should be forwarded when bmeRecallCandidates is called without options");
+}
+
+// Phase 3: normalizeAuthorityVectorConfig surfaces bmeCandidateSearchReady.
+{
+  const cfg = normalizeAuthorityVectorConfig({
+    authorityBaseUrl: "/api/plugins/authority",
+    authorityEmbeddingApiUrl: "https://example.com/v1",
+    authorityEmbeddingModel: "test-embedding",
+    bmeCandidateSearchReady: true,
+  });
+  assert.equal(cfg.bmeCandidateSearchReady, true, "normalizeAuthorityVectorConfig must surface bmeCandidateSearchReady from source");
+
+  const cfg2 = normalizeAuthorityVectorConfig({
+    authorityBaseUrl: "/api/plugins/authority",
+    authorityEmbeddingApiUrl: "https://example.com/v1",
+    authorityEmbeddingModel: "test-embedding",
+    authorityBmeCandidateSearchReady: true,
+  });
+  assert.equal(cfg2.bmeCandidateSearchReady, true, "normalizeAuthorityVectorConfig must surface authorityBmeCandidateSearchReady alias");
+
+  const cfg3 = normalizeAuthorityVectorConfig({
+    authorityBaseUrl: "/api/plugins/authority",
+    authorityEmbeddingApiUrl: "https://example.com/v1",
+    authorityEmbeddingModel: "test-embedding",
+  });
+  assert.equal(cfg3.bmeCandidateSearchReady, false, "normalizeAuthorityVectorConfig defaults bmeCandidateSearchReady to false");
+}
+
+// Phase F: bmeGraphCommit posts to /modules/third-party.st-bme/transactions/graph.commitDelta
+// (not /bme/graph-commit) when using a real AuthorityHttpClient with mock fetch.
+// graph.commitDelta has idempotency:"required" in .authority/module.json, so
+// the envelope MUST carry idempotencyKey.
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-commit" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/graph.commitDelta")) {
+      const body = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "graph.commitDelta",
+            result: {
+              ok: true,
+              accepted: true,
+              revision: 11,
+              headHash: "sha256:server-head",
+              committedAt: 1700000000000,
+              chatId: body.input?.chatId || "",
+              counts: { nodeCount: 3, edgeCount: 1, tombstoneCount: 0 },
+              applied: {
+                upsertedNodes: body.input?.delta?.upsertNodes?.length || 0,
+                upsertedEdges: body.input?.delta?.upsertEdges?.length || 0,
+                upsertedTombstones: body.input?.delta?.tombstones?.length || 0,
+                deletedNodeIds: body.input?.delta?.deleteNodeIds?.length || 0,
+                deletedEdgeIds: body.input?.delta?.deleteEdgeIds?.length || 0,
+              },
+              statementCount: 5,
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeGraphCommit({
+    chatId: "chat-graph-1",
+    baseRevision: 10,
+    delta: {
+      upsertNodes: [{ id: "n-1", type: "event" }],
+      deleteNodeIds: [],
+    },
+    options: { markSyncDirty: true, reason: "phase-f-test" },
+    idempotencyKey: "graph-idem-1",
+  });
+
+  // Verify the URL is the module transaction route, NOT /bme/.
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/"));
+  assert.ok(modCall, "should have called /modules/ route");
+  assert.ok(modCall.url.includes("/modules/third-party.st-bme/transactions/graph.commitDelta"));
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  // Verify idempotencyKey is on the envelope (graph.commitDelta is idempotency-required).
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, "graph-idem-1", "envelope MUST carry idempotencyKey for graph.commitDelta");
+  assert.equal(body.input.chatId, "chat-graph-1");
+  assert.equal(body.input.baseRevision, 10);
+
+  // Verify the result is unwrapped from response.result.
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 11);
+  assert.equal(result.headHash, "sha256:server-head");
+  assert.equal(result.counts.nodeCount, 3);
+}
+
+// Phase F: bmeGraphCommit enriches module_not_loaded errors.
+{
+  const mockFetch = async (url) => {
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-commit-err" }; },
+      };
+    }
+    if (url.includes("/modules/")) {
+      return {
+        ok: false,
+        status: 409,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            error: "Module not loaded: third-party.st-bme",
+            code: "validation_error",
+            category: "validation",
+            details: { code: "module_not_loaded", moduleId: "third-party.st-bme", status: "available" },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  let caught = null;
+  try {
+    await client.bmeGraphCommit({ chatId: "x", baseRevision: 0, delta: {} });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof AuthorityHttpError);
+  assert.ok(caught.message.includes("BME companion module"), "commit error should mention BME companion module");
+  assert.ok(caught.message.includes("not loaded"), "commit error should say not loaded");
+  assert.ok(
+    caught.path === "/modules/third-party.st-bme/transactions/graph.commitDelta",
+    "commit error path should reference graph.commitDelta transaction route",
+  );
+}
+
+// Phase F: bmeGraphGetHead posts to /modules/third-party.st-bme/transactions/graph.getHead
+// with envelope { input } only (NO idempotencyKey — graph.getHead has idempotency:"none").
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-head" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/graph.getHead")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "graph.getHead",
+            result: {
+              ok: true,
+              revision: 42,
+              headHash: "sha256:head-42",
+              chatId: "chat-graph-1",
+              meta: { revision: 42, lastModified: 1700000000000 },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeGraphGetHead({ chatId: "chat-graph-1" });
+
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.getHead"));
+  assert.ok(modCall, "should have called graph.getHead module route");
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "graph.getHead envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.chatId, "chat-graph-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 42);
+  assert.equal(result.headHash, "sha256:head-42");
+}
+
+// Phase F: bmeGraphLoadSnapshot posts to /modules/third-party.st-bme/transactions/graph.loadSnapshot
+// with envelope { input } only (NO idempotencyKey — graph.loadSnapshot has idempotency:"none").
+{
+  const fetchCalls = [];
+  const mockFetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (url.endsWith("/session/init")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() { return { sessionToken: "sess-graph-snapshot" }; },
+      };
+    }
+    if (url.includes("/modules/third-party.st-bme/transactions/graph.loadSnapshot")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        async json() {
+          return {
+            ok: true,
+            moduleId: "third-party.st-bme",
+            transaction: "graph.loadSnapshot",
+            result: {
+              ok: true,
+              revision: 42,
+              headHash: "sha256:head-42",
+              chatId: "chat-graph-1",
+              nodes: [],
+              edges: [],
+              tombstones: [],
+              meta: { revision: 42 },
+              state: { lastProcessedFloor: -1, extractionCount: 0 },
+            },
+          };
+        },
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => "application/json" }, async json() { return { error: "not found" }; } };
+  };
+
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: mockFetch,
+  });
+
+  const result = await client.bmeGraphLoadSnapshot({ chatId: "chat-graph-1" });
+
+  const modCall = fetchCalls.find((c) => c.url.includes("/modules/third-party.st-bme/transactions/graph.loadSnapshot"));
+  assert.ok(modCall, "should have called graph.loadSnapshot module route");
+  assert.ok(!fetchCalls.some((c) => c.url.includes("/bme/")), "should NOT call /bme/ route");
+
+  const body = JSON.parse(modCall.options.body);
+  assert.equal(body.idempotencyKey, undefined, "graph.loadSnapshot envelope must NOT carry idempotencyKey");
+  assert.equal(body.input.chatId, "chat-graph-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 42);
+  assert.deepEqual(result.nodes, []);
+}
+
+// Phase F: bmeGraphCommit forwards caller signal through to requestModuleTransaction.
+{
+  const { createAuthorityTriviumClient } = await import("../vector/authority-vector-primary-adapter.js");
+  const client = createAuthorityTriviumClient({
+    baseUrl: "https://authority.test",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      async json() { return { ok: true, result: { ok: true, revision: 1 } }; },
+    }),
+  });
+
+  let capturedOptions = null;
+  client.http.requestModuleTransaction = async (moduleId, transactionName, input, options) => {
+    capturedOptions = options;
+    return { ok: true, result: { ok: true, revision: 1 } };
+  };
+
+  const controller = new AbortController();
+  const callerSignal = controller.signal;
+  await client.bmeGraphCommit(
+    { chatId: "x", baseRevision: 0, delta: {}, idempotencyKey: "k" },
+    { signal: callerSignal, timeoutMs: 5000 },
+  );
+
+  assert.ok(capturedOptions, "requestModuleTransaction should receive an options argument");
+  assert.equal(capturedOptions.signal, callerSignal, "signal must be forwarded");
+  assert.equal(capturedOptions.timeoutMs, 5000, "timeoutMs must be forwarded");
+  assert.equal(capturedOptions.idempotencyKey, "k", "idempotencyKey must be forwarded");
 }
 
 console.log("authority-vector-primary tests passed");

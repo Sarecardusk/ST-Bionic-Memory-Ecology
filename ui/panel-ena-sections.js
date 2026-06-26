@@ -40,6 +40,12 @@ function getPlannerApi() {
   return globalThis?.stBmeEnaPlanner || null;
 }
 
+function formatPlannerDebugFailure(res, fallbackKey = 'planner.debug.failed') {
+  const detail = String(res?.output || res?.error || '').trim();
+  if (detail) return `${t(fallbackKey)}\n${detail}`;
+  return t(fallbackKey);
+}
+
 function setHidden(el, hidden) {
   if (!el) return;
   if (hidden) el.setAttribute('hidden', '');
@@ -899,23 +905,33 @@ function bindOnce(section) {
 
   /* Debug tools */
   $('bme-planner-debug-wb')?.addEventListener('click', async () => {
+    const api = getPlannerApi();
     const out = $('bme-planner-debug-output');
     if (out) {
       setHidden(out, false);
       out.textContent = t('planner.debug.diagnosing');
     }
-    const res = await api?.debugWorldbook?.();
-    if (out) out.textContent = res?.output ?? t('planner.debug.failed');
+    if (!api?.debugWorldbook) {
+      if (out) out.textContent = formatPlannerDebugFailure({ output: t('planner.status.moduleNotLoaded') });
+      return;
+    }
+    const res = await api.debugWorldbook();
+    if (out) out.textContent = res?.ok === false ? formatPlannerDebugFailure(res) : (res?.output ?? t('planner.debug.failed'));
   });
 
   $('bme-planner-debug-char')?.addEventListener('click', async () => {
+    const api = getPlannerApi();
     const out = $('bme-planner-debug-output');
     if (out) {
       setHidden(out, false);
       out.textContent = t('planner.debug.diagnosing');
     }
-    const res = await api?.debugChar?.();
-    if (out) out.textContent = res?.output ?? t('planner.debug.failed');
+    if (!api?.debugChar) {
+      if (out) out.textContent = formatPlannerDebugFailure({ output: t('planner.status.moduleNotLoaded') });
+      return;
+    }
+    const res = await api.debugChar();
+    if (out) out.textContent = res?.ok === false ? formatPlannerDebugFailure(res) : (res?.output ?? t('planner.debug.failed'));
   });
 
   /* Logs */

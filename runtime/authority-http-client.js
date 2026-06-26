@@ -44,6 +44,8 @@ function hasSessionHeader(headers = {}) {
   return Object.keys(headers || {}).some((name) => normalizeHeaderName(name) === AUTHORITY_SESSION_HEADER);
 }
 
+const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
+
 function buildDefaultSessionInitConfig(source = {}) {
   const config = source && typeof source === "object" && !Array.isArray(source) ? source : {};
   return {
@@ -58,6 +60,14 @@ function buildDefaultSessionInitConfig(source = {}) {
       trivium: { private: true },
       jobs: { background: true },
       events: { channels: true },
+      modules: {
+        execute: [
+          `${BME_AUTHORITY_MODULE_ID}:vector.manifest`,
+          `${BME_AUTHORITY_MODULE_ID}:vector.apply`,
+          `${BME_AUTHORITY_MODULE_ID}:recall.candidates`,
+          `${BME_AUTHORITY_MODULE_ID}:graph.commitDelta`,
+        ],
+      },
     },
     ...(config.uiLabel ? { uiLabel: String(config.uiLabel) } : {}),
   };
@@ -231,6 +241,45 @@ export class AuthorityHttpClient {
 
   async requestJson(path, options = {}) {
     return await this._requestJson(path, options, { allowSessionRetry: true });
+  }
+
+  /**
+   * Invoke a companion module transaction via the generic DOA module host.
+   *
+   * POST /modules/:moduleId/transactions/:transactionName with a session
+   * and an envelope body `{ input, idempotencyKey?, options? }`. The
+   * `idempotencyKey` is pulled from `options.idempotencyKey` OR from
+   * `input.idempotencyKey` if present, so callers that already embed the
+   * key inside their payload do not need to pass it separately.
+   *
+   * Returns the full DOA response payload (which includes `ok`, `moduleId`,
+   * `transaction`, `result`, etc.). Callers that only need the handler result
+   * should read `response.result`.
+   *
+   * Throws `AuthorityHttpError` on HTTP errors, including structured DOA
+   * module error codes (`module_not_loaded`, `module_load_error`,
+   * `idempotency_required`, etc.) in `error.payload.details.code`.
+   */
+  async requestModuleTransaction(moduleId, transactionName, input = {}, options = {}) {
+    const safeModuleId = encodeURIComponent(String(moduleId || ""));
+    const safeTransactionName = encodeURIComponent(String(transactionName || ""));
+    const path = `/modules/${safeModuleId}/transactions/${safeTransactionName}`;
+    const idempotencyKey = typeof options.idempotencyKey === "string" && options.idempotencyKey.trim()
+      ? options.idempotencyKey.trim()
+      : (typeof input?.idempotencyKey === "string" && input.idempotencyKey.trim() ? input.idempotencyKey.trim() : undefined);
+    const body = {
+      input: input ?? {},
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      ...(options.dryRun === true ? { options: { dryRun: true } } : {}),
+    };
+    return await this.requestJson(path, {
+      method: "POST",
+      body,
+      session: true,
+      protocol: AUTHORITY_PROTOCOL_SERVER_PLUGIN_V06,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    });
   }
 
   async _requestJson(path, options = {}, state = {}) {

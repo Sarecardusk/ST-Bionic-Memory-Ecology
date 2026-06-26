@@ -17,6 +17,7 @@ import {
   AUTHORITY_VECTOR_SOURCE,
   applyAuthorityBmeVectorManifest,
   deleteAuthorityTriviumNodes,
+  fetchAuthorityBmeVectorManifest,
   isAuthorityVectorConfig,
   normalizeAuthorityVectorConfig,
   purgeAuthorityTriviumNamespace,
@@ -1843,10 +1844,27 @@ export async function testVectorConnection(config, chatId = "connection-test") {
 
   if (isAuthorityVectorConfig(config)) {
     try {
-      return await testAuthorityTriviumConnection(config, {
+      const connectionResult = await testAuthorityTriviumConnection(config, {
         collectionId: buildVectorCollectionId(chatId),
         chatId,
       });
+      // Phase 1: non-fatal BME vector.manifest health probe. The probe is
+      // gated on config.bmeVectorManifestReady inside
+      // fetchAuthorityBmeVectorManifest, swallows all failures (returns
+      // null on error), and MUST NOT set state.dirty nor throw to the
+      // caller of testVectorConnection.
+      try {
+        const manifest = await fetchAuthorityBmeVectorManifest(config, {
+          collectionId: buildVectorCollectionId(chatId),
+          chatId,
+        });
+        if (manifest) {
+          connectionResult.vectorManifest = manifest;
+        }
+      } catch (manifestError) {
+        console.warn("[ST-BME] BME vector.manifest 健康探针失败:", manifestError?.message || manifestError);
+      }
+      return connectionResult;
     } catch (error) {
       return { success: false, dimensions: 0, error: String(error) };
     }

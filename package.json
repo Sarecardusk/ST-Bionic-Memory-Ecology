@@ -4,6 +4,7 @@
     "build:native:wasm": "node scripts/build-native-wasm.mjs",
     "test:p0": "node tests/p0-regressions.mjs",
     "test:panel-bridge": "node tests/panel-bridge.mjs",
+    "test:panel-ena-debug": "node tests/panel-ena-debug.mjs",
     "test:recall-inject-decoupling": "node tests/recall-inject-decoupling.mjs",
     "test:recall-reapply-block": "node tests/recall-reapply-block.mjs",
     "test:triviumdb-poc": "node tests/triviumdb-poc.mjs",
@@ -50,6 +51,7 @@
     "test:authority:e2e:diagnostics": "node tests/e2e/authority-diagnostics-roundtrip.mjs",
     "test:authority:e2e:restore": "node tests/e2e/authority-checkpoint-restore.mjs",
     "test:authority:e2e:all": "npm run test:authority:e2e && npm run test:authority:e2e:diagnostics && npm run test:authority:e2e:restore",
+    "test:authority-companion-module": "node tests/authority-companion-module.mjs",
     "test:all": "npm run test:stable",
     "check": "node scripts/check-syntax.mjs"
   },

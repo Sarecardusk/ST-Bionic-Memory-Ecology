@@ -28,6 +28,7 @@ import {
     resolveLlmConfigSelection,
 } from '../llm/llm-preset-utils.js';
 import { debugLog } from '../runtime/debug-logging.js';
+import { showManagedBmeNotice } from '../ui/notice.js';
 import jsyaml from '../vendor/js-yaml.mjs';
 
 const EXT_NAME = 'ena-planner';
@@ -123,6 +124,8 @@ const state = {
     lastInjectedText: '',
     logs: []
 };
+
+let _activePlannerNotice = null;
 
 let config = null;
 let sendListenersInstalled = false;
@@ -539,6 +542,48 @@ function toastInfo(msg) {
 function toastErr(msg) {
     if (window.toastr?.error) return window.toastr.error(msg);
     console.error('[EnaPlanner]', msg);
+}
+
+function closeActivePlannerNotice() {
+    if (_activePlannerNotice) {
+        try { _activePlannerNotice.dismiss(); } catch {}
+        _activePlannerNotice = null;
+    }
+}
+
+function startPlannerNotice(message = '') {
+    closeActivePlannerNotice();
+    _activePlannerNotice = showManagedBmeNotice({
+        title: '🧭 剧情规划',
+        message,
+        level: 'info',
+        busy: true,
+        persist: true,
+        marquee: true,
+    });
+    return _activePlannerNotice;
+}
+
+function updatePlannerNotice(message = '', opts = {}) {
+    const mergedOpts = {
+        level: 'info',
+        busy: false,
+        persist: false,
+        marquee: false,
+        duration_ms: 3200,
+        ...opts,
+    };
+    const payload = {
+        title: '🧭 剧情规划',
+        message,
+        ...mergedOpts,
+    };
+    if (!_activePlannerNotice || _activePlannerNotice.isClosed()) {
+        _activePlannerNotice = showManagedBmeNotice(payload);
+        return _activePlannerNotice;
+    }
+    _activePlannerNotice.update(payload);
+    return _activePlannerNotice;
 }
 
 function clampLogs() {
@@ -1699,39 +1744,40 @@ async function buildPlannerMessages(rawUserInput) {
 
     const charBlockRaw = formatCharCardBlock(charObj);
 
-    // --- BME memory: full recall with history/vector guards ---
-    let memoryBlock = '';
-    let memorySource = 'none';
-    let plannerRecall = null;
-    if (_bmeRuntime?.runPlannerRecallForEna) {
+    const startPlannerRecall = () => {
+        if (!_bmeRuntime?.runPlannerRecallForEna) {
+            return Promise.resolve({ memoryBlock: '', memorySource: 'none', plannerRecall: null });
+        }
         const controller = new AbortController();
         const recallTimeoutMs = getPlannerRecallTimeoutMs();
         const recallStartedAt = Date.now();
         const timeoutId = setTimeout(() => controller.abort(), recallTimeoutMs);
-        try {
-            const recall = await _bmeRuntime.runPlannerRecallForEna({
-                rawUserInput,
-                signal: controller.signal,
-            });
-            plannerRecall = recall ?? null;
-            if (recall?.ok && recall.memoryBlock) {
-                memoryBlock = recall.memoryBlock;
-                memorySource = 'bme';
-            }
-        } catch (e) {
+        return _bmeRuntime.runPlannerRecallForEna({
+            rawUserInput,
+            signal: controller.signal,
+        }).then((recall) => ({
+            memoryBlock: recall?.ok && recall.memoryBlock ? recall.memoryBlock : '',
+            memorySource: recall?.ok && recall.memoryBlock ? 'bme' : 'none',
+            plannerRecall: recall ?? null,
+        })).catch((e) => {
             if (e?.name === 'AbortError') {
                 console.warn(`[Ena] BME recall timed out (> ${Math.floor(recallTimeoutMs / 1000)}s)`);
             } else {
                 console.warn('[Ena] BME planner recall failed:', e);
             }
-        } finally {
+            return { memoryBlock: '', memorySource: 'none', plannerRecall: null };
+        }).finally(() => {
             clearTimeout(timeoutId);
             debugLog(
-                `[Ena] Planner recall finished in ${Date.now() - recallStartedAt}ms (source=${memorySource}, timeout=${recallTimeoutMs}ms)`,
+                `[Ena] Planner recall finished in ${Date.now() - recallStartedAt}ms (timeout=${recallTimeoutMs}ms)`,
             );
-        }
-    }
-    debugLog(`[Ena] Memory source: ${memorySource}`);
+        });
+    };
+
+    // --- BME memory: full recall with history/vector guards ---
+    // Start recall as early as possible and let it overlap with chat/worldbook
+    // context construction. The result is still awaited before template render.
+    const plannerRecallPromise = startPlannerRecall();
 
     // --- Chat history: last 2 AI messages (floors N-1 & N-3) ---
     // Two messages instead of one to avoid cross-device cache miss:
@@ -1744,7 +1790,15 @@ async function buildPlannerMessages(rawUserInput) {
     // Build scanText for worldbook keyword activation
     const scanText = [charBlockRaw, recentChatRaw, plotsRaw, rawUserInput].join('\n\n');
 
-    const worldbookRaw = await buildWorldbookBlock(scanText);
+    const [worldbookRaw, plannerRecallInfo] = await Promise.all([
+        buildWorldbookBlock(scanText),
+        plannerRecallPromise,
+    ]);
+
+    const memoryBlock = plannerRecallInfo.memoryBlock || '';
+    const memorySource = plannerRecallInfo.memorySource || 'none';
+    const plannerRecall = plannerRecallInfo.plannerRecall || null;
+    debugLog(`[Ena] Memory source: ${memorySource}`);
 
     // Render templates/macros
     const charBlock = await renderTemplateAll(charBlockRaw, env, messageVars);
@@ -1901,17 +1955,24 @@ async function doInterceptAndPlanThenSend() {
 
     state.isPlanning = true;
     setSendUIBusy(true);
+    closeActivePlannerNotice();
 
     try {
-        toastInfo('Ena Planner：正在规划…');
+        startPlannerNotice('ENA 正在规划剧情推进…');
         const { filtered, plannerRecall } = await runPlanningOnce(raw, false, {
             onDelta(_piece, full) {
                 if (!state.isPlanning) return;
                 if (!resolvePlannerGenerationSettings().stream) return;
-                const preview = filterPlannerPreview(full);
-                ta.value = `${raw}\n\n${preview}`.trim();
+                updatePlannerNotice(
+                    `正在生成剧情规划…（已生成 ${full.length} 字）`,
+                    { busy: true, persist: true, marquee: true },
+                );
             }
         });
+        updatePlannerNotice(
+            '剧情规划已附加，将随本轮消息发送',
+            { busy: false, level: 'success', persist: false, marquee: false, duration_ms: 5000 },
+        );
         // Ordering requirement: write the merged textarea, register the
         // one-shot planner recall handoff synchronously, then click send with
         // no await/timer hop in between.
@@ -1931,6 +1992,10 @@ async function doInterceptAndPlanThenSend() {
     } catch (err) {
         ta.value = raw;
         state.lastInjectedText = '';
+        updatePlannerNotice(
+            '规划失败，已按原文发送',
+            { busy: false, level: 'warning', persist: false, marquee: false, duration_ms: 5000 },
+        );
         throw err;
     } finally {
         state.isPlanning = false;

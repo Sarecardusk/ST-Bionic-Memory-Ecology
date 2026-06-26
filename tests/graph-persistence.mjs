@@ -7381,4 +7381,308 @@ async function createGraphPersistenceHarness({
   );
 }
 
+// --- Phase F: graph.commitDelta transaction_conflict retry semantics ---
+// On `transaction_conflict`, saveGraphToIndexedDbImpl must:
+//   1. Fetch fresh head/snapshot.
+//   2. Attempt to rebuild delta via buildPersistDeltaFromGraphDirtyState.
+//   3. If rebuild succeeds → retry ONCE with rebuilt delta + baseRevision: freshRevision.
+//   4. If rebuild is UNAVAILABLE (no persistGraphInput) or FAILS → surface the
+//      conflict error so the caller does NOT advance extraction floor / processed hashes.
+// We must NOT fall back to the original stale delta — that could advance a stale
+// runtimeMetaPatch / extraction floor past a conflicting commit.
+
+function createTransactionConflictError(serverRevision = 5, baseRevision = 0) {
+  const error = new Error(
+    `BME graph.commitDelta CAS conflict: baseRevision=${baseRevision} but serverRevision=${serverRevision}`,
+  );
+  error.name = "AuthorityGraphCommitConflictError";
+  error.code = "transaction_conflict";
+  error.status = 409;
+  error.serverRevision = serverRevision;
+  error.baseRevision = baseRevision;
+  error.payload = {
+    error: "BME graph.commitDelta CAS conflict",
+    code: "transaction_conflict",
+    details: {
+      code: "transaction_conflict",
+      serverRevision,
+      baseRevision,
+    },
+  };
+  return error;
+}
+
+function installConflictDeltaStub(harness, { failFirst = true, failRetry = false, freshRevision = 5 }) {
+  const calls = {
+    commitDelta: [],
+    exportSnapshot: [],
+  };
+  const originalCreateDb = harness.runtimeContext.BmeChatManager.prototype._createDb;
+  harness.runtimeContext.BmeChatManager.prototype._createDb = function(dbChatId = "") {
+    const baseDb = originalCreateDb.call(this, dbChatId);
+    return {
+      ...baseDb,
+      async exportSnapshot(options = {}) {
+        calls.exportSnapshot.push({ options });
+        const baseSnapshot = await baseDb.exportSnapshot(options);
+        // Return a "fresh" snapshot with the configured freshRevision so the
+        // conflict handler sees a valid fresh head.
+        return {
+          ...(baseSnapshot && typeof baseSnapshot === "object" ? baseSnapshot : {}),
+          meta: {
+            ...(baseSnapshot?.meta || {}),
+            revision: freshRevision,
+            chatId: String(dbChatId || baseSnapshot?.meta?.chatId || ""),
+          },
+          nodes: Array.isArray(baseSnapshot?.nodes) ? baseSnapshot.nodes : [],
+          edges: Array.isArray(baseSnapshot?.edges) ? baseSnapshot.edges : [],
+          tombstones: Array.isArray(baseSnapshot?.tombstones) ? baseSnapshot.tombstones : [],
+          state: baseSnapshot?.state || { lastProcessedFloor: -1, extractionCount: 0 },
+        };
+      },
+      async commitDelta(delta = {}, options = {}) {
+        calls.commitDelta.push({ delta, options });
+        if (calls.commitDelta.length === 1 && failFirst) {
+          throw createTransactionConflictError(freshRevision, Number(options?.requestedRevision || 0) - 1);
+        }
+        if (calls.commitDelta.length === 2 && failRetry) {
+          throw createTransactionConflictError(freshRevision, freshRevision);
+        }
+        // Successful commit (or first call when failFirst=false).
+        return await baseDb.commitDelta(delta, {
+          ...options,
+          requestedRevision: Number(options?.requestedRevision || freshRevision),
+        });
+      },
+    };
+  };
+  return {
+    calls,
+    restore() {
+      harness.runtimeContext.BmeChatManager.prototype._createDb = originalCreateDb;
+    },
+  };
+}
+
+// Test 1: transaction_conflict + rebuild unavailable (no persistGraphInput)
+// → conflict error thrown, no retry, no extraction floor advancement.
+{
+  const chatId = "chat-conflict-retry-no-rebuild";
+  const baseGraph = createMeaningfulGraph(chatId, "conflict-no-rebuild-base");
+  const runtimeGraph = createMeaningfulGraph(chatId, "conflict-no-rebuild-after");
+  const baseSnapshot = buildSnapshotFromGraph(baseGraph, { chatId, revision: 4 });
+  const persistSnapshot = buildSnapshotFromGraph(runtimeGraph, {
+    chatId,
+    revision: 5,
+    baseSnapshot,
+  });
+  const directDelta = buildPersistDelta(baseSnapshot, persistSnapshot, {
+    useNativeDelta: false,
+  });
+  const harness = await createGraphPersistenceHarness({
+    chatId,
+    globalChatId: chatId,
+    chatMetadata: { integrity: `meta-${chatId}` },
+    indexedDbSnapshot: baseSnapshot,
+  });
+  harness.api.setGraphPersistenceState({
+    loadState: "loaded",
+    chatId,
+    revision: 5,
+    lastPersistedRevision: 4,
+    writesBlocked: false,
+  });
+  const stub = installConflictDeltaStub(harness, { failFirst: true, freshRevision: 5 });
+
+  let caught = null;
+  let result = null;
+  try {
+    // graph=null + persistDelta supplied ⇒ persistGraphInput is null inside
+    // saveGraphToIndexedDbImpl ⇒ rebuild path is unavailable.
+    result = await harness.api.saveGraphToIndexedDb(chatId, null, {
+      revision: 5,
+      reason: "conflict-no-rebuild-save",
+      scheduleCloudUpload: false,
+      persistDelta: directDelta,
+      persistSnapshot,
+    });
+  } catch (error) {
+    caught = error;
+  }
+  stub.restore();
+
+  // The conflict error must be surfaced — either as a thrown error or as a
+  // `saved:false` result with the conflict error attached (depending on the
+  // outer catch behaviour of saveGraphToIndexedDbImpl).
+  const surfacedError = caught || result?.error;
+  assert.ok(surfacedError, "transaction_conflict must be surfaced when rebuild is unavailable");
+  assert.equal(
+    String(surfacedError?.code || surfacedError?.payload?.details?.code || "").toLowerCase(),
+    "transaction_conflict",
+    "surfaced error must carry transaction_conflict code",
+  );
+  // Must NOT have retried — db.commitDelta should have been called exactly once.
+  assert.equal(
+    stub.calls.commitDelta.length,
+    1,
+    "must NOT retry with the stale delta when rebuild is unavailable",
+  );
+  // Must NOT have advanced extraction floor / processed hashes.
+  assert.equal(
+    harness.api.getGraphPersistenceState().lastPersistedRevision,
+    4,
+    "lastPersistedRevision must NOT advance on conflict",
+  );
+  assert.equal(
+    harness.api.getGraphPersistenceState().persistDelta?.status,
+    "failed",
+    "persistDelta diagnostics must record failure",
+  );
+}
+
+// Test 2: transaction_conflict + rebuild fails (builder throws)
+// → conflict error thrown, no retry with stale delta.
+{
+  const chatId = "chat-conflict-retry-rebuild-throws";
+  const baseGraph = createMeaningfulGraph(chatId, "conflict-rebuild-throws-base");
+  const runtimeGraph = cloneGraphForPersistence(baseGraph, chatId);
+  updateNode(runtimeGraph, runtimeGraph.nodes[0]?.id, {
+    importance: Number(runtimeGraph.nodes[0]?.importance || 0) + 2,
+  });
+  const baseSnapshot = buildSnapshotFromGraph(baseGraph, { chatId, revision: 4 });
+  const harness = await createGraphPersistenceHarness({
+    chatId,
+    globalChatId: chatId,
+    chatMetadata: { integrity: `meta-${chatId}` },
+    indexedDbSnapshot: baseSnapshot,
+  });
+  harness.api.setCurrentGraph(runtimeGraph);
+  harness.api.setGraphPersistenceState({
+    loadState: "loaded",
+    chatId,
+    revision: 5,
+    lastPersistedRevision: 4,
+    writesBlocked: false,
+  });
+  // Override the runtime's builder to throw ONLY when rebuilding against the
+  // fresh snapshot (the second invocation, inside the conflict handler). The
+  // first invocation (initial delta build before the conflict) must still
+  // succeed so we actually reach the conflict-retry path.
+  const originalBuilder = harness.runtimeContext.buildPersistDeltaFromGraphDirtyState;
+  let rebuildCalls = 0;
+  harness.runtimeContext.buildPersistDeltaFromGraphDirtyState = function rebuildThrowing(baseSnapshot, graph, options = {}) {
+    rebuildCalls += 1;
+    if (rebuildCalls >= 2) {
+      // This is the conflict-retry rebuild against the fresh snapshot.
+      throw new Error("synthetic-rebuild-failure");
+    }
+    return originalBuilder.call(harness.runtimeContext, baseSnapshot, graph, options);
+  };
+  const stub = installConflictDeltaStub(harness, { failFirst: true, freshRevision: 5 });
+
+  let caught = null;
+  let result = null;
+  try {
+    result = await harness.api.saveGraphToIndexedDb(chatId, runtimeGraph, {
+      revision: 5,
+      reason: "conflict-rebuild-throws-save",
+      scheduleCloudUpload: false,
+      sourceGraph: runtimeGraph,
+    });
+  } catch (error) {
+    caught = error;
+  }
+  stub.restore();
+  harness.runtimeContext.buildPersistDeltaFromGraphDirtyState = originalBuilder;
+
+  assert.ok(rebuildCalls >= 2, "buildPersistDeltaFromGraphDirtyState must be attempted again for the fresh head");
+  const surfacedError = caught || result?.error;
+  assert.ok(surfacedError, "transaction_conflict must be surfaced when rebuild throws");
+  assert.equal(
+    String(surfacedError?.code || surfacedError?.payload?.details?.code || "").toLowerCase(),
+    "transaction_conflict",
+    "surfaced error must carry transaction_conflict code (not the rebuild error)",
+  );
+  // Must NOT have retried — db.commitDelta called exactly once (the initial conflicting call).
+  assert.equal(
+    stub.calls.commitDelta.length,
+    1,
+    "must NOT retry with stale delta when rebuild throws",
+  );
+  assert.equal(
+    harness.api.getGraphPersistenceState().lastPersistedRevision,
+    4,
+    "lastPersistedRevision must NOT advance on rebuild failure",
+  );
+}
+
+// Test 3: transaction_conflict + rebuild succeeds
+// → retry ONCE with rebuilt delta and baseRevision: freshRevision.
+{
+  const chatId = "chat-conflict-retry-rebuild-ok";
+  const baseGraph = createMeaningfulGraph(chatId, "conflict-rebuild-ok-base");
+  const runtimeGraph = cloneGraphForPersistence(baseGraph, chatId);
+  updateNode(runtimeGraph, runtimeGraph.nodes[0]?.id, {
+    importance: Number(runtimeGraph.nodes[0]?.importance || 0) + 3,
+  });
+  const baseSnapshot = buildSnapshotFromGraph(baseGraph, { chatId, revision: 4 });
+  const harness = await createGraphPersistenceHarness({
+    chatId,
+    globalChatId: chatId,
+    chatMetadata: { integrity: `meta-${chatId}` },
+    indexedDbSnapshot: baseSnapshot,
+  });
+  harness.api.setCurrentGraph(runtimeGraph);
+  harness.api.setGraphPersistenceState({
+    loadState: "loaded",
+    chatId,
+    revision: 5,
+    lastPersistedRevision: 4,
+    writesBlocked: false,
+  });
+  const stub = installConflictDeltaStub(harness, { failFirst: true, freshRevision: 5 });
+
+  const result = await harness.api.saveGraphToIndexedDb(chatId, runtimeGraph, {
+    revision: 5,
+    reason: "conflict-rebuild-ok-save",
+    scheduleCloudUpload: false,
+    sourceGraph: runtimeGraph,
+  });
+  stub.restore();
+
+  assert.equal(result.saved, true, "retry with rebuilt delta should succeed");
+  assert.equal(
+    stub.calls.commitDelta.length,
+    2,
+    "must retry exactly once after a successful rebuild",
+  );
+  // The fresh-head export must have happened.
+  assert.ok(
+    stub.calls.exportSnapshot.length >= 1,
+    "must fetch a fresh head before rebuilding",
+  );
+  // The retry call must use baseRevision === freshRevision (no stale base).
+  const retryCall = stub.calls.commitDelta[1];
+  assert.equal(
+    Number(retryCall.options.baseRevision),
+    5,
+    "retry must use baseRevision: freshRevision",
+  );
+  assert.equal(
+    Number(retryCall.options.requestedRevision),
+    5,
+    "retry must use requestedRevision: freshRevision",
+  );
+  // The rebuilt delta should reflect the fresh base (no stale runtimeMetaPatch floor).
+  assert.ok(
+    Array.isArray(retryCall.delta?.upsertNodes) || Array.isArray(retryCall.delta?.upsertEdges),
+    "rebuilt delta must be a real persist delta",
+  );
+  assert.equal(
+    harness.api.getGraphPersistenceState().lastPersistedRevision,
+    5,
+    "lastPersistedRevision must advance to the fresh revision after the successful retry",
+  );
+}
+
 console.log("graph-persistence tests passed");

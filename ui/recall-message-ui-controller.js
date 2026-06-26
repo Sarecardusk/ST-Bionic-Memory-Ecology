@@ -1,9 +1,23 @@
+import {
+  hashPlannerPlotInput,
+  readStructuredPlotRecordFromMessage,
+} from "../ena-planner/planner-plot-history.js";
+import { t } from "../i18n/index.js";
+
 export function createRecallMessageUiController(deps = {}) {
   let persistedRecallUiRefreshTimer = null;
   let persistedRecallUiRefreshObserver = null;
   let persistedRecallUiRefreshSession = 0;
   const persistedRecallUiDiagnosticTimestamps = new Map();
   const persistedRecallPersistDiagnosticTimestamps = new Map();
+  const readPlotRecordFromMessage =
+    deps.readStructuredPlotRecordFromMessage || readStructuredPlotRecordFromMessage;
+
+  function hasPlotRecordContent(plotRecord) {
+    if (!plotRecord || typeof plotRecord !== "object") return false;
+    if (String(plotRecord.plotText || "").trim()) return true;
+    return Array.isArray(plotRecord.plotBlocks) && plotRecord.plotBlocks.some((item) => String(item || "").trim());
+  }
 
   const getContextValue = () => deps.getContext?.() || null;
   const getSettingsValue = () => deps.getSettings?.() || {};
@@ -54,6 +68,19 @@ function removeMessageRecallRecord(messageIndex) {
     deps.triggerChatMetadataSave(getContextValue(), { immediate: false });
   }
   return removed;
+}
+
+function removePlotRecordFromUserMessage(messageIndex) {
+  const chat = getContextValue()?.chat;
+  if (!Array.isArray(chat)) return false;
+  const message = chat[messageIndex];
+  if (!message || !message.extra || typeof message.extra !== "object") return false;
+  if (!Object.prototype.hasOwnProperty.call(message.extra, "st_bme_plot")) {
+    return false;
+  }
+  delete message.extra.st_bme_plot;
+  deps.triggerChatMetadataSave(getContextValue(), { immediate: false });
+  return true;
 }
 
 function editMessageRecallRecord(messageIndex, nextInjectionText) {
@@ -166,6 +193,20 @@ function editMessageUserInputText(messageIndex, nextUserInputText) {
     }
     if (typeof message.extra.current_display_text === "string") {
       message.extra.current_display_text = normalizedText;
+    }
+    const plotRecord = message.extra.st_bme_plot;
+    if (plotRecord && typeof plotRecord === "object") {
+      plotRecord.rawUserInput = normalizedText;
+      plotRecord.inputHash = hashPlannerPlotInput(normalizedText);
+      plotRecord.userInputEditedAt = Date.now();
+    }
+    const persistedRecall = message.extra.bme_recall;
+    if (persistedRecall && typeof persistedRecall === "object") {
+      persistedRecall.recallInput = normalizedText;
+      persistedRecall.userInputEditedAt = Date.now();
+      if (recallMayBeStale) {
+        persistedRecall.recallMayBeStale = true;
+      }
     }
   }
 
@@ -468,7 +509,10 @@ function refreshPersistedRecallMessageUi() {
     }
 
     const record = deps.readPersistedRecallFromUserMessage(chat, messageIndex);
-    if (!record?.injectionText) {
+    const plotRecord = readPlotRecordFromMessage(message);
+    const hasRecall = Boolean(record?.injectionText);
+    const hasPlot = hasPlotRecordContent(plotRecord);
+    if (!hasRecall && !hasPlot) {
       if (messageElement) {
         restoreRecallCardUserInputDisplay(messageElement);
       }
@@ -476,7 +520,7 @@ function refreshPersistedRecallMessageUi() {
       continue;
     }
 
-    summary.persistedRecordCount += 1;
+    summary.persistedRecordCount += hasRecall ? 1 : 0;
     if (!messageElement) {
       summary.waitingMessageIndices.push(messageIndex);
       debugPersistedRecallUi(
@@ -510,23 +554,39 @@ function refreshPersistedRecallMessageUi() {
         `.bme-recall-card[data-message-index="${messageIndex}"]`,
       ) || null;
 
+    const displayUserMessageText = String(
+      plotRecord?.rawUserInput || record?.recallInput || message.mes || "",
+    );
+    const cardCallbacks = {
+      ...callbacks,
+      estimateTokens: deps.estimateTokens,
+    };
+    let shouldCreateCard = !currentCard;
     if (currentCard) {
-      deps.updateRecallCardData(currentCard, record, {
-        userMessageText: message.mes || "",
+      const updated = deps.updateRecallCardData(currentCard, record || {}, {
+        plotRecord,
+        userMessageText: displayUserMessageText,
         userInputDisplayMode: recallCardUserInputDisplayMode,
         graph: getCurrentGraphValue(),
         themeName,
-        callbacks,
+        callbacks: cardCallbacks,
       });
-    } else {
+      if (updated === false) {
+        cleanupRecallCardElement(currentCard);
+        shouldCreateCard = true;
+      }
+    }
+
+    if (shouldCreateCard) {
       const card = deps.createRecallCardElement({
         messageIndex,
-        record,
-        userMessageText: message.mes || "",
+        record: record || {},
+        plotRecord,
+        userMessageText: displayUserMessageText,
         userInputDisplayMode: recallCardUserInputDisplayMode,
         graph: getCurrentGraphValue(),
         themeName,
-        callbacks,
+        callbacks: cardCallbacks,
       });
       anchor.appendChild(card);
     }
@@ -600,6 +660,12 @@ function getRecallCardCallbacks() {
     onDelete: (messageIndex) => {
       if (removeMessageRecallRecord(messageIndex)) {
         getToastr().success("已删除持久召回注入");
+        schedulePersistedRecallMessageUiRefresh();
+      }
+    },
+    onRemovePlannerPlot: (messageIndex) => {
+      if (removePlotRecordFromUserMessage(messageIndex)) {
+        getToastr().success(t("recall.card.removedPlot"));
         schedulePersistedRecallMessageUiRefresh();
       }
     },

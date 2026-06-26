@@ -7,10 +7,14 @@ import {
   buildSnapshotFromGraph,
 } from "./bme-db.js";
 import { normalizeAuthorityBaseUrl } from "../runtime/authority-capabilities.js";
-import { AuthorityHttpClient } from "../runtime/authority-http-client.js";
+import { AuthorityHttpClient, AuthorityHttpError } from "../runtime/authority-http-client.js";
 
 export const AUTHORITY_GRAPH_STORE_KIND = "authority";
 export const AUTHORITY_GRAPH_STORE_MODE = "authority-sql-primary";
+
+const BME_AUTHORITY_MODULE_ID = "third-party.st-bme";
+const BME_GRAPH_COMMIT_DELTA_TRANSACTION = "graph.commitDelta";
+const BME_GRAPH_GET_HEAD_TRANSACTION = "graph.getHead";
 
 const META_DEFAULT_LAST_PROCESSED_FLOOR = -1;
 const META_DEFAULT_EXTRACTION_COUNT = 0;
@@ -515,6 +519,94 @@ export function createAuthoritySqlClient(options = {}) {
   return new AuthoritySqlHttpClient(options);
 }
 
+/**
+ * Phase F: structured error thrown by `AuthorityGraphStore.commitDelta` when
+ * the companion module `graph.commitDelta` transaction returns a 409
+ * `transaction_conflict`. Callers (graph-persistence-io) MUST NOT fall back
+ * to the local chunked path on this error — they fetch a fresh head via
+ * `graph.getHead`, rebuild the delta against the new revision, and retry
+ * once. On a second conflict, the error surfaces and the extraction floor /
+ * processed-message hashes are NOT advanced.
+ *
+ * The `serverRevision` and `headHash` fields are populated from the DOA
+ * error payload `details` when present so the caller can decide whether the
+ * retry can use the cached baseRevision or needs a fresh getHead.
+ */
+export class AuthorityGraphCommitConflictError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "AuthorityGraphCommitConflictError";
+    this.code = "transaction_conflict";
+    this.category = "transaction-conflict";
+    this.status = Number(options.status || 409);
+    this.serverRevision = Number.isFinite(Number(options.serverRevision))
+      ? Number(options.serverRevision)
+      : null;
+    this.baseRevision = Number.isFinite(Number(options.baseRevision))
+      ? Number(options.baseRevision)
+      : null;
+    this.headHash = String(options.headHash || "");
+    this.payload = toPlainData(options.payload, null);
+    this.cause = options.cause || null;
+  }
+}
+
+function isBmeGraphCommitConflictError(error = null) {
+  if (!error) return false;
+  if (error instanceof AuthorityGraphCommitConflictError) return true;
+  const code = String(error?.code || error?.payload?.details?.code || error?.payload?.code || "").toLowerCase();
+  return code === "transaction_conflict";
+}
+
+function readBmeModuleErrorCode(error = null) {
+  if (!error) return "";
+  return String(
+    error?.payload?.details?.code ||
+      error?.payload?.code ||
+      error?.code ||
+      "",
+  ).trim().toLowerCase();
+}
+
+function sha1Hash(input) {
+  // JS fallback: FNV-1a 32-bit, hex-prefixed. Not cryptographically secure,
+  // but stable across a single chat+revision+delta shape which is all
+  // idempotency key needs. (The server-side idempotency layer re-fingerprints
+  // with its own JSON.stringify + sha256; we just need a stable client-side
+  // key so retries of the same logical request collide on the same idem key.)
+  let hash = 0x811c9dc5;
+  const text = String(input ?? "");
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+async function computeDeltaFingerprintHash(value) {
+  let json = "";
+  try {
+    json = JSON.stringify(value ?? null);
+  } catch {
+    json = "";
+  }
+  if (typeof globalThis.crypto?.subtle?.digest === "function") {
+    try {
+      const encoded = new TextEncoder().encode(json);
+      const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
+      const bytes = new Uint8Array(digest);
+      let hex = "";
+      for (const byte of bytes) {
+        hex += byte.toString(16).padStart(2, "0");
+      }
+      return `sha256:${hex}`;
+    } catch {
+      // fallthrough to JS fallback
+    }
+  }
+  return sha1Hash(json);
+}
+
 export class AuthorityGraphStore {
   constructor(chatId, options = {}) {
     this.chatId = normalizeChatId(chatId);
@@ -522,6 +614,19 @@ export class AuthorityGraphStore {
     this.storeKind = AUTHORITY_GRAPH_STORE_KIND;
     this.storeMode = AUTHORITY_GRAPH_STORE_MODE;
     this.sqlClient = createAuthoritySqlClient(options);
+    // Phase F: companion module `graph.commitDelta` readiness. When
+    // `bmeGraphCommitReady === true` AND
+    // `isAuthorityModuleGraphCommitReady === true`, `commitDelta` switches
+    // to the server-side atomic transaction (CAS + idempotency). On
+    // `transaction_conflict`, it throws `AuthorityGraphCommitConflictError`
+    // so the caller can fetch a fresh head and retry once. On other module
+    // errors (module_not_loaded, timeout, network, ...), it falls back to
+    // the existing local chunked `commitDeltaLocal` path.
+    this.bmeGraphCommitReady = Boolean(options.bmeGraphCommitReady);
+    this.isAuthorityModuleGraphCommitReady = Boolean(
+      options.isAuthorityModuleGraphCommitReady ?? options.bmeGraphCommitReady,
+    );
+    this.bmeGraphModuleClient = options.bmeGraphModuleClient || null;
     this._openPromise = null;
     this._opened = false;
   }
@@ -626,6 +731,244 @@ export class AuthorityGraphStore {
   }
 
   async commitDelta(delta = {}, options = {}) {
+    // Phase F: when DOA + companion module `graph.commitDelta` are available,
+    // switch the primary write path to the server-side atomic transaction
+    // (atomic SQL transaction + per-chat lock + CAS + idempotency).
+    // On `transaction_conflict` (409 from the CAS check), do NOT fall back
+    // to the local chunked path — surface `AuthorityGraphCommitConflictError`
+    // so the caller can fetch a fresh head, rebuild the delta, and retry
+    // once. On other module errors (module_not_loaded, timeout, network,
+    // validation_error other than CAS), fall back to the local chunked
+    // `commitDeltaLocal` path (acceptable degradation) and log the fallback.
+    if (this._shouldUseBmeGraphCommit()) {
+      try {
+        return await this.commitDeltaViaModule(delta, options);
+      } catch (error) {
+        if (isBmeGraphCommitConflictError(error)) {
+          // CAS conflict — do NOT fall back to local write. Re-throw as a
+          // structured conflict error carrying serverRevision/headHash when
+          // available so the caller can rebuild the delta.
+          throw error instanceof AuthorityGraphCommitConflictError
+            ? error
+            : new AuthorityGraphCommitConflictError(
+                error?.message || "BME graph.commitDelta transaction_conflict",
+                {
+                  status: error?.status || 409,
+                  serverRevision: error?.payload?.details?.serverRevision,
+                  baseRevision: error?.payload?.details?.baseRevision,
+                  headHash: error?.payload?.details?.headHash,
+                  payload: error?.payload,
+                  cause: error,
+                },
+              );
+        }
+        // Other module errors — fall back to local chunked path.
+        console.warn(
+          `[ST-BME] graph.commitDelta module transaction failed, falling back to local chunked commit:`,
+          error?.message || error,
+        );
+        return await this.commitDeltaLocal(delta, options);
+      }
+    }
+    return await this.commitDeltaLocal(delta, options);
+  }
+
+  _shouldUseBmeGraphCommit() {
+    return Boolean(
+      this.bmeGraphCommitReady &&
+        this.isAuthorityModuleGraphCommitReady &&
+        (this.bmeGraphModuleClient ||
+          (this.sqlClient?.http && typeof this.sqlClient.http.requestModuleTransaction === "function")),
+    );
+  }
+
+  /**
+   * Phase F: server-side atomic commit via the BME companion module
+   * `graph.commitDelta` transaction. Builds the module transaction input
+   * from the existing delta + options shape, lifts an idempotencyKey to
+   * the envelope (the manifest declares `idempotency:"required"`), calls
+   * `requestModuleTransaction`, and unwraps `response.result` into a shape
+   * compatible with the existing local `commitDeltaLocal` return value.
+   */
+  async commitDeltaViaModule(delta = {}, options = {}) {
+    await this.open();
+    const commitRequestedAt = readPersistCommitNow();
+    const normalizedDelta = delta && typeof delta === "object" && !Array.isArray(delta) ? delta : {};
+    const nowMs = Date.now();
+    const upsertNodes = normalizeNodeRecords(normalizedDelta.upsertNodes, nowMs);
+    const upsertEdges = normalizeEdgeRecords(normalizedDelta.upsertEdges, nowMs);
+    const tombstones = normalizeTombstoneRecords(normalizedDelta.tombstones, nowMs);
+    const deleteNodeIds = toArray(normalizedDelta.deleteNodeIds).map(normalizeRecordId).filter(Boolean);
+    const deleteEdgeIds = toArray(normalizedDelta.deleteEdgeIds).map(normalizeRecordId).filter(Boolean);
+    const runtimeMetaPatch =
+      normalizedDelta.runtimeMetaPatch &&
+      typeof normalizedDelta.runtimeMetaPatch === "object" &&
+      !Array.isArray(normalizedDelta.runtimeMetaPatch)
+        ? normalizedDelta.runtimeMetaPatch
+        : {};
+    const reason = String(options.reason || "commitDelta");
+    const requestedRevision = normalizeRevision(options.requestedRevision);
+    const shouldMarkSyncDirty = options.markSyncDirty !== false;
+    const vectorDirtyHint = Boolean(options.vectorDirtyHint);
+    const payloadBytes = estimatePersistPayloadBytes(normalizedDelta);
+
+    // The CAS expected value is the caller's view of the current server
+    // revision. When options.requestedRevision is supplied, the caller has
+    // already chosen the next revision they want; the server expects the
+    // *base* (current) revision, so we subtract 1 only when the caller
+    // supplied an explicit floor that is one above the local view. We
+    // can't always know the server revision locally, so we read it from
+    // the local meta row (kept in sync on every prior commit). If the
+    // local view disagrees with the server (out-of-band writer), the CAS
+    // will throw transaction_conflict and the caller rebuilds.
+    const localRevision = await this.getRevision();
+    const baseRevision =
+      Number.isFinite(Number(options.baseRevision)) && Number(options.baseRevision) >= 0
+        ? normalizeRevision(options.baseRevision)
+        : requestedRevision > 0 && requestedRevision <= localRevision + 1
+          ? localRevision
+          : localRevision;
+
+    const transactionInput = {
+      chatId: this.chatId,
+      collectionId: String(this.options.collectionId || this.options.namespace || ""),
+      baseRevision,
+      delta: {
+        upsertNodes,
+        upsertEdges,
+        tombstones,
+        deleteNodeIds,
+        deleteEdgeIds,
+        runtimeMetaPatch,
+        countDelta: normalizedDelta.countDelta && typeof normalizedDelta.countDelta === "object"
+          ? normalizedDelta.countDelta
+          : null,
+      },
+      options: {
+        markSyncDirty: shouldMarkSyncDirty,
+        vectorDirtyHint,
+        reason,
+      },
+      ...(this.options.database ? { database: this.options.database } : {}),
+    };
+
+    const idempotencyKey =
+      typeof options.idempotencyKey === "string" && options.idempotencyKey.trim()
+        ? options.idempotencyKey.trim()
+        : `${this.chatId}:${baseRevision}:${await computeDeltaFingerprintHash(transactionInput)}`;
+
+    const client = this._getBmeGraphModuleClient();
+    const response = await client.bmeGraphCommit(transactionInput, {
+      idempotencyKey,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    });
+
+    const nextRevision = normalizeRevision(response?.revision);
+    const committedLastModified = Number(response?.committedAt) || nowMs;
+    const counts = {
+      nodes: normalizeNonNegativeInteger(response?.counts?.nodeCount, 0),
+      edges: normalizeNonNegativeInteger(response?.counts?.edgeCount, 0),
+      tombstones: normalizeNonNegativeInteger(response?.counts?.tombstoneCount, 0),
+    };
+    const applied = response?.applied && typeof response.applied === "object" ? response.applied : {};
+
+    // Mirror the local meta cache so subsequent commits in the same session
+    // can compute baseRevision without an extra round-trip. This is best-
+    // effort: if the local write fails (e.g. transient SQL error), the
+    // next commitDeltaViaModule call will still send a possibly-stale
+    // baseRevision and the server CAS will catch the divergence.
+    try {
+      await this.patchMeta({
+        revision: nextRevision,
+        lastModified: committedLastModified,
+        lastMutationReason: reason,
+        syncDirty: shouldMarkSyncDirty,
+        syncDirtyReason: shouldMarkSyncDirty ? reason : "",
+        nodeCount: counts.nodes,
+        edgeCount: counts.edges,
+        tombstoneCount: counts.tombstones,
+        ...(response?.headHash ? { headHash: String(response.headHash) } : {}),
+      });
+    } catch (metaPatchError) {
+      console.warn(
+        `[ST-BME] graph.commitDelta local meta cache patch failed after server commit:`,
+        metaPatchError?.message || metaPatchError,
+      );
+    }
+
+    return {
+      revision: nextRevision,
+      lastModified: committedLastModified,
+      headHash: String(response?.headHash || ""),
+      imported: counts,
+      delta: {
+        upsertNodes: Number(applied.upsertedNodes ?? upsertNodes.length) || 0,
+        upsertEdges: Number(applied.upsertedEdges ?? upsertEdges.length) || 0,
+        deleteNodeIds: Number(applied.deletedNodeIds ?? deleteNodeIds.length) || 0,
+        deleteEdgeIds: Number(applied.deletedEdgeIds ?? deleteEdgeIds.length) || 0,
+        tombstones: Number(applied.upsertedTombstones ?? tombstones.length) || 0,
+      },
+      diagnostics: {
+        storageKind: AUTHORITY_GRAPH_STORE_KIND,
+        storeMode: AUTHORITY_GRAPH_STORE_MODE,
+        commitPath: "bme-module",
+        queueWaitMs: 0,
+        commitMs: normalizePersistCommitMs(readPersistCommitNow() - commitRequestedAt),
+        txMs: 0,
+        payloadBytes,
+        runtimeMetaKeyCount: Object.keys(runtimeMetaPatch).length,
+        browserCacheMode: "minimal",
+        idempotencyKey,
+        baseRevision,
+        serverRevision: nextRevision,
+      },
+    };
+  }
+
+  _getBmeGraphModuleClient() {
+    if (this.bmeGraphModuleClient) return this.bmeGraphModuleClient;
+    // Lazily synthesize a thin client on top of the sqlClient's http transport
+    // when an explicit bmeGraphModuleClient was not injected. This reuses the
+    // same AuthorityHttpClient session as the SQL path so the companion
+    // module transactions share the same session token.
+    const http = this.sqlClient?.http;
+    if (!http || typeof http.requestModuleTransaction !== "function") {
+      throw new Error("AuthorityGraphStore: BME graph module client unavailable (no http transport on sqlClient)");
+    }
+    return {
+      async bmeGraphCommit(input, options = {}) {
+        const idempotencyKey =
+          (options.idempotencyKey ? String(options.idempotencyKey) : "") ||
+          (input?.idempotencyKey ? String(input.idempotencyKey) : undefined);
+        const response = await http.requestModuleTransaction(
+          BME_AUTHORITY_MODULE_ID,
+          BME_GRAPH_COMMIT_DELTA_TRANSACTION,
+          input,
+          {
+            ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+            ...(options.signal !== undefined ? { signal: options.signal } : {}),
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+          },
+        );
+        return response?.result ?? response ?? {};
+      },
+      async bmeGraphGetHead(input, options = {}) {
+        const response = await http.requestModuleTransaction(
+          BME_AUTHORITY_MODULE_ID,
+          BME_GRAPH_GET_HEAD_TRANSACTION,
+          input,
+          {
+            ...(options.signal !== undefined ? { signal: options.signal } : {}),
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+          },
+        );
+        return response?.result ?? response ?? {};
+      },
+    };
+  }
+
+  async commitDeltaLocal(delta = {}, options = {}) {
     await this.open();
     const commitRequestedAt = readPersistCommitNow();
     const nowMs = Date.now();

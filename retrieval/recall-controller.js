@@ -604,7 +604,16 @@ export async function runRecallController(runtime, options = {}) {
       ? options.cachedRecallPayload
       : null;
 
-  if (cachedRecallPayload?.result) {
+  // Tightened: an empty/whitespace injectionText means the cached planner
+  // result selected zero nodes (e.g. formatInjection returned ""). Reusing it
+  // would short-circuit recall with an empty memory block — recall record
+  // would not persist and the recall card would not display. Fall through to
+  // fresh retrieval instead so planner and recall coexist (see
+  // docs/features/ena-planner.md:44-50,76).
+  if (
+    cachedRecallPayload?.result &&
+    String(cachedRecallPayload.injectionText || "").trim()
+  ) {
     runtime.setPendingRecallSendIntent?.(runtime.createRecallInputRecord());
     const cachedResult = cachedRecallPayload.result;
     const cachedRecentMessages = Array.isArray(cachedRecallPayload.recentMessages)
@@ -616,9 +625,6 @@ export async function runRecallController(runtime, options = {}) {
       cachedRecentMessages,
       cachedResult,
     );
-    runtime.consumePlannerRecallHandoff?.(cachedRecallPayload.chatId, {
-      handoffId: cachedRecallPayload.handoffId,
-    });
     return runtime.createRecallRunResult("completed", {
       reason: cachedRecallPayload.reason || "planner-handoff-reused",
       selectedNodeIds: cachedResult.selectedNodeIds || [],
