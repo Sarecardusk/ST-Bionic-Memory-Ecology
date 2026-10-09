@@ -82,7 +82,7 @@ Restore Lock → 回滚期间阻断图谱变更与读取
 这次重构的核心理念是把**"做决定"（控制平面）和"执行副作用"（数据平面）分开**：
 
 - **控制平面**：身份解析、持久化确认状态机、图谱可写性门禁、向量门禁、生成代际上下文 / reroll 召回复用。这些是纯逻辑/策略，已抽成可独立测试的注入式模块。
-- **数据平面**：实际的 IndexedDB/OPFS/Authority/Luker 读写。仍在编排层，由控制平面的决定驱动。
+- **数据平面**：实际的 TauriTavern Trivium namespace 读写。仍在编排层，由控制平面的决定驱动。
 
 这条分界是过去大量 bug（陈旧 pending、未进入聊天、reroll 乱召回、一致性漂移）的修复基础。详见 [`control-plane.md`](control-plane.md)。
 
@@ -170,11 +170,11 @@ ST-BME/
 ├── sync/                          # 持久化与同步
 │   ├── bme-db.js                  # IndexedDB 数据层
 │   ├── bme-opfs-store.js          # OPFS/sidecar 存储
-│   ├── bme-sync.js                # 云端镜像与备份恢复
+│   ├── tauritavern-graph-store.js # TauriTavern Trivium 主存储
 │   ├── conversation-repository.js # chatId → 固定主存储绑定与生命周期
 │   ├── persistence-reducer.js      # 持久化 accepted/queued/pending reducer
 │   ├── graph-persistence-io.js     # 图谱主存储 save/load/queue/retry（注入式）
-│   ├── graph-load-persist.js       # 图谱加载/持久化/authority 编排（注入式）
+│   ├── graph-load-persist.js       # 图谱加载/持久化编排（注入式）
 │   ├── graph-mutation-gate.js      # 图谱变更门禁 + 持久化 live-state 投影（注入式）
 │   ├── legacy-graph-importer.js    # 旧 OPFS/IndexedDB/metadata 单次导入顺序
 │   ├── legacy-persistence-repair.js # 旧状态安全修复策略

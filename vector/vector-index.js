@@ -20,13 +20,14 @@ import {
   deleteAuthorityTriviumNodes,
   fetchAuthorityBmeVectorManifest,
   isAuthorityVectorConfig,
+  isTauriTavernVectorConfig,
   normalizeAuthorityVectorConfig,
   purgeAuthorityTriviumNamespace,
   searchAuthorityTriviumNodes,
   syncAuthorityTriviumLinks,
   testAuthorityTriviumConnection,
   upsertAuthorityTriviumEntries,
-} from "./authority-vector-primary-adapter.js";
+} from "./tauritavern-vector-adapter.js";
 
 export {
   AUTHORITY_VECTOR_MODE,
@@ -243,14 +244,13 @@ export function isDirectVectorConfig(config) {
 export function getVectorModelScope(config) {
   if (!config) return "";
 
-  if (config?.mode === "authority" || config?.source === "authority-trivium") {
+  if (isTauriTavernVectorConfig(config) || config?.mode === "authority" || config?.source === "authority-trivium") {
     return [
-      "authority",
-      config.source || "authority-trivium",
+      "tauritavern",
+      config.source || "tauritavern-trivium",
       config.embeddingMode || "direct",
       config.embeddingSource || "direct",
       normalizeOpenAICompatibleBaseUrl(config.apiUrl || "", config.autoSuffix),
-      normalizeOpenAICompatibleBaseUrl(config.baseUrl || ""),
       config.model || "",
     ].join("|");
   }
@@ -276,12 +276,9 @@ export function validateVectorConfig(config) {
     return { valid: false, error: "未找到向量配置" };
   }
 
-  if (config?.mode === "authority" || config?.source === "authority-trivium") {
-    if (!config.baseUrl) {
-      return { valid: false, error: "Authority Trivium 地址不可用" };
-    }
+  if (isTauriTavernVectorConfig(config) || config?.mode === "authority" || config?.source === "authority-trivium") {
     if (!config.model) {
-      return { valid: false, error: "请先填写 Embedding 模型（Authority 默认复用当前用户设置）" };
+      return { valid: false, error: "请先填写 Embedding 模型" };
     }
     const authorityEmbeddingMode = String(config.embeddingMode || "direct").trim().toLowerCase();
     const authorityEmbeddingSource = String(config.embeddingSource || "openai").trim().toLowerCase();
@@ -927,6 +924,7 @@ export async function syncGraphVectorIndex(
       triviumClient,
       headerProvider,
       fetchImpl,
+      graphStore: options.graphStore || config.graphStore || null,
     };
     const scopeChanged =
       state.mode !== "authority" ||
@@ -1651,6 +1649,7 @@ export async function findSimilarNodesByText(
           candidateIds: candidateNodes.map((node) => node.id),
           queryVector: Array.from(queryVec),
           signal,
+          graphStore: options.graphStore || config.graphStore || null,
         })
       )
         .filter((entry) => entry.nodeId && allowedIds.has(entry.nodeId))

@@ -2,33 +2,26 @@
 
 **中文** · [English](storage-and-sync.en.md)
 
-本文从 [README](../../README.md) 拆出 ST-BME 的数据存储、云端镜像与持久召回卡片说明；durable snapshot contract 和 forward-compat 细节见 [存储与格式架构文档](../architecture/storage-and-formats.md)。
+本文从 [README](../../README.md) 拆出 ST-BME 的数据存储、宿主同步与持久召回卡片说明；durable snapshot contract 和 forward-compat 细节见 [存储与格式架构文档](../architecture/storage-and-formats.md)。
 
 ### 本地主存储
 
-- 本地主存储按能力与设置使用 OPFS 或 IndexedDB。
-- 数据按聊天隔离；IndexedDB 命名类似 `STBME_{chatId}`，OPFS 使用独立聊天目录。
-- 热路径使用增量提交，避免整图替换。
-- 加载时优先从本地数据库恢复图谱。
+- 主存储是 TauriTavern 为当前聊天打开的 TriviumDB namespace。图谱节点、边和向量写在同一库里。
+- 数据按聊天隔离；namespace 形如 `stbme-{chatHash}-d{dim}`。
+- 热路径使用 WAL 分片增量提交，避免把整图塞进一条 payload。宿主单条 payload 上限是 8MiB，扩展把预算收在 7MiB。
+- 加载时从该 namespace 恢复图谱。没有宿主或数据库不可用时启动失败。
 
-### 云端镜像
+### TT-Sync
 
-Cloud Sync 是浏览器 IndexedDB / OPFS 本地主存储的多设备复制层，不是另一种主存储。Authority SQL 已经是共享主源，启用它时不会再叠加 Cloud Sync。离线时本地提交仍然有效；恢复联网后，每张聊天记录按自己的稳定聊天身份继续上传、下载或合并。它使用 SillyTavern 已有文件 API，不需要自定义后端路由。
+跨设备复制走宿主 TT-Sync 的 `extensions.databases`，不是扩展自己的 Cloud Sync。
 
-- 自动模式：
-  - 本地写入成功后调度远端镜像；切换聊天或页面重新可见时也会检查远端。
-  - 每个聊天只有一个稳定 head；每次发布使用独立 publication id，chunk 文件名不会被之后的发布复用。新 chunk 全部写成后才发布 head；检测到并发替换时放弃本次发布并保留本地 dirty，把本设备已知的遗留文件记入本地待回收账本，交给后续成功 head 接管。
-  - 被旧 head 遗弃的 chunk 先进入默认 24 小时的宽限账本，之后即使图谱没有新变化，也会在下一次自动同步检查中清理。删除失败会保留在账本里重试；删除成功或已不存在的条目会在下一次 head 成功发布后从账本退休。
-  - 上传过程中若本地又产生了更高 revision，本次远端写入只确认旧 revision，本地仍保持 dirty 并自动排队下一次上传。自动下载和合并在替换本地快照前会在 IndexedDB 事务里复核 revision，不能覆盖刚完成的本地提交。
+- 每个聊天一个 namespace；同步按整库 Exact / PreferNewer 替换，不合并记录。
+- 默认同步范围不含数据库，需要在 Full 中勾选 `extensions.databases`。
+- 每次接受提交后 `flush()`，让文件 mtime 反映这次提交。
+- 接收同步时宿主会关掉数据库。扩展遇到未打开或 busy 就失败并重新打开，不会把进行中的写入报成功。
+- 两台设备同时改同一聊天时，整库取胜的一方保留。
 
-- 手动模式：
-  - 本地写入仍正常进行。
-  - 不自动写云端。
-  - 需要点击“备份到云端”或“从云端获取备份”。
-
-手动备份文件与自动 Cloud Sync 镜像是两套不同对象：“管理服务器备份”只管理手动备份；“清空服务端同步数据”会尽力删除当前聊天可识别的 sync head、当前 chunk、GC 账本 chunk，以及同时存在的当前/旧命名树，不改本地 IndexedDB。另一设备正在同步或网络/服务端出错时，清理可能只完成一部分。
-
-SillyTavern 的 user-files API 没有目录枚举、条件写入或条件删除，因此插件不会仅凭文件名前缀猜删未知文件，也不能把跨设备覆盖描述成严格事务。publication 隔离让当前版本已登记的旧 chunk 不会被未来正常发布重新引用，因而能在宽限期后安全回收；没有这种隔离证据的旧版 chunk 不自动删除。当前失败路径会按本次已知文件名尽力补偿；补偿失败或检测到竞争时，本设备会持久登记已知文件，并在后续成功发布时并入远端 GC 账本。更早版本已经失去 head/账本引用、或来自其他设备但本设备从未见过的历史孤儿仍无法由浏览器可靠发现，需要由服务器文件管理侧清理。
+首次打开空 namespace 时，如果 WebView 里还有这个聊天的 IndexedDB `STBME_{chatId}` 或 OPFS 快照，会导入一次。只活在旧 Authority SQL 上、本地没有副本的图谱需要自己先导出。
 
 ### 兼容与兜底
 

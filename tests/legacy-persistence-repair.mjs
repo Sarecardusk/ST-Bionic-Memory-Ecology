@@ -10,6 +10,7 @@ import {
 } from "../sync/legacy-persistence-repair.js";
 
 const acceptedTiers = [
+  "tauritavern",
   "authority-sql",
   "opfs",
   "indexeddb",

@@ -4,7 +4,7 @@
 import {
   GRAPH_OPERATIONAL_MODE_AUTHORITY_DEGRADED,
   normalizeGraphAuthorityMeta,
-} from "./authority-graph-mode.js";
+} from "./graph-operational-mode.js";
 import { runLegacyGraphImportOnce } from "./legacy-graph-importer.js";
 
 function createGraphPersistenceStateProxy(runtime = {}) {
@@ -2077,7 +2077,8 @@ async function saveGraphToIndexedDbCoreImpl(runtime,
     } catch (commitError) {
       const isGraphCommitConflict = Boolean(
         commitError &&
-          (commitError.name === "AuthorityGraphCommitConflictError" ||
+          (commitError.name === "GraphCommitConflictError" ||
+            commitError.name === "AuthorityGraphCommitConflictError" ||
             String(commitError?.code || commitError?.payload?.details?.code || commitError?.payload?.code || "").toLowerCase() === "transaction_conflict"),
       );
       if (!isGraphCommitConflict) {

@@ -2,6 +2,7 @@
 // Pure helpers only: no IO, no runtime mutation.
 
 const ACCEPTED_GRAPH_TIERS = new Set([
+  "tauritavern",
   "authority-sql",
   "opfs",
   "indexeddb",

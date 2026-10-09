@@ -48,13 +48,10 @@ export function uiTypeLabel(type) {
 
 export function uiCloudStorageModeHelpText(mode = "automatic", primaryStorageTier = "") {
   const primary = String(primaryStorageTier || "");
-  if (primary === "authority-sql") return t("panel.cloudSync.authorityHelp");
+  if (primary === "tauritavern" || primary === "trivium-primary") return t("panel.cloudSync.ttSyncHelp");
+  if (primary === "authority-sql") return t("panel.cloudSync.ttSyncHelp");
   if (primary === "luker-chat-state") return t("panel.cloudSync.lukerHelp");
-  return t(
-    mode === "manual"
-      ? "panel.cloudSync.manualHelp"
-      : "panel.cloudSync.automaticHelp",
-  );
+  return t("panel.cloudSync.ttSyncHelp");
 }
 
 export function normalizeOwnerUiType(ownerType = "") {

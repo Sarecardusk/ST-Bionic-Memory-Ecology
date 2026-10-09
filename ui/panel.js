@@ -60,7 +60,7 @@ import {
   getSuggestedBackendModel,
   getVectorIndexStats,
 } from "../vector/vector-index.js";
-import { buildAuthorityConsistencyRepairPlan } from "../maintenance/authority-consistency.js";
+import { buildAuthorityConsistencyRepairPlan } from "../runtime/doa-removed.js";
 import {
   bindRuntimeModeControls,
   refreshRuntimeModeControls,

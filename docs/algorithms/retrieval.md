@@ -12,7 +12,7 @@
 1. 控制器门禁与输入选择      recall-controller.js
 2. 可复用持久召回？命中则跳过 recall-controller.js
 3. retrieve 选项映射          index.js: buildRecallRetrieveOptions
-4. Authority 候选预筛（可选）  retriever.js
+4. Trivium 候选预筛（可选）     retriever.js
 5. 向量预筛（多查询/多意图）   shared-ranking.js: rankNodesForTaskContext
 6. 图扩散（PEDSA）            diffusion.js
 7. 混合评分                   shared-ranking.js / retriever.js

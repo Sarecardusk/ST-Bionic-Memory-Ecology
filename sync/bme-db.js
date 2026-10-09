@@ -24,7 +24,7 @@ import {
 import {
   GRAPH_OPERATIONAL_MODE_LOCAL_ONLY,
   normalizeGraphAuthorityMeta,
-} from "./authority-graph-mode.js";
+} from "./graph-operational-mode.js";
 
 const DEXIE_LOAD_PROMISE_KEY = "__stBmeDexieLoadPromise";
 const DEXIE_SCRIPT_MARKER = "data-st-bme-dexie";

@@ -7,14 +7,10 @@ existing workflow product.
 ## One memory authority, two orchestration modes
 
 Memory remains the current chat's graph. Its canonical persistence tier is
-selected by the existing host and storage rules:
+the TauriTavern Trivium namespace for that chat. Cross-device copy uses host
+TT-Sync whole-database replace.
 
-- Authority SQL when Authority is the selected primary;
-- Luker chat-state when Luker owns the chat and Authority is not primary;
-- otherwise the selected browser-local OPFS or IndexedDB store.
-
-Cloud Sync remains a replica of browser-local storage rather than another
-primary. The graph, processed-floor/hash state, batch and maintenance journals,
+The graph, processed-floor/hash state, batch and maintenance journals,
 summary state, cognition, timeline, vector state, and recall records keep their
 existing persistence and rollback semantics.
 

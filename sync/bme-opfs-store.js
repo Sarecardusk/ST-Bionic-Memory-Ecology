@@ -9,7 +9,7 @@ import {
   buildSnapshotFromGraph,
   createGraphCommitConflictError,
 } from "./bme-db.js";
-import { GRAPH_OPERATIONAL_MODE_LOCAL_ONLY } from "./authority-graph-mode.js";
+import { GRAPH_OPERATIONAL_MODE_LOCAL_ONLY } from "./graph-operational-mode.js";
 
 const META_DEFAULT_LAST_PROCESSED_FLOOR = -1;
 const META_DEFAULT_EXTRACTION_COUNT = 0;

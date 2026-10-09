@@ -101,6 +101,10 @@ export class ConversationRepository {
     return this._entries.get(normalizeChatId(chatId))?.binding || null;
   }
 
+  getCachedStore(chatId = this._currentChatId) {
+    return this._entries.get(normalizeChatId(chatId))?.store || null;
+  }
+
   getCurrentChatId() {
     return this._currentChatId;
   }

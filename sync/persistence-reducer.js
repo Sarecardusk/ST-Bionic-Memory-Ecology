@@ -14,6 +14,7 @@ import {
 const SAVED_BATCH_ACCEPTED_TIERS = new Set([
   "indexeddb",
   "opfs",
+  "tauritavern",
   "authority-sql",
   "luker-chat-state",
 ]);

@@ -117,21 +117,17 @@ import {
   normalizeAuthoritySettings,
   normalizeAuthorityCapabilityState,
   probeAuthorityCapabilities,
-} from "../runtime/authority-capabilities.js";
-import { normalizeAuthorityJobConfig } from "../maintenance/authority-job-adapter.js";
-import { normalizeAuthorityBlobConfig } from "../maintenance/authority-blob-adapter.js";
-import {
+  normalizeAuthorityJobConfig,
+  normalizeAuthorityBlobConfig,
   createAuthorityBrowserState,
   getAuthorityBrowserStateSnapshot,
   normalizeAuthorityBrowserState,
   recordAuthorityAcceptedRevision,
-} from "../sync/authority-browser-state.js";
-import {
-  AUTHORITY_GRAPH_STORE_KIND,
-  AUTHORITY_GRAPH_STORE_MODE,
-  AuthorityGraphStore,
-} from "../sync/authority-graph-store.js";
-import { GRAPH_OPERATIONAL_MODE_AUTHORITY_DEGRADED } from "../sync/authority-graph-mode.js";
+} from "../runtime/doa-removed.js";
+import { GRAPH_OPERATIONAL_MODE_AUTHORITY_DEGRADED } from "../sync/graph-operational-mode.js";
+
+const AUTHORITY_GRAPH_STORE_KIND = "authority";
+const AUTHORITY_GRAPH_STORE_MODE = "sql-primary";
 import {
   isAcceptedLegacyPersistenceTier,
   isRecoveryOnlyLegacyPersistenceTier,
@@ -6359,8 +6355,8 @@ async function createGraphPersistenceHarness({
 
 {
   const harness = await createGraphPersistenceHarness({
-    chatId: "chat-authority-sql-storage-only",
-    globalChatId: "chat-authority-sql-storage-only",
+    chatId: "chat-authority-disabled-native",
+    globalChatId: "chat-authority-disabled-native",
   });
   harness.runtimeContext.extension_settings[MODULE_NAME] = {
     authorityEnabled: "on",
@@ -6371,64 +6367,18 @@ async function createGraphPersistenceHarness({
   const capability = harness.api.setAuthorityCapabilityState({
     installed: true,
     healthy: true,
-    sessionReady: true,
-    permissionReady: true,
+    storagePrimaryReady: true,
     features: ["sql.query", "sql.mutation"],
-    reason: "missing-required-features",
+    reason: "ok",
     lastProbeAt: Date.now(),
   });
-
-  assert.equal(
-    capability.serverPrimaryReady,
-    false,
-    "缺少 jobs/blob/trivium 时整体 Authority server-primary 应保持降级显示",
-  );
-  assert.equal(
-    capability.storagePrimaryReady,
-    true,
-    "SQL 存储能力已就绪时图谱主存储应可用",
-  );
   assert.equal(
     harness.api.shouldUseAuthorityGraphStore(
       harness.runtimeContext.extension_settings[MODULE_NAME],
       capability,
     ),
-    true,
-    "Authority SQL 图谱主存储不应被 jobs/blob/trivium 附属能力误伤",
-  );
-  assert.equal(
-    harness.api.shouldUseAuthorityJobs({ mode: "authority", source: "authority-trivium" }),
     false,
-    "jobs 不可用时 Authority job 提交仍应被禁用",
-  );
-
-  harness.api.setCurrentGraph(
-    stampPersistedGraph(
-      createMeaningfulGraph("chat-authority-sql-storage-only", "authority-sql-storage-only"),
-      {
-        revision: 6,
-        integrity: "chat-authority-sql-storage-only",
-        chatId: "chat-authority-sql-storage-only",
-        reason: "authority-sql-storage-only-seed",
-      },
-    ),
-  );
-
-  const persistResult = await harness.api.persistExtractionBatchResult({
-    reason: "authority-sql-storage-only-persist",
-    lastProcessedAssistantFloor: 6,
-  });
-
-  assert.equal(persistResult.accepted, true);
-  assert.equal(persistResult.storageTier, "authority-sql");
-  assert.equal(persistResult.acceptedBy, "authority-sql");
-  assert.equal(
-    Number(
-      harness.api.getAuthoritySnapshotForChat("chat-authority-sql-storage-only")?.meta
-        ?.revision || 0,
-    ),
-    persistResult.revision,
-    "SQL-only Authority capability should still perform accepted Authority SQL graph persistence",
+    "TauriTavern native mode never selects Authority SQL as the graph primary",
   );
 }
 
@@ -7125,123 +7075,6 @@ async function createGraphPersistenceHarness({
   assert.equal(result.storageTier, "luker-chat-state");
   assert.equal(result.primaryTier, "luker-chat-state");
   assert.equal(localWrites, 0, "failed Luker primary must not accept a local cache write");
-}
-
-{
-  const chatId = "chat-luker-authority-sql-primary";
-  const persistenceChatId = "meta-luker-authority-sql-primary";
-  const harness = await createGraphPersistenceHarness({
-    chatId,
-    globalChatId: chatId,
-    characterId: "char-luker-authority-sql",
-    chatMetadata: {
-      integrity: persistenceChatId,
-    },
-  });
-  harness.runtimeContext.Luker = {
-    getContext() {
-      return harness.runtimeContext.__chatContext;
-    },
-  };
-  harness.runtimeContext.extension_settings[MODULE_NAME] = {
-    authorityEnabled: "on",
-    authorityPrimaryWhenAvailable: true,
-    authorityStorageMode: "server-primary",
-    authoritySqlPrimary: true,
-    authorityBrowserCacheMode: "minimal",
-  };
-  harness.api.setAuthorityCapabilityState({
-    installed: true,
-    healthy: true,
-    sessionReady: true,
-    permissionReady: true,
-    minimumFeatureSetReady: true,
-    serverPrimaryReady: true,
-    storagePrimaryReady: true,
-    triviumPrimaryReady: true,
-    jobsReady: true,
-    blobReady: true,
-    features: [
-      "sql.query",
-      "sql.mutation",
-      "trivium.search",
-      "jobs",
-      "blob",
-    ],
-    supportedJobTypes: ["delay"],
-    supportedJobTypesKnown: true,
-    reason: "ok",
-    lastProbeAt: Date.now(),
-  });
-  harness.api.setCurrentGraph(
-    stampPersistedGraph(
-      createMeaningfulGraph(chatId, "luker-authority-sql"),
-      {
-        revision: 9,
-        integrity: persistenceChatId,
-        chatId,
-        reason: "luker-authority-sql-seed",
-      },
-    ),
-  );
-
-  const result = await harness.api.persistExtractionBatchResult({
-    reason: "luker-authority-sql-persist",
-    lastProcessedAssistantFloor: 9,
-  });
-
-  assert.equal(result.accepted, true);
-  assert.equal(result.storageTier, "authority-sql");
-  assert.equal(result.acceptedBy, "authority-sql");
-  assert.equal(result.primaryTier, "authority-sql");
-  assert.equal(result.cacheTier, "none");
-  assert.equal(
-    await harness.runtimeContext.__chatContext.getChatState(
-      LUKER_GRAPH_MANIFEST_NAMESPACE,
-    ),
-    null,
-    "Authority SQL primary in Luker must not be preempted by Luker sidecar manifest",
-  );
-  assert.equal(
-    Number(harness.api.getAuthoritySnapshotForChat(persistenceChatId)?.meta?.revision || 0),
-    result.revision,
-    "Authority SQL snapshot should receive the accepted persist revision",
-  );
-  harness.api.setCurrentGraph(
-    stampPersistedGraph(
-      createMeaningfulGraph(chatId, "runtime-stale-checkpoint"),
-      {
-        revision: 1,
-        integrity: persistenceChatId,
-        chatId,
-        reason: "runtime-stale-checkpoint",
-      },
-    ),
-  );
-  const checkpointResult = await harness.api.writeAuthorityCheckpointFromCurrentGraph({
-    reason: "authority-sql-checkpoint-source-test",
-  });
-  assert.equal(checkpointResult.success, true);
-  assert.equal(checkpointResult.result.source, "authority-sql");
-  assert.equal(checkpointResult.result.checkpointRevision, result.revision);
-  const checkpointPayload = Array.from(globalThis.__authorityBlobWrites.entries()).at(-1)?.[1];
-  assert.equal(checkpointPayload?.revision, result.revision);
-  const checkpointGraph = deserializeGraph(checkpointPayload?.serializedGraph || "{}");
-  assert.equal(checkpointGraph.nodes[0]?.fields?.title, "事件-luker-authority-sql");
-  assert.notEqual(checkpointGraph.nodes[0]?.fields?.title, "事件-runtime-stale-checkpoint");
-
-  harness.api.setAuthoritySnapshotForChat(persistenceChatId, null);
-  const writeCountBeforeFailedCheckpoint = globalThis.__authorityBlobWrites.size;
-  const failedCheckpointResult = await harness.api.writeAuthorityCheckpointFromCurrentGraph({
-    reason: "authority-sql-checkpoint-source-missing-test",
-  });
-  assert.equal(failedCheckpointResult.success, false);
-  assert.equal(failedCheckpointResult.error, "authority-sql-checkpoint-source-empty");
-  assert.equal(
-    globalThis.__authorityBlobWrites.size,
-    writeCountBeforeFailedCheckpoint,
-    "Authority SQL canonical checkpoint must fail instead of writing stale runtime graph",
-  );
 }
 
 {

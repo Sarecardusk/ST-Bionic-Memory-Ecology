@@ -37,7 +37,7 @@ The tasks page is used to observe ST-BME's background task flow in realtime.
   - Trace turns, extraction ranges, recall sources, and persistent records.
 
 - **Persistence**
-  - View diagnostics for the selected primary storage, Cloud Sync, recovery, sidecar, native hydrate, and more.
+  - View diagnostics for the selected primary storage, TT-Sync, recovery, sidecar, native hydrate, and more.
 
 ### Actions
 
@@ -85,7 +85,7 @@ The config page contains these workspaces:
 
 - **Feature toggles**
   - Main capabilities such as extraction, recall, consolidation, summary, reflection, compression, forgetting, and probabilistic recall.
-  - Cloud Sync behavior. Standard ST selects OPFS / IndexedDB automatically; automatic Cloud Sync is disabled when Authority SQL or Luker chat-state is primary, while manual server backups remain optional.
+  - TT-Sync notes: primary storage is a Trivium namespace; enable `extensions.databases` in the host Full dataset for cross-device copy.
   - World info filtering.
   - Hide old turns and limit rendered chat turns.
 

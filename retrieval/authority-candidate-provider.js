@@ -9,7 +9,7 @@ import {
   isAuthorityVectorConfig,
   queryAuthorityTriviumNeighbors,
   searchAuthorityTriviumNodes,
-} from "../vector/authority-vector-primary-adapter.js";
+} from "../vector/tauritavern-vector-adapter.js";
 import { embedText } from "../vector/embedding.js";
 import { runLimited } from "../runtime/concurrency.js";
 

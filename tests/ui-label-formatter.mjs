@@ -20,10 +20,10 @@ assert.equal(uiTypeLabel(""), "—");
 assert.equal(uiMemoryNodeTypeClass("character"), "type-character");
 assert.equal(uiMemoryNodeTypeClass("pov_memory"), "type-character");
 assert.equal(uiMemoryNodeTypeClass("event"), "type-event");
-assert.match(uiCloudStorageModeHelpText("automatic", "authority-sql"), /Authority SQL/);
-assert.match(uiCloudStorageModeHelpText("automatic", "luker-chat-state"), /Luker/);
-assert.match(uiCloudStorageModeHelpText("manual", "opfs-primary"), /手动备份/);
-assert.match(uiCloudStorageModeHelpText("automatic", "indexeddb-primary"), /自动同步/);
+assert.match(uiCloudStorageModeHelpText("automatic", "tauritavern"), /TT-Sync/);
+assert.match(uiCloudStorageModeHelpText("automatic", "luker-chat-state"), /TT-Sync/);
+assert.match(uiCloudStorageModeHelpText("manual", "opfs-primary"), /TT-Sync/);
+assert.match(uiCloudStorageModeHelpText("automatic", "indexeddb-primary"), /TT-Sync/);
 assert.equal(uiOwnerTypeLabel("user"), "用户");
 assert.equal(uiOwnerTypeLabel("character"), "角色");
 assert.equal(
@@ -60,7 +60,7 @@ assert.equal(uiTypeLabel("event"), "Event");
 assert.equal(uiTypeLabel("pov_memory"), "POV Memory");
 assert.equal(uiOwnerTypeLabel("user"), "User");
 assert.equal(uiOwnerTypeLabel("character"), "Character");
-assert.match(uiCloudStorageModeHelpText("automatic", "authority-sql"), /Authority SQL/);
+assert.match(uiCloudStorageModeHelpText("automatic", "tauritavern"), /TT-Sync/);
 assert.equal(
   uiScopeBadgeText({ layer: "pov", ownerType: "character", ownerName: "Eileen" }),
   "Character POV · Eileen",

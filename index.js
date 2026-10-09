@@ -41,11 +41,12 @@ import {
   normalizeGraphLocalStorageMode,
 } from "./sync/bme-opfs-store.js";
 import {
-  AUTHORITY_GRAPH_STORE_KIND,
-  AUTHORITY_GRAPH_STORE_MODE,
-  AuthorityGraphStore,
-} from "./sync/authority-graph-store.js";
-import { GRAPH_OPERATIONAL_MODE_AUTHORITY_DEGRADED } from "./sync/authority-graph-mode.js";
+  TAURITAVERN_DEFAULT_DIM,
+  TAURITAVERN_GRAPH_STORE_KIND as AUTHORITY_GRAPH_STORE_KIND,
+  TAURITAVERN_GRAPH_STORE_MODE as AUTHORITY_GRAPH_STORE_MODE,
+  TauriTavernGraphStore,
+} from "./sync/tauritavern-graph-store.js";
+import { GRAPH_OPERATIONAL_MODE_AUTHORITY_DEGRADED } from "./sync/graph-operational-mode.js";
 import {
   autoSyncOnChatChange,
   autoSyncOnVisibility,
@@ -60,7 +61,7 @@ import {
   restoreFromServer,
   scheduleUpload,
   syncNow,
-} from "./sync/bme-sync.js";
+} from "./runtime/doa-removed.js";
 import {
   isAcceptedLegacyPersistenceTier,
   isRecoveryOnlyLegacyPersistenceTier,
@@ -340,7 +341,8 @@ import {
   writePersistedRecallToUserMessage,
 } from "./retrieval/recall-persistence.js";
 import { resolveConfiguredTimeoutMs } from "./runtime/request-timeout.js";
-import { deriveAuthorityUpgradeState } from "./runtime/authority-upgrade-state.js";
+import { waitForTauriTavernReady } from "./runtime/tauritavern-host.js";
+import { deriveAuthorityUpgradeState } from "./runtime/doa-removed.js";
 import { createVectorSyncCoalescer as createImportedVectorSyncCoalescer } from "./runtime/vector-sync-coalescer.js";
 import {
   defaultSettings,
@@ -366,13 +368,11 @@ import {
   normalizeAuthoritySettings,
   normalizeAuthorityCapabilityState,
   probeAuthorityCapabilities,
-} from "./runtime/authority-capabilities.js";
-import {
   createAuthorityBrowserState,
   getAuthorityBrowserStateSnapshot,
   normalizeAuthorityBrowserState,
   recordAuthorityAcceptedRevision,
-} from "./sync/authority-browser-state.js";
+} from "./runtime/doa-removed.js";
 import { retrieve } from "./retrieval/retriever.js";
 import { retrieveWithGraphAgent } from "./retrieval/graph-agent-retriever.js";
 
@@ -513,36 +513,32 @@ import {
 } from "./vector/vector-index.js";
 import { planVectorReadyCheck } from "./vector/vector-gate.js";
 import { syncVectorStateController } from "./vector/vector-sync-controller.js";
-import { createAuthorityTriviumClient } from "./vector/authority-vector-primary-adapter.js";
-import {
-  buildAuthorityJobIdempotencyKey,
-  createAuthorityJobAdapter,
-  mergeAuthorityRecentJobs,
-  normalizeAuthorityJobConfig,
-} from "./maintenance/authority-job-adapter.js";
-import { trackAuthorityJobUntilTerminal } from "./maintenance/authority-job-tracker.js";
-import {
-  applyAuthorityCheckpointToStore,
-  buildAuthorityConsistencyRepairPlan,
-  buildAuthorityConsistencyAudit,
-  isAuthorityReplicaSyncRepairAction,
-} from "./maintenance/authority-consistency.js";
-import {
-  createAuthorityBlobAdapter,
-  normalizeAuthorityBlobConfig,
-} from "./maintenance/authority-blob-adapter.js";
+import { createAuthorityTriviumClient } from "./vector/tauritavern-vector-adapter.js";
 import {
   AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT,
+  applyAuthorityCheckpointToStore,
+  buildAuthorityConsistencyAudit,
+  buildAuthorityConsistencyRepairPlan,
   buildAuthorityDiagnosticsBundle,
   buildAuthorityDiagnosticsBundlePath,
   buildAuthorityDiagnosticsManifestPath,
+  buildAuthorityJobIdempotencyKey,
   buildAuthorityPerformanceBaseline,
   buildAuthorityPerformanceBaselineComparison,
+  createAuthorityBlobAdapter,
+  createAuthorityJobAdapter,
+  isAuthorityReplicaSyncRepairAction,
+  mergeAuthorityRecentJobs,
+  normalizeAuthorityBlobConfig,
+  normalizeAuthorityJobConfig,
   readAuthorityDiagnosticsManifest,
   removeAuthorityDiagnosticsManifestEntry,
+  trackAuthorityJobUntilTerminal,
   upsertAuthorityDiagnosticsManifestEntry,
   writeAuthorityDiagnosticsBundle as writeAuthorityDiagnosticsBundleFile,
-} from "./maintenance/authority-diagnostics-bundle.js";
+} from "./runtime/doa-removed.js";
+
+const AuthorityGraphStore = TauriTavernGraphStore;
 
 export { DEFAULT_TRIGGER_KEYWORDS, getSmartTriggerDecision };
 
@@ -2083,7 +2079,7 @@ function resolveLocalStoreTierFromPresentation(
       ? presentation
       : getPreferredGraphLocalStorePresentationSync();
   if (normalizedPresentation.storagePrimary === AUTHORITY_GRAPH_STORE_KIND) {
-    return "authority-sql";
+    return "tauritavern";
   }
   return normalizedPresentation.storagePrimary === "opfs" ? "opfs" : "indexeddb";
 }
@@ -2120,20 +2116,16 @@ function buildPersistenceEnvironment(
 ) {
   const hostProfile = resolvePersistenceHostProfile(context);
   const localStoreTier = resolveLocalStoreTierFromPresentation(presentation);
-  const authorityPrimary = localStoreTier === "authority-sql";
+  const tauriPrimary = localStoreTier === "tauritavern";
   return {
     hostProfile,
     localStoreTier,
-    primaryStorageTier: authorityPrimary
-      ? "authority-sql"
+    primaryStorageTier: tauriPrimary
+      ? "tauritavern"
       : hostProfile === "luker"
         ? "luker-chat-state"
         : localStoreTier,
-    cacheStorageTier: authorityPrimary
-      ? "none"
-      : hostProfile === "luker"
-        ? "none"
-        : "none",
+    cacheStorageTier: "none",
   };
 }
 
@@ -5967,8 +5959,8 @@ function buildAuthorityStorePresentation() {
   return {
     storagePrimary: AUTHORITY_GRAPH_STORE_KIND,
     storageMode: AUTHORITY_GRAPH_STORE_MODE,
-    statusLabel: "Authority SQL",
-    reasonPrefix: "authority-sql",
+    statusLabel: "TauriTavern",
+    reasonPrefix: "tauritavern",
   };
 }
 
@@ -6227,78 +6219,51 @@ async function getGraphLocalStoreCapability(forceRefresh = false) {
 }
 
 function getPreferredGraphLocalStorePresentationSync(settings = getSettings()) {
-  if (shouldUseAuthorityGraphStore(settings, authorityCapabilityState)) {
-    return buildAuthorityStorePresentation();
-  }
-  const requestedMode = getRequestedGraphLocalStorageMode(settings);
-  if (
-    requestedMode === "auto" &&
-    bmeLocalStoreCapabilitySnapshot?.opfsAvailable
-  ) {
-    return buildOpfsStorePresentation(BME_GRAPH_LOCAL_STORAGE_MODE_OPFS_PRIMARY);
-  }
-  if (
-    isGraphLocalStorageModeOpfs(requestedMode) &&
-    bmeLocalStoreCapabilitySnapshot?.opfsAvailable
-  ) {
-    return buildOpfsStorePresentation(requestedMode);
-  }
-  return buildIndexedDbStorePresentation();
+  return buildAuthorityStorePresentation();
 }
 
 async function resolvePreferredGraphLocalStorePresentation(
   settings = getSettings(),
 ) {
-  const authorityCapability =
-    await resolveAuthorityCapabilityForStoreSelection(settings);
-  if (shouldUseAuthorityGraphStore(settings, authorityCapability)) {
-    return buildAuthorityStorePresentation();
-  }
-  const requestedMode = getRequestedGraphLocalStorageMode(settings);
-  if (requestedMode === "auto") {
-    const capability = await getGraphLocalStoreCapability(false, {
-      settings,
-    });
-    return capability.opfsAvailable
-      ? buildOpfsStorePresentation(BME_GRAPH_LOCAL_STORAGE_MODE_OPFS_PRIMARY)
-      : buildIndexedDbStorePresentation();
-  }
-  if (!isGraphLocalStorageModeOpfs(requestedMode)) {
-    return buildIndexedDbStorePresentation();
-  }
+  return buildAuthorityStorePresentation();
+}
 
-  const capability = await getGraphLocalStoreCapability(false, {
-    settings,
-  });
-  if (capability.opfsAvailable) {
-    return buildOpfsStorePresentation(requestedMode);
+async function importLegacyBrowserSnapshot(chatId) {
+  const normalizedChatId = normalizeChatIdCandidate(chatId);
+  if (!normalizedChatId) return null;
+  try {
+    if (await doesIndexedDbChatStoreExist(normalizedChatId)) {
+      const db = new BmeDatabase(normalizedChatId);
+      await db.open();
+      const snapshot = await db.exportSnapshot({ includeTombstones: true });
+      await db.close?.();
+      if ((snapshot?.nodes?.length || 0) + (snapshot?.edges?.length || 0) > 0) {
+        return snapshot;
+      }
+    }
+  } catch (error) {
+    console.warn("[ST-BME] IndexedDB 一次性导入失败:", error?.message || error);
   }
-
-  if (!bmeLocalStoreCapabilityWarningShown) {
-    console.warn("[ST-BME] OPFS 不可用，已回退到 IndexedDB:", capability.reason);
-    bmeLocalStoreCapabilityWarningShown = true;
+  try {
+    if (typeof OpfsGraphStore !== "function") return null;
+    const opfsDb = new OpfsGraphStore(normalizedChatId);
+    await opfsDb.open();
+    const snapshot = await opfsDb.exportSnapshot({ includeTombstones: true });
+    await opfsDb.close?.();
+    if ((snapshot?.nodes?.length || 0) + (snapshot?.edges?.length || 0) > 0) {
+      return snapshot;
+    }
+  } catch (error) {
+    console.warn("[ST-BME] OPFS 一次性导入失败:", error?.message || error);
   }
-  return buildIndexedDbStorePresentation();
+  return null;
 }
 
 async function createPreferredGraphLocalStore(chatId, settings = getSettings(), preferredStore = null) {
-  const preferredLocalStore =
-    preferredStore || (await resolvePreferredGraphLocalStorePresentation(settings));
-  if (
-    preferredLocalStore.storagePrimary === AUTHORITY_GRAPH_STORE_KIND &&
-    typeof AuthorityGraphStore === "function"
-  ) {
-    return new AuthorityGraphStore(chatId, buildAuthorityGraphStoreOptions(settings));
-  }
-  if (
-    preferredLocalStore.storagePrimary === "opfs" &&
-    typeof OpfsGraphStore === "function"
-  ) {
-    return new OpfsGraphStore(chatId, {
-      storeMode: preferredLocalStore.storageMode,
-    });
-  }
-  return new BmeDatabase(chatId);
+  return new TauriTavernGraphStore(chatId, {
+    dim: Math.max(1, Math.floor(Number(settings?.embeddingDimensions) || TAURITAVERN_DEFAULT_DIM)),
+    legacyImporter: importLegacyBrowserSnapshot,
+  });
 }
 
 async function refreshCurrentChatLocalStoreBinding(
@@ -6726,21 +6691,13 @@ function getPlannerRecallTimeoutMs() {
 
 function getEmbeddingConfig(mode = null) {
   const settings = getSettings();
-  if (!mode) {
-    const authorityRuntime = getAuthorityRuntimeSnapshot(settings);
-    const vectorMode = String(settings.authorityVectorMode || "auto-primary");
-    if (
-      settings.authorityTriviumPrimary !== false &&
-      vectorMode !== "off" &&
-      vectorMode !== "local-fallback" &&
-      authorityRuntime.capability.triviumPrimaryReady
-    ) {
-      return normalizeAuthorityVectorConfig(settings, buildAuthorityGraphStoreOptions(settings));
-    }
-  }
-  return getVectorConfigFromSettings(
+  const base = getVectorConfigFromSettings(
     mode ? { ...settings, embeddingTransportMode: mode } : settings,
   );
+  return normalizeAuthorityVectorConfig(settings, {
+    ...base,
+    graphStore: conversationRepository?.getCachedStore?.() || null,
+  });
 }
 
 async function doesIndexedDbChatStoreExist(chatId = "") {
@@ -13766,6 +13723,7 @@ async function syncVectorState(options = {}) {
         ? (reason) => markGraphVectorStateDirty(targetGraph, reason)
         : markVectorStateDirty,
       isAbortError,
+      getGraphStore: () => conversationRepository?.getCachedStore?.() || null,
       getRequestHeaders:
         typeof getRequestHeaders === "function" ? getRequestHeaders : undefined,
       console,
@@ -18159,6 +18117,12 @@ async function onCompactLukerSidecar() {
 }
 
 (async function init() {
+  try {
+    await waitForTauriTavernReady();
+  } catch (error) {
+    console.error("[ST-BME] 需要 TauriTavern 宿主才能启动:", error?.message || error);
+    return;
+  }
   await loadServerSettings();
   void refreshAuthorityRuntimeState({
     force: true,

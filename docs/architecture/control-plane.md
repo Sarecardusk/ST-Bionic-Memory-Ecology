@@ -56,7 +56,7 @@
 ```
 已确认版本 >= 排队版本
   且 同一身份
-  且 是规范 tier（canonical：authority-sql / indexeddb / opfs / luker-chat-state）
+  且 是规范 tier（canonical：tauritavern / authority-sql / indexeddb / opfs / luker-chat-state）
   ⟹ pendingPersist 必须为 false
 ```
 
@@ -115,23 +115,15 @@ overswipe 的空 assistant 占位不触发空文本回滚/提取。它只留下 
 
 ENA Planner 只建立一个 planner turn handoff，同时携带原始输入、增强输入、可选 recall 与可选 plot。fresh normal generation 校验增强输入后可复用 recall；空 recall 不会阻断正常召回；reroll 不读取这条交接。`MESSAGE_SENT` 用同一 generation 的匹配证据把 recall 与 `message.extra.st_bme_plot` 一次绑定到新 user 楼层。
 
-## 副本一致性模型
+## 主存储与同步
 
-Authority 场景下有三处存储，它们**不是平级的版本副本**：
-
-| 存储 | 角色 |
-| --- | --- |
-| Authority SQL | **规范主源**（canonical primary） |
-| Blob checkpoint | 备份副本（backup replica） |
-| Trivium | 搜索副本（search replica） |
+图谱节点和向量共用同一个 TauriTavern Trivium namespace。跨设备只走宿主 TT-Sync 的整库替换，扩展不再维护第二份 Cloud Sync 或 Authority 副本。
 
 **不变量：**
 
-> 只有 Authority SQL 有可靠的图谱版本。当 SQL rev > Blob/Trivium rev 时，状态是"副本待同步"，**不是**"数据漂移"。SQL 领先时不建议从 checkpoint 恢复（那会用旧数据覆盖新数据）。
+> 只有 flush 后的 Trivium namespace 有可靠的图谱版本。IndexedDB / OPFS / Luker / shadow 不能把一次失败的主写变成已接受。
 
-> checkpoint 生成时，若 SQL 是主存储层，必须以 Authority SQL 快照为源；SQL 导出失败/为空时，checkpoint 生成失败（`authority-sql-checkpoint-source-empty`），绝不回退到可能陈旧的运行时图谱。
-
-> 副本同步动作（checkpoint 写入、Trivium/向量同步）相互独立执行，一个失败不阻塞其余。
+> 同步关闭数据库后，下一次读写必须重新 `open`；进行中的写入不得报成功。
 
 ## 依赖注入接缝
 

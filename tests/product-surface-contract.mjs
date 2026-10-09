@@ -125,17 +125,15 @@ for (const key of [
 }
 
 for (const key of [
-  "panel.cloudSync.automaticHelp",
-  "panel.cloudSync.manualHelp",
-  "panel.cloudSync.authorityHelp",
+  "panel.cloudSync.ttSyncHelp",
   "panel.cloudSync.lukerHelp",
 ]) {
   assert.ok(uiLabelSource.includes(`"${key}"`), `missing dynamic Cloud Sync surface ${key}`);
 }
 
 assert.ok(
-  uiLabelSource.includes('primary === "authority-sql"'),
-  "Cloud Sync help must recognize Authority SQL primary storage",
+  uiLabelSource.includes('primary === "tauritavern"'),
+  "Sync help must recognize TauriTavern Trivium primary storage",
 );
 assert.ok(
   uiLabelSource.includes('primary === "luker-chat-state"'),

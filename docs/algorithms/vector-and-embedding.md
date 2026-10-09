@@ -8,7 +8,7 @@
 
 > embedding 默认在客户端（浏览器）执行：`embeddingTransportMode` 默认 `"direct"`（直连第三方 embedding URL）。另一个值是 `"backend"`（走宿主后端代理）。
 
-第三方自定义 URL 是一等公民：OpenAI 兼容 `/v1/embeddings`、one-api、new-api、litellm、vLLM、llama.cpp、Ollama 桥接等。Authority 不生成 embedding，只存/搜向量。
+第三方自定义 URL 是一等公民：OpenAI 兼容 `/v1/embeddings`、one-api、new-api、litellm、vLLM、llama.cpp、Ollama 桥接等。宿主 Trivium 不生成 embedding，只存/搜向量。
 
 ## 批量 Embedding
 

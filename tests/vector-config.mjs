@@ -28,6 +28,11 @@ async function loadVectorHelpers() {
 
   const context = vm.createContext({});
   const script = new vm.Script(`
+function isTauriTavernVectorConfig(config) {
+  const mode = String(config?.mode || "");
+  const source = String(config?.source || "");
+  return mode === "tauritavern" || source === "tauritavern-trivium" || mode === "authority" || source === "authority-trivium";
+}
 ${pieces.join("\n\n").replaceAll("export ", "")}
 this.getVectorConfigFromSettings = getVectorConfigFromSettings;
 this.validateVectorConfig = validateVectorConfig;

@@ -2,10 +2,9 @@
 // 此模块中的函数均不依赖 index.js 模块级可变状态，
 // 可被 index.js 及其他模块安全导入。
 import { sanitizePlannerMessageText } from "../runtime/planner-tag-utils.js";
-import { AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT } from "../maintenance/authority-diagnostics-bundle.js";
-import { createAuthorityUpgradeState } from "../runtime/authority-upgrade-state.js";
+import { AUTHORITY_DIAGNOSTICS_MANIFEST_LIMIT, createAuthorityUpgradeState } from "../runtime/doa-removed.js";
 import { createI18nStatus, t } from "../i18n/index.js";
-import { GRAPH_OPERATIONAL_MODE_LOCAL_ONLY } from "../sync/authority-graph-mode.js";
+import { GRAPH_OPERATIONAL_MODE_LOCAL_ONLY } from "../sync/graph-operational-mode.js";
 
 // ═══════════════════════════════════════════════════════════
 // 常量

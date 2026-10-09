@@ -21,7 +21,7 @@
 - [`overview.md`](architecture/overview.md) — 子系统地图 + 写入/读取/安全三条数据路径 + 完整目录结构 + 事件挂载
 - [`control-plane.md`](architecture/control-plane.md) — 身份解析、持久化状态机、必须维持的不变量
 - [`storage-and-formats.md`](architecture/storage-and-formats.md) — 存储分层、快照契约、向前兼容纪律
-- [`server-integration.md`](architecture/server-integration.md) — 三档 Authority 集成、自动降级/升级、能力探测
+- [`server-integration.md`](architecture/server-integration.md) — TauriTavern / TriviumDB 宿主入口、7MiB 预算、TT-Sync
 
 ### algorithms/ — 算法原理
 核心算法"怎么算的"：参数、公式、阈值。基于真实代码编写，并标注关键文件位置。

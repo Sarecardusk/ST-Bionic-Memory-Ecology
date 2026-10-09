@@ -62,7 +62,7 @@ ST-BME 的测试是 Node 回归测试（`tests/*.mjs`），`npm run test:stable`
 - **`tests/i18n-user-visible-ratchet.mjs`** — 检查已迁移 UI 文件不新增硬编码中文用户可见文案。
 - **`tests/graph-snapshot-schema.mjs` / `tests/snapshot-forward-compat.mjs`** — 耐久快照契约、宽容解析和真实存储向前兼容往返。
 - **`tests/indexeddb-persistence.mjs`** — IndexedDB 快照、增量提交、hydrate。
-- **`tests/indexeddb-sync.mjs`** — 云端同步与冲突合并。
+- **`tests/tauritavern-graph-store.mjs`** — Trivium namespace 分片、WAL 重放、busy/关闭后重开、一次性导入。
 - **`tests/native-rollout-matrix.mjs`** — Native 灰度开关和阈值迁移。
 - **`tests/task-profile-migration.mjs`** — 任务预设迁移。
 

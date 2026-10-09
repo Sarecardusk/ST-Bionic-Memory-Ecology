@@ -121,6 +121,7 @@ export async function syncVectorStateController(runtime, options = {}) {
       purge,
       range,
       signal,
+      graphStore: typeof runtime.getGraphStore === "function" ? runtime.getGraphStore() : config.graphStore,
       headerProvider:
         typeof getRequestHeaders === "function"
           ? () => getRequestHeaders()
