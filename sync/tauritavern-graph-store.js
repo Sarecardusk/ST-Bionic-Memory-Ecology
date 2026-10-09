@@ -666,7 +666,7 @@ export class TauriTavernGraphStore {
     let offset = 0;
     while (true) {
       const result = await this._db.query(
-        "MATCH (n) WHERE n.payload.ttRecordKind == $kind RETURN n LIMIT $limit OFFSET $offset",
+        "MATCH (n) WHERE n.ttRecordKind == $kind RETURN n LIMIT $limit OFFSET $offset",
         { kind, limit: LIST_PAGE_SIZE, offset },
       );
       const rows = toArray(result?.rows);

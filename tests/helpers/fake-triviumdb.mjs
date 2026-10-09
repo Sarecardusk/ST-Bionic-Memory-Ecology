@@ -253,6 +253,12 @@ export class FakeTriviumHandle {
   async query(text, params = {}) {
     this._assertOpen();
     const source = String(text || "");
+    const nested = source.match(/\b([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\./);
+    if (nested) {
+      throw new Error(
+        `查询解析错误 (Query parse error): Unexpected token after identifier '${nested[1]}': Dot`,
+      );
+    }
     const limitMatch = source.match(/LIMIT\s+\$(\w+)/i);
     const offsetMatch = source.match(/OFFSET\s+\$(\w+)/i);
     const limit = limitMatch ? Math.max(0, Number(params[limitMatch[1]]) || 0) : this.nodes.size;
